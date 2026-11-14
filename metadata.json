@@ -1,0 +1,6 @@
+{
+  "name": "Parallel — 跨世界心动 (v0.5 修复版)",
+  "description": "用 Tinder 式刷卡认识已有作品中的角色，再用 Elsewhere 式通信、线下小说扮演和持续记忆经营关系的多身份 AI 约会模拟器。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
