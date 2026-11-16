@@ -2,22 +2,23 @@
   "name": "Parallel — 跨世界心动",
   "short_name": "Parallel",
   "description": "Parallel — 同人角色平行世界约会模拟器",
-  "start_url": "/",
+  "start_url": "./",
   "display": "standalone",
   "background_color": "#FAF5ED",
   "theme_color": "#FAF5ED",
   "icons": [
     {
-      "src": "/apple-touch-icon.png",
+      "src": "./apple-touch-icon.png",
       "sizes": "180x180",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/parallel-icon.png",
+      "src": "./parallel-icon.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "scope": "./"
 }

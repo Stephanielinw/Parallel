@@ -34,8 +34,8 @@ export default function App() {
         // ignore storage errors
       }
 
-      await loadScript('/parallel/offline.js');
-      await loadScript('/parallel/app.js');
+      await loadScript(`${import.meta.env.BASE_URL}parallel/offline.js`);
+      await loadScript(`${import.meta.env.BASE_URL}parallel/app.js`);
     })();
   }, []);
 
@@ -52,7 +52,7 @@ export default function App() {
           <div className="brand">
             <div className="brand-logo">
               <img
-                src="/assets/aistudio/image_0cf832e3.png"
+                src={`${import.meta.env.BASE_URL}assets/aistudio/image_0cf832e3.png`}
                 alt="Parallel"
                 className="brand-logo-img"
               />
