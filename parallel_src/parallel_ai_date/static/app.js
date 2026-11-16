@@ -41,13 +41,18 @@ dog:'<path d="M22.6 30.8c.9-.1 1.7-.1 2.5.1c-.4.5-.9.8-1.5 1.1c-.5-.3-.8-.7-1-1.
 paw:'<path d="M21.8 8.5c2-.1 3.5 1.1 3.6 2.6c.3 1.7-.9 3.6-2.7 3.6c-1.7 0-3.2-1.1-3.5-2.9c0-1.6 1.4-3.1 3-3.2Zm11.3 6.2c1.6 0 3.4 1.4 3.3 3.1c-.2 1.8-1.8 3-3.3 3.1c-1.8-.2-3.3-1.7-2.9-3.4c0-1.8 1.5-3.2 3.5-2.8ZM36.7 27c1.5.1 2.6 1.4 2.8 3.2c-.3 1.6-1.5 2.7-2.9 3c-1.7.1-2.9-.7-3.4-2.4c-.2-1.4.8-3.1 2.2-3.6Zm-17.3-5.9c.9 0 1.9 0 2.8.3c1 .4 1.9 1 2.7 1.7q.9 1.2 1.5 2.4c.4 1 .6 2.1.7 3.2c.2 1.7.1 3.4-.1 5.1c0 .9-.1 1.7-.4 2.5c-.3.6-.8 1.1-1.3 1.5c-.5.6-1.1 1.1-1.8 1.4c-.8.2-1.5.3-2.3.2c-.6.1-1.3 0-1.8-.2c-.7-.5-1.3-1-1.8-1.7c-.6-.5-1.1-1.2-1.4-1.9c-.5-.8-.9-1.8-1.1-2.8c-1-.3-1.9-.8-2.7-1.4c-.8-.1-1.5-.4-2.2-.8c-.6-.5-1-1.1-1.4-1.8c-.3-.7-.4-1.4-.5-2.2c0-.6.1-1.3.4-1.9c.2-.8.6-1.5 1.1-2.1c.6-.5 1.2-.9 1.9-1.2c.7-.4 1.4-.6 2.2-.7c1.8-.1 3.7.1 5.5.4"/>',
 letter:'<path d="M8 14c11-1.2 22-1.1 32 0c1 6.6.9 13.6 0 19.8c-11 1.1-22 1-31.9 0c-1-6.3-1-13.4-.1-19.8"/><path d="M9.5 15.5c1.8 1.8 3.6 3.4 5.4 4.9m18.2-.2c1.8-1.5 3.6-3.1 5.3-4.8M24 28.6c-4-2.7-5.1-5.1-3.7-6.6c1.7-1.8 3.5 0 3.7 1.1c.4-1.3 2.2-2.9 3.7-1.1c1.4 1.7 0 3.9-3.7 6.6"/>',
 daisy:'<path d="M34.1 24.1c0 1 3.7 1.9 4.5 3c.9 1 1 2.4.7 3.2c-.5.9-1.5 1.9-2.8 2c-1.4.1-4.6-2.1-5.3-1.4s1.1 4 1 5.4s-1 2.7-1.8 3c-.8.4-2.2.2-3.4-.7c-1-1-2.1-4.8-3-4.8c-1.1 0-1.8 3.9-2.9 4.9c-1 .8-2.5.9-3.4.6c-.9-.4-1.8-1.5-2-2.9c-.2-1.3 1.8-4.6 1.2-5.3c-.6-.8-3.8 1.3-5.2 1.1c-1.3-.1-2.6-1.1-2.9-2c-.4-.9-.2-2.2.7-3.1c.9-1.1 4.8-2.1 4.8-3.1s-3.9-1.8-4.8-2.8c-.9-1.1-.9-2.7-.5-3.5c.4-1 1.5-1.9 2.8-2c1.4-.1 4.7 2 5.3 1.4c.6-.7-1.6-3.9-1.5-5.3c.3-1.4 1.4-2.8 2.3-3.2c.9-.3 2.4 0 3.3 1c1.1.9 1.8 4.6 2.8 4.6c.9 0 1.9-4 2.9-4.9c1.1-.9 2.7-.8 3.6-.4c.8.5 1.7 1.5 1.8 2.9s-2 4.6-1.4 5.3c.8.7 4.2-1.5 5.6-1.3c1.4.1 2.3 1.1 2.6 2.1c.4.8.3 2.2-.6 3.3c-.8.9-4.4 2-4.4 2.9"/><path d="M24.1 19.7c2.5 0 4.3 1.8 4.3 4.3c0 2.4-1.8 4.3-4.3 4.3s-4.3-1.8-4.3-4.3c0-2.4 1.7-4.2 4.3-4.3"/>',
-cupcake:'<path d="M12.6 25.6c-.5-1-.7-2.1-.8-3.2c.7-1.1 1.5-2 2.5-2.8c1.1-.4 2.2-.6 3.4-.6c.5-1 1.1-2 1.8-2.8c.6-.5 1.4-.8 2.1-1.1c.8-.4 1.7-.7 2.6-.8c.7.2 1.3.5 1.8 1c.8 0 1.5.2 2.2.6c.8 1 1.4 2 2 3.2c1.2.1 2.4.3 3.6.8c.9.7 1.6 1.5 2.3 2.4c-.1 1.1-.3 2.2-.7 3.2c-7.6.8-15.2.9-22.8.1"/><path d="M14.5 25.8c.4 4.6.9 9.3 1.6 13.9c5.4.1 10.7 0 16.1-.2c.6-4.6 1.1-9.2 1.4-13.8M23 8.7c1.8-.7 3.5.3 4 2.2c.5 2-1.3 3.3-3 3.4c-2 0-3.3-1.4-2.9-3.3c.3-2.1 2.3-2.9 3.8-2.3Z"/><path d="M20.3 26q0 6.6.6 13.2m6.4-13.1c-.3 4.4-.4 8.8-.4 13.2"/>'
+cupcake:'<path d="M12.6 25.6c-.5-1-.7-2.1-.8-3.2c.7-1.1 1.5-2 2.5-2.8c1.1-.4 2.2-.6 3.4-.6c.5-1 1.1-2 1.8-2.8c.6-.5 1.4-.8 2.1-1.1c.8-.4 1.7-.7 2.6-.8c.7.2 1.3.5 1.8 1c.8 0 1.5.2 2.2.6c.8 1 1.4 2 2 3.2c1.2.1 2.4.3 3.6.8c.9.7 1.6 1.5 2.3 2.4c-.1 1.1-.3 2.2-.7 3.2c-7.6.8-15.2.9-22.8.1"/><path d="M14.5 25.8c.4 4.6.9 9.3 1.6 13.9c5.4.1 10.7 0 16.1-.2c.6-4.6 1.1-9.2 1.4-13.8M23 8.7c1.8-.7 3.5.3 4 2.2c.5 2-1.3 3.3-3 3.4c-2 0-3.3-1.4-2.9-3.3c.3-2.1 2.3-2.9 3.8-2.3Z"/><path d="M20.3 26q0 6.6.6 13.2m6.4-13.1c-.3 4.4-.4 8.8-.4 13.2"/>',
+sent:'<path d="M12.5 25.5c2.6 2.8 5.2 5.6 7.6 8.6c5.3-6.7 10.9-13.2 16.8-19.5"/>',
+read:'<path d="M7.5 25.5c2.4 2.6 4.8 5.3 7 8.1c5-6.4 10.3-12.6 15.8-18.6M19.5 26.2c2.1 2.3 4.2 4.6 6.2 7.1c4.8-6.2 9.9-12.2 15.2-18"/>',
+unmatch:'<path d="M24 39c-7-5.5-13.5-10.8-15.5-17.5c-1.5-5 1-9.5 5.5-10.3c4-.7 7.7 1.6 10 5.4c2.3-3.9 6-6.2 10-5.4c4.5.9 7 5.4 5.4 10.4c-2.1 6.7-8.5 12-15.4 17.4"/><path d="M26.5 15.2l-4.2 7l4.8 3.6l-4.8 8"/>',
+hotchat:'<path d="M26.5 8.5c-5.4 5.8-10.4 11.8-14.2 17.6c3.4.2 6.8.3 10.2.3c-1.2 4.4-2.5 8.8-4 13.1c6.2-6.1 11.8-12.6 16.2-19.2c-3.5-.2-7-.3-10.5-.3c.9-3.8 1.7-7.7 2.3-11.5"/>',
+monitor:'<path d="M8.5 24c4.4-6.4 9.8-9.7 15.5-9.7s11.1 3.3 15.5 9.7c-4.4 6.4-9.8 9.7-15.5 9.7S12.9 30.4 8.5 24"/><path d="M24 19.2c2.8-.1 4.8 1.9 4.8 4.8s-2 4.8-4.8 4.8s-4.8-1.9-4.8-4.8s2-4.7 4.8-4.8"/>'
 };
 const I=(name,cls='ic')=>`<svg class="${cls}" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]||ICONS.info}</svg>`;
 const esc=s=>String(s??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const $=id=>document.getElementById(id);
 const api=async(path,data)=>{if(globalThis.ParallelOffline)return globalThis.ParallelOffline.request(path,data);const o=await fetch('/api'+path,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});let body;try{body=await o.json()}catch{throw Error('服务端没有返回 JSON')}if(!o.ok)throw Error(body.error||'请求失败');return body};
-const state={tab:'discover',profiles:[],sources:[],settings:{},activeId:(()=>{try{return localStorage.getItem('parallel-active-profile')||''}catch{return ''}})(),candidates:[],deckIndex:0,threads:[],threadId:'',messages:[],chatMode:'chat',chatBusy:false,queue:{count:0,dueAt:0,status:'idle',blocked:false},flushBusy:false,terminalTab:'api',presetMode:'chat',presets:[],profileDraft:null,identResults:[],editPresetId:null,presetImportDraft:null,loading:false,draftInputs:{},renderedThreadId:'',bgTickCount:0};
+const state={tab:'discover',profiles:[],sources:[],settings:{},activeId:(()=>{try{return localStorage.getItem('parallel-active-profile')||''}catch{return ''}})(),candidates:[],deckIndex:0,threads:[],threadId:'',messages:[],meetings:[],activeMeetingId:'',meetingLocation:'',hotChat:false,memoryCategory:'all',lastMemoriesData:null,chatMode:'chat',chatBusy:false,queue:{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paceMode:'daily',hotChat:false,delayMinutes:0,targetTimeLabel:'',scheduleReason:''},flushBusy:false,revealingBubbles:false,hiddenReplyIds:new Set(),lastSendAt:0,lastUserActiveAt:Date.now(),proactiveBusy:false,idleTickCount:0,terminalTab:'api',presetMode:'chat',presets:[],profileDraft:null,identResults:[],editPresetId:null,presetImportDraft:null,loading:false,draftInputs:{},renderedThreadId:'',bgTickCount:0,apiCheckPrompted:false};
 const tabs=[{id:'profile',label:'我的',detail:'我的 Profile',icon:'user'},{id:'discover',label:'发现',detail:'发现心动',icon:'sparkleheart'},{id:'messages',label:'消息',detail:'你的消息',icon:'message'},{id:'terminal',label:'终端',detail:'终端设置',icon:'terminal'}];
 let toastTimer;
 function toast(text){const node=$('toast');node.textContent=text;node.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>node.classList.remove('show'),4000)}
@@ -55,8 +60,42 @@ function activeProfile(){return state.profiles.find(p=>p.id===state.activeId)||n
 function avatar(p,cls='mini-avatar'){return `<span class="${cls}" style="background:${p?.accent||'linear-gradient(135deg,#F9E0AE,#F7C5CC)'}">${p?.avatar||p?.portrait?`<img src="${esc(p.avatar||p.portrait)}" alt="">`:esc((p?.name||'?')[0].toUpperCase())}</span>`}
 const fmtTime=s=>{try{return new Date(s).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}catch{return ''}};
 const genderText={male:'男性',female:'女性',nonbinary:'非二元',other:'其他',all:'不限'};
-async function bootstrap(){try{const data=await api('/bootstrap');state.profiles=data.profiles;state.sources=data.sources;state.settings=data.settings;if(!activeProfile())state.activeId=state.profiles[0]?.id||'';if(!activeProfile())state.tab='profile';renderChrome();await navigate(state.tab)}catch(e){$('view').innerHTML=`<div class="empty-state"><h2>无法连接本地服务</h2><p>${esc(e.message)}</p><p>${globalThis.ParallelOffline?'当前浏览器限制了数据存储，请使用 Chrome / Safari 普通窗口打开 HTML。':'请先运行 <code>python3 server.py</code>'}</p></div>`}}
-function renderChrome(){const nav=x=>`<button type="button" class="${x.id===state.tab?'active ':''}nav-link" data-action="nav" data-tab="${x.id}">${I(x.icon)}<span>${x.detail}</span></button>`;$('side-nav').innerHTML=tabs.map(nav).join('');$('mobile-nav').innerHTML=tabs.map(x=>`<button type="button" class="${x.id===state.tab?'active':''}" data-action="nav" data-tab="${x.id}">${I(x.icon)}<span>${x.label}</span></button>`).join('');const p=activeProfile();$('sidebar-current').innerHTML=p?`${avatar(p)}<span><span class="subtle" style="font-size:9px">正在扮演</span><br>${esc(p.name)}</span>`:`<span class="mini-avatar empty-dog">${I('paw')}</span><span class="subtle">尚未创建角色</span>`;const mode=$('mode-pill');mode.textContent=globalThis.ParallelOffline&&!globalThis.ParallelOffline.storageAvailable?'临时会话 · 未持久化':state.settings.mode==='live'?'API 已配置':'演示模式';mode.classList.toggle('live',state.settings.mode==='live');$('section-title').textContent=tabs.find(x=>x.id===state.tab)?.detail||'Parallel';$('section-eyebrow').textContent=({profile:'YOUR IDENTITY',discover:'DISCOVER ANOTHER WORLD',messages:'CONNECTIONS THAT REMEMBER',terminal:'YOUR CREATIVE CONTROL'})[state.tab];const ctx=({profile:[['dog','不同 Profile 可以扮演完全不同的人。'],['shield','原作人物身份与其世界观背景将保持独立。']],discover:[['sparkleheart','每次刷新尝试展示 10 位已有作品角色。'],['clock','重复相遇，记忆不会重置。']],messages:[['letter','消息气泡与面对面小说使用不同预设。'],['book','解除匹配后再次相遇，旧消息仍然存在。']],terminal:[['lock','API Key 仅存放在本机服务的数据目录。'],['sliders','文字 Prompt 可以按模式分开编辑。']]})[state.tab];$('side-info').innerHTML=`<h3>一点关于这里的事</h3>${ctx.map(v=>`<div class="side-fact">${I(v[0])}<span>${v[1]}</span></div>`).join('')}`}
+function getModeLabel(s){
+  if(globalThis.ParallelOffline&&!globalThis.ParallelOffline.storageAvailable)return '临时会话 · 未持久化';
+  if(s?.mode==='live')return 'API 已配置';
+  if(s?.mode==='normal')return '正常模式 · 未连接 API';
+  return '演示模式';
+}
+async function bootstrap(){
+  try{
+    const data=await api('/bootstrap');
+    state.profiles=data.profiles;
+    state.sources=data.sources;
+    state.settings=data.settings;
+    const hasApiConfig=Boolean(state.settings?.base_url&&state.settings?.model&&state.settings?.has_key);
+    if(!hasApiConfig&&!state.apiCheckPrompted){
+      state.apiCheckPrompted=true;
+      const r=await api('/settings',{demo_enabled:false});
+      state.settings=r.settings;
+      setTimeout(()=>{
+        modal(
+          `<div class="kicker">API CHECK · 启动检测</div><h2>未监测到 API，是否进入演示模式？</h2><p>未检测到已填写的 API 链接、密钥与模型。是否进入演示模式体验？</p><p class="caption">选择<b>「是」</b>将进入演示模式；选择<b>「否」</b>将保持正常模式（仅未连接 API，随时可在「终端」填写）。</p>`,
+          `<button type="button" class="btn soft" data-action="choose-api-mode" data-demo="no">否（保持正常模式）</button><button type="button" class="btn primary" data-action="choose-api-mode" data-demo="yes">是（进入演示模式）</button>`
+        );
+      },80);
+    }
+    if(!activeProfile())state.activeId=state.profiles[0]?.id||'';
+    if(!activeProfile())state.tab='profile';
+    renderChrome();
+    await navigate(state.tab);
+    if(state.activeId&&state.settings.mode!=='normal'&&state.settings.proactive_mode!=='off'){
+      setTimeout(()=>checkProactiveMessages('startup'),1100);
+    }
+  }catch(e){
+    $('view').innerHTML=`<div class="empty-state"><h2>无法连接本地服务</h2><p>${esc(e.message)}</p><p>${globalThis.ParallelOffline?'当前浏览器限制了数据存储，请使用 Chrome / Safari 普通窗口打开 HTML。':'请先运行 <code>python3 server.py</code>'}</p></div>`;
+  }
+}
+function renderChrome(){const nav=x=>`<button type="button" class="${x.id===state.tab?'active ':''}nav-link" data-action="nav" data-tab="${x.id}">${I(x.icon)}<span>${x.detail}</span></button>`;$('side-nav').innerHTML=tabs.map(nav).join('');$('mobile-nav').innerHTML=tabs.map(x=>`<button type="button" class="${x.id===state.tab?'active':''}" data-action="nav" data-tab="${x.id}">${I(x.icon)}<span>${x.label}</span></button>`).join('');const p=activeProfile();$('sidebar-current').innerHTML=p?`${avatar(p)}<span><span class="subtle" style="font-size:9px">正在扮演</span><br>${esc(p.name)}</span>`:`<span class="mini-avatar empty-dog">${I('paw')}</span><span class="subtle">尚未创建角色</span>`;const mode=$('mode-pill');mode.textContent=getModeLabel(state.settings);mode.classList.toggle('live',state.settings.mode==='live');$('section-title').textContent=tabs.find(x=>x.id===state.tab)?.detail||'Parallel';$('section-eyebrow').textContent=({profile:'YOUR IDENTITY',discover:'DISCOVER ANOTHER WORLD',messages:'CONNECTIONS THAT REMEMBER',terminal:'YOUR CREATIVE CONTROL'})[state.tab];const ctx=({profile:[['dog','不同 Profile 可以扮演完全不同的人。'],['shield','原作人物身份与其世界观背景将保持独立。']],discover:[['sparkleheart','每次刷新尝试展示 10 位已有作品角色。'],['clock','重复相遇，记忆不会重置。']],messages:[['letter','消息气泡与面对面小说使用不同预设。'],['book','解除匹配后再次相遇，旧消息仍然存在。']],terminal:[['lock','API Key 仅存放在本机服务的数据目录。'],['sliders','文字 Prompt 可以按模式分开编辑。']]})[state.tab];$('side-info').innerHTML=`<h3>一点关于这里的事</h3>${ctx.map(v=>`<div class="side-fact">${I(v[0])}<span>${v[1]}</span></div>`).join('')}`}
 async function navigate(tab){
   const existingInput=$('chat-input');
   if(existingInput&&state.threadId)state.draftInputs[state.threadId]=existingInput.value;
@@ -78,7 +117,7 @@ async function uploadAvatar(e){const file=e.target.files?.[0];if(!file)return;if
 // Discover and swipe
 async function loadCandidates(showToast=false){$('topbar-actions').innerHTML=`${activeProfile()?`<button class="icon-btn" title="刷新 10 位候选" data-action="refresh">${I('refresh')}</button><button class="btn soft" data-action="go-profile">${I('user')} ${esc(activeProfile().name)}</button>`:''}`;if(!activeProfile()){return $('view').innerHTML=empty('dog','先创建你的 Profile','填写身份与作品来源后，就可以开始滑卡。','创建 Profile','profile')}
     if(!(activeProfile().sources||[]).length&&!state.allowAllSources){return $('view').innerHTML=`<div class="empty-state"><div class="empty-illustration">${I('compass')}</div><h2>还没有填写希望匹配的作品</h2><p>请先在你的 Profile 中添加「希望匹配的作品」Tag（如：生化危机、巫师3、漫威电影、赛博朋克2077），平行世界将只为你匹配对应作品中的角色。</p><div class="inline-row" style="justify-content:center"><button class="btn primary" data-action="nav" data-tab="profile">去添加作品 Tag ${I('arrow')}</button><button class="btn soft" data-action="allow-all-sources">不限作品 · 随机探索全部</button></div></div>`}
-    const d=await api('/discover',{profileId:state.activeId});state.candidates=d.candidates;state.deckIndex=0;renderDiscover(d.total_available);if(showToast)toast(`已刷新：${d.candidates.length} 位候选${d.generation==='live-generated'?' · AI 已生成资料':''}${d.candidates.length<10?'（当前目录不足 10 位）':''}`);}
+    const d=await api('/discover',{profileId:state.activeId,refresh:Boolean(showToast)});state.candidates=d.candidates;state.deckIndex=0;renderDiscover(d.total_available);if(showToast)toast(`已刷新：${d.candidates.length} 位候选${d.generation==='live-generated'?' · AI 已重新生成角色档案':''}${d.candidates.length<10?'（当前目录不足 10 位）':''}`);}
 function empty(icon,title,description,button,target){return `<div class="empty-state"><div class="empty-illustration">${I(icon)}</div><h2>${esc(title)}</h2><p>${esc(description)}</p>${button?`<button class="btn primary" data-action="nav" data-tab="${target}">${esc(button)} ${I('arrow')}</button>`:''}</div>`}
 function renderDiscover(total=state.candidates.length){const c=state.candidates[state.deckIndex];$('view').innerHTML=`<div class="discover-screen"><div class="discover-intro"><div><div class="kicker">YOUR NEXT CONNECTION</div><p>${esc(activeProfile()?.name||'')}，今天会遇见谁？</p></div><span class="counter">${c?`${state.deckIndex+1} / ${state.candidates.length}`:'0 / 0'} · ${total} 可选</span></div><div class="deck-container"><div class="deck-shadow"></div>${c?renderCard(c):`<div class="deck-empty">${I('sparkleheart')}<h3>${total===0?'暂时没有符合条件的角色':'这轮已经刷完啦'}</h3><p>${total===0?'你添加的作品 Tag 已经保存，但当前本地目录里没有符合这些条件的角色。可以先调整 Tag；后续再接入新作品识别。':'刷新再遇见新的候选，也可能再次刷到熟悉的人。'}</p>${total===0?`<button class="btn primary" data-action="nav" data-tab="profile">${I('user')} 编辑作品 Tag</button>`:`<button class="btn primary" data-action="refresh">${I('refresh')} 刷新候选</button>`}</div>`}</div>${c?`<div class="swipe-actions"><button class="pass" data-action="swipe-left" title="不感兴趣">${I('x')}</button><button class="details" data-action="card-details" title="查看背景">${I('info')}</button><button class="like" data-action="swipe-right" title="感兴趣">${I('heart')}</button></div>`:''}<div class="discover-bottom-note">左滑不感兴趣 · 右滑感兴趣<br>所有候选均来自已收录原作，不生成原创 AI 人物</div></div>`;if(c){attachSwipe();if(state.settings.image_mode==='live'&&!c.portrait&&state.portraitBusyId!==c.id&&!(state.portraitFailed&&state.portraitFailed[c.id]))generateCardPortrait(false,true)}}
 function renderCard(c){
@@ -112,7 +151,7 @@ async function generateCardPortrait(regenerate=false,silent=false){
 }
 function attachSwipe(){const el=$('swipe-card');let startX=0,dx=0,dragging=false;el.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;dragging=true;startX=e.clientX;dx=0;el.classList.add('dragging');el.setPointerCapture(e.pointerId)});el.addEventListener('pointermove',e=>{if(!dragging)return;dx=e.clientX-startX;el.style.transform=`translateX(${dx}px) rotate(${dx/24}deg)`;$('stamp-like').style.opacity=Math.min(1,Math.max(0,dx/100));$('stamp-nope').style.opacity=Math.min(1,Math.max(0,-dx/100))});el.addEventListener('pointerup',e=>{if(!dragging)return;dragging=false;el.classList.remove('dragging');if(Math.abs(dx)>95){doSwipe(dx>0?'right':'left')}else{el.style.transform='';$('stamp-like').style.opacity=0;$('stamp-nope').style.opacity=0}})}
 async function doSwipe(direction){if(state.loading)return;const c=state.candidates[state.deckIndex];if(!c)return;state.loading=true;const card=$('swipe-card');if(card){card.style.transform=`translateX(${direction==='right'?600:-600}px) rotate(${direction==='right'?25:-25}deg)`;card.style.opacity='0'}try{const res=await api('/swipe',{profileId:state.activeId,characterId:c.id,direction});state.deckIndex++;setTimeout(()=>renderDiscover(),130);if(res.matched&&!res.already_matched){setTimeout(()=>matchModal(c,res),330)}else if(res.already_matched){toast('你们已经在匹配列表中了')}else if(direction==='right'){toast(res.engine==='demo'?'对方这次没有选择匹配（演示判定）':'对方这次没有选择匹配')}}catch(e){toast(e.message);if(card){card.style.transform='';card.style.opacity='1'}}finally{state.loading=false}}
-function matchModal(c,r){const html=`<div class="match-spotlight">${I('hearts')}<div class="match-text">IT'S A MATCH</div></div><h2>${r.again?'又遇见了，'+esc(c.name):'你们互相喜欢！'}</h2><p>${r.again?'你们之前的聊天和经历都还在。':'你可以现在开始聊天，角色也会给你发第一条消息。'}${r.engine==='demo'?' 当前匹配判定为演示模式。':''}</p>`;modal(html,`<button class="btn ghost" data-action="close-modal">继续发现</button><button class="btn primary" data-action="open-match" data-id="${esc(c.id)}">${I('letter')} 去聊天</button>`)}
+function matchModal(c,r){const isNormal=state.settings.mode==='normal';const html=`<div class="match-spotlight">${I('hearts')}<div class="match-text">IT'S A MATCH</div></div><h2>${r.again?'又遇见了，'+esc(c.name):'你们互相喜欢！'}</h2><p>${r.again?'你们之前的聊天和经历都还在。':(isNormal?'你们已经建立匹配，连接 API 后角色会用真实模型向你打招呼，你也可以现在先发消息。':'你可以现在开始聊天，角色也给你发来了第一条消息。')}${r.engine==='demo'?' 当前匹配判定为演示模式。':''}</p>`;modal(html,`<button class="btn ghost" data-action="close-modal">继续发现</button><button class="btn primary" data-action="open-match" data-id="${esc(c.id)}">${I('letter')} 去聊天</button>`)}
 function cardModal(){const c=state.candidates[state.deckIndex];if(!c)return;modal(`<div class="kicker">CANON PROFILE</div><h2>${esc(c.name)} · ${c.age||'年龄未公开'}</h2><p>${esc(c.source)} / ${esc(c.version)}</p><div class="glass-info"><b>已收录原作背景</b><p>${esc(c.canon)}</p></div><p>简介是约会软件中的公开资料，不等于这个角色拥有的全部秘密。</p>`,`<button class="btn soft" data-action="close-modal">返回卡片</button>`)}
 async function photoDescriptionModal(regenerate=false,forceText=false){const c=state.candidates[state.deckIndex];if(!c)return;
   if(!forceText&&c.portrait){
@@ -128,30 +167,182 @@ async function photoDescriptionModal(regenerate=false,forceText=false){const c=s
 }
 // Messages
 async function loadThreads(preselect){$('topbar-actions').innerHTML=`<button class="btn soft" data-action="go-discover">${I('sparkleheart')} 继续发现</button>`;if(!activeProfile())return $('view').innerHTML=empty('dog','先创建 Profile','消息会按你当前扮演的身份分别展示。','创建 Profile','profile');const r=await api('/threads?profileId='+encodeURIComponent(state.activeId));state.threads=r.threads;if(preselect)state.threadId=preselect;if(!state.threads.find(x=>x.character.id===state.threadId))state.threadId=window.innerWidth>580?(state.threads[0]?.character.id||''):'';if(state.threadId)await loadThread(state.threadId,false);else renderMessages()}
+function isCharacterTyping(){
+  return Boolean(state.flushBusy||state.queue?.status==='inflight'||state.revealingBubbles||(state.chatBusy&&state.chatMode==='meeting'));
+}
 async function loadThread(cid,render=true){
   const existingInput=$('chat-input');
   if(existingInput&&state.renderedThreadId)state.draftInputs[state.renderedThreadId]=existingInput.value;
-  const r=await api('/thread?profileId='+encodeURIComponent(state.activeId)+'&characterId='+encodeURIComponent(cid));state.threadId=cid;state.messages=r.messages;state.chatMode=r.relation.mode;state.queue=r.queue||{count:0,dueAt:0,status:'idle',blocked:false};if(render)renderMessages();else renderMessages()}
+  const r=await api('/thread?profileId='+encodeURIComponent(state.activeId)+'&characterId='+encodeURIComponent(cid));
+  state.threadId=cid;
+  state.messages=r.messages||[];
+  state.meetings=r.meetings||[];
+  state.chatMode=r.relation.mode;
+  state.hotChat=Boolean(r.relation.hot_chat||r.queue?.hotChat);
+  state.activeMeetingId=r.relation.active_meeting_id||'';
+  state.meetingLocation=r.relation.meeting_location||'';
+  state.queue=r.queue||{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paceMode:state.hotChat?'hot':'daily',hotChat:state.hotChat};
+  if(render)renderMessages();else renderMessages();
+}
 function renderMessagesListItems(){
-  return `<div class="threads-header">CONNECTIONS · ${state.threads.length}</div>${state.threads.map(x=>`<button class="thread-card ${x.character.id===state.threadId?'active':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(x.character.name)}${x.queue?.count?`<span class="thread-queue-badge" title="${x.queue.count} 条待合批消息"></span>`:''}</b><p>${esc(x.last?.text||'刚刚匹配')}</p></span></button>`).join('')}`;
+  return `<div class="threads-header">CONNECTIONS · ${state.threads.length}</div>${state.threads.map(x=>{
+    const lastTxt=(x.last?.engine==='recalled'||x.last?.recalled)?'撤回了一条消息':(x.last?.text||'刚刚匹配');
+    return `<button class="thread-card ${x.character.id===state.threadId?'active':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(x.character.name)}${x.queue?.count?`<span class="thread-queue-badge" title="${x.queue.count} 条已发出消息"></span>`:''}</b><p>${esc(lastTxt)}</p></span></button>`;
+  }).join('')}`;
+}
+function formatNovelParagraphs(text){
+  const parts=String(text||'').split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  if(!parts.length)return `<p>${esc(text||'')}</p>`;
+  return parts.map(p=>`<p>${esc(p)}</p>`).join('');
+}
+function findOrBuildMeetingRecord(block,c){
+  const pName=activeProfile()?.name||'你';
+  const blockIds=new Set(block.map(m=>m.id));
+  const firstId=block[0]?.id||'';
+  const explicitMid=block.find(m=>m.meeting_id)?.meeting_id||('meet_'+firstId);
+  const matched=(state.meetings||[]).find(r=>r.id===explicitMid||(r.message_ids||[]).some(id=>blockIds.has(id)));
+  if(matched)return matched;
+  const loc=state.meetingLocation||'约定的街角咖啡馆';
+  const startedAt=block[0]?.created_at||'';
+  const timeStr=startedAt?startedAt.slice(0,16).replace('T',' '):fmtTime(startedAt);
+  const uTurns=block.filter(m=>m.sender==='user');
+  const aTurns=block.filter(m=>m.sender==='ai');
+  let summary=`和 ${pName} 在${loc}见了一面。`;
+  if(uTurns.length){
+    summary=`和 ${pName} 在${loc}见面，${pName}「${uTurns[0].text.slice(0,36)}」，与 ${c.name} 面对面互动了 ${block.length} 段。`;
+  }else if(aTurns.length){
+    summary=`和 ${pName} 在${loc}碰面：${aTurns[0].text.slice(0,46)}…`;
+  }
+  return {
+    id:explicitMid,
+    location:loc,
+    time:timeStr,
+    summary,
+    entries:block.map(m=>({id:m.id,sender:m.sender,speaker:m.sender==='user'?pName:c.name,text:m.text,created_at:m.created_at}))
+  };
 }
 function renderChatMessagesHtml(c){
-  let lastMode=null;
-  const msg=state.messages.map(m=>{
-    const mode=m.mode||state.chatMode;
-    const transition=mode!==lastMode?`<div class="timeline-divider">${mode==='meeting'?`${I('map')} 开始面对面见面`:`${I('message')} 手机聊天`}</div>`:'';
-    lastMode=mode;
-    const canDel=m.id&&m.id!=='pending'&&m.id!=='typing';
-    const delBtn=canDel?`<button type="button" class="msg-del-btn" data-action="delete-message" data-id="${esc(m.id)}" title="删除此条消息" aria-label="删除此条消息">删除</button>`:'';
-    const time=`<span>${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示回复':''}${m.engine==='error'?' · 接口错误':''}</span>${delBtn}`;
-    if(mode==='meeting'){
-      return `${transition}<div class="scene-entry ${m.sender==='user'?'scene-player':'scene-character'}"><div class="scene-speaker">${m.sender==='user'?'你的行动':esc(c.name)}</div><div class="scene-prose">${esc(m.text)}</div><div class="scene-time">${time}</div></div>`;
+  const pendingSet=new Set(state.queue?.pendingIds||[]);
+  const charTyping=isCharacterTyping();
+  const visibleMsgs=state.messages.filter(m=>!(state.hiddenReplyIds&&state.hiddenReplyIds.has(m.id)));
+  const pName=activeProfile()?.name||'你';
+  if(state.chatMode==='meeting'){
+    let sessionMsgs=[];
+    for(let i=visibleMsgs.length-1;i>=0;i--){
+      const m=visibleMsgs[i];
+      if(m.mode==='meeting'){
+        if(state.activeMeetingId&&m.meeting_id&&m.meeting_id!==state.activeMeetingId&&m.id!=='pending'&&m.id!=='typing')break;
+        sessionMsgs.unshift(m);
+      }else{
+        break;
+      }
     }
-    return `${transition}<div class="bubble-row ${m.sender==='user'?'mine':''}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble">${esc(m.text)}</div><div class="chat-time">${time}</div></div></div>`;
+    const locVal=state.meetingLocation||(sessionMsgs.length?findOrBuildMeetingRecord(sessionMsgs,c).location:'约定的街角咖啡馆');
+    const turnsHtml=sessionMsgs.filter(m=>m.id!=='typing').map((m,idx)=>{
+      const isUser=m.sender==='user';
+      return `<article class="novel-turn ${isUser?'novel-user':'novel-ai'}">
+        <header class="novel-turn-head">
+          <span class="novel-speaker">${isUser?`${esc(pName)} · 你的行动与台词`:`${esc(c.name)} · 现场描写`}</span>
+          <span class="novel-turn-meta">#${idx+1} · ${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示':''}</span>
+        </header>
+        <div class="novel-prose">${formatNovelParagraphs(m.text)}</div>
+      </article>`;
+    }).join('');
+    const emptyNovelHtml=(!turnsHtml&&!charTyping)?`<div class="novel-empty-card">
+      <div class="kicker">FACE-TO-FACE NOVEL MODE</div>
+      <h3>与 ${esc(c.name)} 的面对面互动</h3>
+      <p>当前已进入独立文字小说页面（上方气泡聊天已折叠收起）。你可以在下方写下你的动作或台词，或者让 ${esc(c.name)} 先描写见面的第一幕。</p>
+      <button type="button" class="btn soft" data-action="continue-reply">${I('book')} 让 ${esc(c.name)} 描写见面开场</button>
+    </div>`:'';
+    const typingNovelHtml=charTyping?`<div class="typing-inline novel-typing" role="status" aria-live="polite"><span class="typing-label">${esc(c.name)} 正在描写现场反应</span><span class="typing-ellipsis"><i>.</i><i>.</i><i>.</i></span></div>`:'';
+    return `<div class="meeting-novel-stage">
+      <div class="meeting-stage-bar">
+        <div class="meeting-loc-pill">
+          ${I('map')}
+          <span>见面地点</span>
+          <input id="meeting-location-input" class="meeting-loc-input" type="text" maxlength="36" value="${esc(locVal)}" placeholder="如：街角咖啡馆门口" title="可随时修改本次见面地点，结束见面后将写入见面卡片">
+        </div>
+        <span class="meeting-stage-hint">文字小说模式 · 点击右上角「结束见面」将归档为见面卡片</span>
+      </div>
+      <div class="meeting-novel-pages">
+        ${emptyNovelHtml}
+        ${turnsHtml}
+        ${typingNovelHtml}
+      </div>
+    </div>`;
+  }
+  // Chat mode: render SMS bubbles and collapse contiguous meeting sessions into clickable .meeting-card
+  const blocks=[];
+  let curMeeting=[];
+  for(const m of visibleMsgs){
+    if(m.id==='typing')continue;
+    const mode=m.mode||'chat';
+    if(mode==='meeting'){
+      const prevMid=curMeeting[0]?.meeting_id||'';
+      if(curMeeting.length&&m.meeting_id&&prevMid&&m.meeting_id!==prevMid){
+        blocks.push({type:'meeting_group',msgs:curMeeting});
+        curMeeting=[m];
+      }else{
+        curMeeting.push(m);
+      }
+    }else{
+      if(curMeeting.length){
+        blocks.push({type:'meeting_group',msgs:curMeeting});
+        curMeeting=[];
+      }
+      blocks.push({type:'chat_msg',msg:m});
+    }
+  }
+  if(curMeeting.length)blocks.push({type:'meeting_group',msgs:curMeeting});
+
+  const htmlParts=blocks.map(b=>{
+    if(b.type==='meeting_group'){
+      const rec=findOrBuildMeetingRecord(b.msgs,c);
+      return `<div class="meeting-card" data-action="open-meeting-record" data-id="${esc(rec.id)}" role="button" tabindex="0" title="点击查看本次完整见面记录">
+        <div class="meeting-card-head">
+          <span class="meeting-card-badge">${I('book')} 见面回忆卡片</span>
+          <span class="meeting-card-count">共 ${b.msgs.length} 段记录</span>
+        </div>
+        <div class="meeting-card-rows">
+          <div class="meeting-card-row"><b>见面地点</b><span class="inline-ic-text">${I('map','inline-doodle-ic')}<span>${esc(rec.location||'约定的街角咖啡馆')}</span></span></div>
+          <div class="meeting-card-row"><b>见面时间</b><span class="inline-ic-text">${I('clock','inline-doodle-ic')}<span>${esc(rec.time||fmtTime(b.msgs[0]?.created_at))}</span></span></div>
+          <div class="meeting-card-row is-summary"><b>见面梗概</b><span class="inline-ic-text">${I('book','inline-doodle-ic')}<span>${esc(rec.summary)}</span></span></div>
+        </div>
+        <div class="meeting-card-foot">
+          <span>点击卡片阅读本次见面的完整文字小说记录</span>
+          <span class="meeting-card-cta">查看见面记录 ${I('arrow')}</span>
+        </div>
+      </div>`;
+    }
+    const m=b.msg;
+    if(m.engine==='recalled'||m.recalled){
+      return `<div class="recall-notice" data-recalled-id="${esc(m.id)}">${I('refresh','recall-ic')}<span>${m.sender==='user'?'你撤回了一条消息（对方会看见你撤回了消息）':`${esc(c.name)} 撤回了一条消息`}</span></div>`;
+    }
+    const canRecall=m.sender==='user'&&m.id&&m.id!=='pending'&&m.id!=='typing';
+    const recallBtn=canRecall?`<button type="button" class="msg-del-btn" data-action="delete-message" data-id="${esc(m.id)}" title="撤回此条消息（对方会看到你撤回了一条消息，但不知道内容）" aria-label="撤回此条消息">撤回</button>`:'';
+    let receiptHtml='';
+    if(m.sender==='user'){
+      const isUnread=(m.id==='pending'||(pendingSet.has(m.id)&&!charTyping));
+      receiptHtml=isUnread
+        ?`<span class="msg-receipt is-sent" title="已发出">${I('sent','receipt-ic')}<em>已发出</em></span>`
+        :`<span class="msg-receipt is-read" title="对方已读">${I('read','receipt-ic')}<em>已读</em></span>`;
+    }
+    const time=`<span>${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示回复':''}${m.engine==='error'?' · 接口错误':''}</span>${receiptHtml}${recallBtn}`;
+    return `<div class="bubble-row ${m.sender==='user'?'mine':''}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble">${esc(m.text)}</div><div class="chat-time">${time}</div></div></div>`;
   }).join('');
-  const meeting=state.chatMode==='meeting';
-  const nextDivider=lastMode&&lastMode!==state.chatMode?`<div class="timeline-divider next-mode">${I(meeting?'map':'message')} 接下来：${meeting?'面对面见面':'手机聊天'}</div>`:'';
-  return msg+nextDivider;
+
+  const typingHtml=charTyping?`<div class="typing-inline" role="status" aria-live="polite"><span class="typing-label">对方正在输入中</span><span class="typing-ellipsis"><i>.</i><i>.</i><i>.</i></span></div>`:'';
+  return htmlParts+typingHtml;
+}
+function renderHeaderModeButton(meeting){
+  if(meeting){
+    return `<button type="button" class="btn soft end-meeting-btn" data-action="change-mode" aria-label="结束见面" title="结束本次见面并回退到聊天页面，生成见面卡片">${I('message')}<span>结束见面</span></button>`;
+  }
+  const isHot=Boolean(state.hotChat);
+  const hotTitle=isHot
+    ?'当前：热聊模式（你停手 1 分钟后对方立即已读并回复）· 点击切换回日常模式'
+    :'当前：日常模式（按角色作息判定回复时间，期间多条消息自动打包）· 点击开启热聊模式';
+  return `<button type="button" class="icon-btn hot-chat-btn ${isHot?'is-hot':''}" data-action="toggle-hot-chat" aria-pressed="${isHot?'true':'false'}" aria-label="${isHot?'热聊模式已开启':'开启热聊模式'}" title="${hotTitle}">${I('hotchat')}</button><button type="button" class="icon-btn mode-icon-btn" data-action="change-mode" aria-label="进入面对面见面" title="进入面对面见面（角色回复后将直接进入独立文字小说页面）">${I('map')}</button>`;
 }
 function renderMessages(){
   const selected=state.threads.find(x=>x.character.id===state.threadId);
@@ -162,37 +353,34 @@ function renderMessages(){
   if(existingInput&&state.renderedThreadId){
     state.draftInputs[state.renderedThreadId]=existingInput.value;
   }
+  const existingLoc=$('meeting-location-input');
+  if(existingLoc&&state.chatMode==='meeting'){
+    state.meetingLocation=existingLoc.value.trim()||state.meetingLocation;
+  }
   const isBusy=state.chatBusy||state.flushBusy||state.queue?.status==='inflight';
+  const charTyping=isCharacterTyping();
   // Surgical update when staying on the same thread so typing in #chat-input is never interrupted
   const layoutEl=document.querySelector('#view .messages-layout');
   const chatBodyEl=$('chat-body');
   if(selected&&layoutEl&&chatBodyEl&&existingInput&&state.renderedThreadId===state.threadId){
     const threadsEl=layoutEl.querySelector('.threads');
     if(threadsEl)threadsEl.innerHTML=renderMessagesListItems();
-    const chatViewEl=layoutEl.querySelector('.chat-view');
-    if(chatViewEl)chatViewEl.classList.toggle('meeting-mode',state.chatMode==='meeting');
     const meeting=state.chatMode==='meeting';
-    const modeBtn=layoutEl.querySelector('[data-action="change-mode"]');
-    if(modeBtn){
-      modeBtn.className=`mode-switch ${meeting?'is-meeting':''}`;
-      modeBtn.setAttribute('aria-label',meeting?'切换回手机聊天':'切换到面对面见面');
-      modeBtn.innerHTML=`${I(meeting?'message':'map')}<span>${meeting?'返回聊天':'进入见面'}</span>`;
+    const chatViewEl=layoutEl.querySelector('.chat-view');
+    if(chatViewEl)chatViewEl.classList.toggle('meeting-mode',meeting);
+    const subEl=layoutEl.querySelector('.chat-heading small');
+    if(subEl){
+      subEl.className=charTyping?'typing-header-hint':'';
+      subEl.textContent=charTyping?'对方正在输入中…':selected.character.version;
     }
-    const noticeEl=layoutEl.querySelector('.current-mode-notice');
-    if(noticeEl){
-      noticeEl.className=`current-mode-notice ${meeting?'mode-meeting':''}`;
-      noticeEl.innerHTML=`${I(meeting?'book':'message')}<span>${meeting?'下一条角色回复将使用面对面小说预设':'当前使用手机消息气泡预设'}</span>`;
-    }
+    const modeSlot=layoutEl.querySelector('#chat-mode-btn-slot');
+    if(modeSlot)modeSlot.innerHTML=renderHeaderModeButton(meeting);
+    chatBodyEl.className=`chat-body ${meeting?'meeting-novel-body':''}`;
     chatBodyEl.innerHTML=renderChatMessagesHtml(selected.character);
     chatBodyEl.scrollTop=chatBodyEl.scrollHeight;
-    existingInput.placeholder=meeting?'写下你在见面时的动作或台词……':'输入消息……';
+    existingInput.placeholder=meeting?'写下你在见面时的动作、神态或台词……':'输入消息……';
     const sendBtn=layoutEl.querySelector('#chat-form .send');
     if(sendBtn)sendBtn.disabled=isBusy;
-    const contBtn=layoutEl.querySelector('[data-action="continue-reply"]');
-    if(contBtn){
-      contBtn.disabled=isBusy;
-      contBtn.innerHTML=`${I('spark')} 让角色继续回复${meeting?'（面对面）':''}`;
-    }
     updateQueueCountdown();
     return;
   }
@@ -204,7 +392,7 @@ function renderMessages(){
   if(input){
     const draft=state.draftInputs[state.threadId]||'';
     if(draft)input.value=draft;
-    input.addEventListener('input',e=>{if(state.threadId)state.draftInputs[state.threadId]=e.target.value});
+    input.addEventListener('input',e=>{if(state.threadId){state.draftInputs[state.threadId]=e.target.value;state.lastSendAt=Date.now()}});
     input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('chat-form').requestSubmit()}});
     $('chat-form').addEventListener('submit',sendMessage);
     if(wasFocused){
@@ -217,47 +405,133 @@ function renderChat(thread){
   const c=thread.character;
   const meeting=state.chatMode==='meeting';
   const isBusy=state.chatBusy||state.flushBusy||state.queue?.status==='inflight';
-  const memButton=`<button type="button" class="mode-switch memory-btn" data-action="open-memories" title="查看与管理该角色的四层记忆与按需检索">${I('book')}<span>记忆档案</span></button>`;
-  const modeButton=`<button type="button" class="mode-switch ${meeting?'is-meeting':''}" data-action="change-mode" aria-label="${meeting?'切换回手机聊天':'切换到面对面见面'}" title="${meeting?'后续回复使用手机消息预设':'后续回复使用面对面小说预设'}">${I(meeting?'message':'map')}<span>${meeting?'返回聊天':'进入见面'}</span></button>`;
-  return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" title="返回">${I('back')}</button>${avatar({...c,avatar:c.portrait})}<span><b>${esc(c.name)}</b><small>${esc(c.version)}</small></span></div><div class="chat-header-actions">${memButton}${modeButton}<button class="icon-btn" data-action="unmatch" title="解除匹配">${I('more')}</button></div></div><div class="current-mode-notice ${meeting?'mode-meeting':''}">${I(meeting?'book':'message')}<span>${meeting?'下一条角色回复将使用面对面小说预设 · 仅按需检索该角色记忆':'当前使用手机消息气泡预设 · 仅按需检索该角色记忆'}</span></div><div id="chat-body" class="chat-body">${renderChatMessagesHtml(c)}</div><form id="chat-form" class="chat-compose"><textarea id="chat-input" rows="1" placeholder="${meeting?'写下你在见面时的动作或台词……':'输入消息……'}" maxlength="4000" required></textarea><button class="send" type="submit" title="发送并让角色回复" ${isBusy?'disabled':''}>${I('send')}</button></form><div class="chat-queue-status" id="chat-queue-status" aria-live="polite"></div><div class="chat-continue"><button type="button" class="continue-reply" data-action="continue-reply" ${isBusy?'disabled':''}>${I('spark')} 让角色继续回复${meeting?'（面对面）':''}</button></div>`;
+  const charTyping=isCharacterTyping();
+  return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表" title="返回列表">${I('back')}</button><button type="button" class="chat-avatar-trigger" data-action="open-char-hub" aria-label="打开角色互动弹窗" title="点击头像打开角色功能菜单（含记忆档案）">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b title="${esc(c.name)}">${esc(c.name)}</b><small class="${charTyping?'typing-header-hint':''}" title="${esc(c.version)}">${charTyping?'对方正在输入中…':esc(c.version)}</small></div></button></div><div class="chat-header-actions"><span id="chat-mode-btn-slot">${renderHeaderModeButton(meeting)}</span><button type="button" class="icon-btn danger-icon" data-action="unmatch" aria-label="解除匹配" title="解除匹配">${I('unmatch')}</button></div></div><div id="chat-body" class="chat-body ${meeting?'meeting-novel-body':''}">${renderChatMessagesHtml(c)}</div><form id="chat-form" class="chat-compose"><textarea id="chat-input" rows="1" placeholder="${meeting?'写下你在见面时的动作、神态或台词……':'输入消息……'}" maxlength="4000" required></textarea><button class="send" type="submit" title="发送消息" ${isBusy?'disabled':''}>${I('send')}</button></form><div class="chat-queue-status" id="chat-queue-status" aria-live="polite"></div>`;
+}
+function openCharacterHubModal(){
+  const thread=state.threads.find(x=>x.character.id===state.threadId);
+  if(!thread)return;
+  const c=thread.character;
+  const html=`<div class="kicker">CHARACTER POCKET · 角色专属空间</div>
+    <div class="char-hub-header">
+      ${avatar({...c,avatar:c.portrait})}
+      <div class="char-hub-title">
+        <h2>${esc(c.name)}</h2>
+        <p class="caption">${esc(c.source)} · ${esc(c.version)}</p>
+      </div>
+    </div>
+    <div class="char-hub-grid">
+      <button type="button" class="char-hub-item" data-action="open-memories" title="查看与管理该角色的记忆档案">
+        <span class="char-hub-ic">${I('book')}</span>
+        <b>记忆档案</b>
+        <small>查看见面回忆与按日归档</small>
+      </button>
+      <button type="button" class="char-hub-item is-placeholder" disabled title="即将推出">
+        <span class="char-hub-ic">${I('spark')}</span>
+        <b>待定功能</b>
+        <small>预留图标槽位</small>
+      </button>
+      <button type="button" class="char-hub-item is-placeholder" disabled title="即将推出">
+        <span class="char-hub-ic">${I('heart')}</span>
+        <b>待定功能</b>
+        <small>预留图标槽位</small>
+      </button>
+      <button type="button" class="char-hub-item is-placeholder" disabled title="即将推出">
+        <span class="char-hub-ic">${I('compass')}</span>
+        <b>待定功能</b>
+        <small>预留图标槽位</small>
+      </button>
+    </div>`;
+  modal(html,`<button class="btn soft" data-action="close-modal">关闭</button>`);
 }
 const MEM_SOURCE_LABEL={
-  confirmed_fact:'系统确认事实',
-  milestone:'关系里程碑',
-  dialogue:'亲历对话',
-  'daily-summary':'日常归纳',
-  direct_experience:'亲历互动',
-  daily_summary:'日常归纳',
-  spoken_claim:'对话陈述',
+  meeting_summary:'见面回忆',
+  confirmed_fact:'重要记忆/设定',
+  dialogue:'重要约定',
+  'daily-summary':'每日聊天归档',
+  daily_summary:'每日聊天归档',
   correction:'已澄清纠正',
+  milestone:'关系节点',
+  direct_experience:'亲历互动',
+  spoken_claim:'重要陈述',
   inference:'推断印象'
 };
-async function openMemoriesModal(query=''){
+function openMeetingRecordModal(meetingId){
+  const thread=state.threads.find(x=>x.character.id===state.threadId);
+  const c=thread?.character||{name:'角色'};
+  let rec=(state.meetings||[]).find(x=>x.id===meetingId)||
+    (state.lastMemoriesData?.meetings||[]).find(x=>x.id===meetingId)||
+    (state.lastMemoriesData?.memories||[]).find(x=>x.meeting_id===meetingId)?.meeting_data||null;
+  if(!rec){
+    const mMsgs=state.messages.filter(m=>m.mode==='meeting'&&(m.meeting_id===meetingId||('meet_'+m.id)===meetingId));
+    if(mMsgs.length)rec=findOrBuildMeetingRecord(mMsgs,c);
+    else{
+      const allMeet=state.messages.filter(m=>m.mode==='meeting');
+      if(allMeet.length)rec=findOrBuildMeetingRecord(allMeet,c);
+    }
+  }
+  if(!rec){toast('未找到该次见面的详细记录');return}
+  const entries=rec.entries||[];
+  const html=`<div class="kicker">MEETING RECORD · 线下见面完整记录</div>
+    <h2>与 ${esc(c.name)} 的见面记录</h2>
+    <div class="meeting-modal-meta">
+      <div class="inline-ic-text">${I('map','inline-doodle-ic')}<b>见面地点：</b><span>${esc(rec.location||'约定的街角咖啡馆')}</span></div>
+      <div class="inline-ic-text">${I('clock','inline-doodle-ic')}<b>见面时间：</b><span>${esc(rec.time||'近期')}</span></div>
+      <div class="inline-ic-text">${I('book','inline-doodle-ic')}<b>见面梗概：</b><span>${esc(rec.summary||'')}</span></div>
+    </div>
+    <div class="meeting-modal-transcript">
+      ${entries.length?entries.map((e,idx)=>`<article class="novel-turn ${e.sender==='user'?'novel-user':'novel-ai'}">
+        <header class="novel-turn-head">
+          <span class="novel-speaker">${esc(e.speaker||(e.sender==='user'?'你':c.name))}</span>
+          <span class="novel-turn-meta">#${idx+1} · ${fmtTime(e.created_at)}</span>
+        </header>
+        <div class="novel-prose">${formatNovelParagraphs(e.text)}</div>
+      </article>`).join(''):'<p class="caption">暂无详细段落记录。</p>'}
+    </div>`;
+  modal(html,`<button class="btn soft" data-action="close-modal">关闭见面记录</button>`);
+  const mEl=document.querySelector('#modal-root .modal');
+  if(mEl)mEl.classList.add('modal-wide');
+}
+function openDailyMessagesModal(memId){
+  const mem=(state.lastMemoriesData?.memories||[]).find(x=>x.id===memId);
+  if(!mem){toast('未找到当日对话详情');return}
+  const msgs=mem.day_messages||[];
+  const html=`<div class="kicker">DAILY ARCHIVE · 每日聊天记录详情</div>
+    <h2>${esc(mem.summary.split(' ')[0]||'当日')} 聊天明细</h2>
+    <p class="caption">${esc(mem.summary)}</p>
+    <div class="daily-modal-messages">
+      ${msgs.length?msgs.map(m=>`<div class="daily-msg-row ${m.sender==='user'?'is-user':'is-ai'}">
+        <div class="daily-msg-meta"><b>${esc(m.speaker)}</b><span>${fmtTime(m.created_at)}</span></div>
+        <div class="daily-msg-text">${esc(m.text)}</div>
+      </div>`).join(''):'<p class="caption">暂无当日明细消息。</p>'}
+    </div>`;
+  modal(html,`<button class="btn soft" data-action="open-memories">返回记忆档案</button><button class="btn primary" data-action="close-modal">关闭</button>`);
+  const mEl=document.querySelector('#modal-root .modal');
+  if(mEl)mEl.classList.add('modal-wide');
+}
+async function openMemoriesModal(query='',category=state.memoryCategory||'all'){
   const thread=state.threads.find(x=>x.character.id===state.threadId);
   if(!thread||!state.activeId)return;
+  state.memoryCategory=category;
   const c=thread.character;
   try{
     const qs=`?profileId=${encodeURIComponent(state.activeId)}&characterId=${encodeURIComponent(c.id)}${query?`&query=${encodeURIComponent(query)}`:''}`;
     const data=await api('/memories'+qs);
+    state.lastMemoriesData=data;
+    if(Array.isArray(data.meetings)&&data.meetings.length)state.meetings=data.meetings;
     const recalled=data.recalledPreview||[];
-    const list=data.memories||[];
-    const html=`<div class="kicker">FOUR-LAYER MEMORY · 独立角色档案</div>
+    const allList=data.memories||[];
+    const meetingList=allList.filter(m=>m.source_type==='meeting_summary');
+    const importantList=allList.filter(m=>['confirmed_fact','dialogue','correction'].includes(m.source_type));
+    const dailyList=allList.filter(m=>m.source_type==='daily-summary'||m.source_type==='daily_summary');
+    const filtered=category==='meeting'?meetingList:(category==='important'?importantList:(category==='daily'?dailyList:allList));
+    const html=`<div class="kicker">ORGANIZED MEMORY ARCHIVE · 角色专属记忆归档</div>
       <h2>${esc(c.name)} 的记忆档案</h2>
-      <p class="caption">所有记忆严格绑定在角色 ID <code>${esc(c.id)}</code> 与当前 Profile 下，绝不与其他身份串联。每次调用 API 仅注入四层精简结构与 Top-4 检索结果，大幅节省 Token。</p>
+      <p class="caption">已自动过滤琐碎操作与逐句流水账：仅归档<b>「线下见面回忆卡片」</b>、<b>「重要约定与设定」</b>与<b>「每日聊天按日汇总」</b>。点击卡片即可查看详情。</p>
       <div class="memory-layers-grid">
-        <div class="memory-layer-box"><b>第一层 · 身份记忆</b><span>${esc(c.source)} · ${esc(c.version)}（固定设定，不可覆盖）</span></div>
+        <div class="memory-layer-box"><b>第一层 · 身份设定</b><span>${esc(c.source)} · ${esc(c.version)}</span></div>
         <div class="memory-layer-box"><b>第二层 · 关系基线</b><span>${esc(data.baseline||'暂无关系事件')}</span></div>
-        <div class="memory-layer-box"><b>第四层 · 今日活跃窗口</b><span>仅携带今日最近 ${data.workingWindowCount} 条对话（历史共 ${data.totalMessagesCount} 条）</span></div>
-      </div>
-      <div class="memory-section">
-        <div class="row-between"><label class="field-label">第三层 · 按需检索预览（最多召回 4 条，排除已在当前窗口内的消息）</label></div>
-        <div class="source-composer" style="margin-top:6px">
-          <input id="memory-search-input" type="text" placeholder="输入关键词或话题测试角色会召回哪些过往记忆…" value="${esc(query)}">
-          <button type="button" class="btn soft" data-action="search-memories">${I('search')} 检索测试</button>
-        </div>
-        <div class="memory-recalled-list">
-          ${recalled.length?recalled.map(m=>`<div class="memory-recalled-item">${esc(m.formatted)}</div>`).join(''):'<div class="caption" style="padding:6px 0">当前上下文无需额外召回过往情节（或相关内容已在今日活跃对话窗口内）。</div>'}
-        </div>
+        <div class="memory-layer-box"><b>第四层 · 今日活跃窗口</b><span>携带最近 ${data.workingWindowCount} 条对话（共 ${data.totalMessagesCount} 条）</span></div>
       </div>
       <div class="memory-section">
         <label class="field-label">手动写入重要共同记忆 / 约定</label>
@@ -267,25 +541,44 @@ async function openMemoriesModal(query=''){
         </div>
       </div>
       <div class="memory-section">
-        <div class="row-between"><label class="field-label">该角色 ID 下存储的全部情节记忆（${list.length} 条）</label><span class="caption">你也可以在聊天中直接说「你记错了，我们没有…」自动纠错</span></div>
-        <div class="memory-archive-list">
-          ${list.length?list.map(m=>`<div class="memory-item ${m.disputed?'is-disputed':''}">
-            <div class="memory-item-top">
-              <span class="memory-badge ${esc(m.source_type)}">${esc(MEM_SOURCE_LABEL[m.source_type]||m.source_type)}</span>
-              ${m.unresolved?'<span class="memory-badge unresolved">未完待续</span>':''}
-              ${m.disputed?'<span class="memory-badge disputed">存疑/已纠正</span>':''}
-              <span class="memory-date">${esc((m.created_at||'').slice(0,16).replace('T',' '))}</span>
-            </div>
-            <div class="memory-summary">${esc(m.summary)}</div>
-            <div class="memory-item-actions">
-              ${!m.disputed?`<button type="button" class="btn ghost tiny-btn" data-action="prompt-correct-memory" data-id="${esc(m.id)}">澄清/纠正</button>`:''}
-              <button type="button" class="btn ghost tiny-btn danger-text" data-action="delete-memory" data-id="${esc(m.id)}">删除</button>
-            </div>
-            <div class="memory-correct-box" id="mem-correct-${esc(m.id)}" style="display:none">
-              <input type="text" id="mem-correct-input-${esc(m.id)}" placeholder="输入真实情况，原记忆将标记为存疑…">
-              <button type="button" class="btn soft tiny-btn" data-action="submit-correct-memory" data-id="${esc(m.id)}">确认纠正</button>
-            </div>
-          </div>`).join(''):'<div class="caption" style="padding:12px 0">暂无沉淀的情节记忆。随着对话深入，重要互动与每日归纳会自动保存在此角色档案下。</div>'}
+        <div class="row-between" style="flex-wrap:wrap;gap:8px">
+          <div class="memory-cat-tabs">
+            <button type="button" class="chip ${category==='all'?'active':''}" data-action="filter-memories" data-cat="all">全部归档 (${allList.length})</button>
+            <button type="button" class="chip ${category==='meeting'?'active':''}" data-action="filter-memories" data-cat="meeting">${I('map')} 见面回忆 (${meetingList.length})</button>
+            <button type="button" class="chip ${category==='important'?'active':''}" data-action="filter-memories" data-cat="important">${I('spark')} 约定与重点 (${importantList.length})</button>
+            <button type="button" class="chip ${category==='daily'?'active':''}" data-action="filter-memories" data-cat="daily">${I('clock')} 按日聊天汇总 (${dailyList.length})</button>
+          </div>
+        </div>
+        <div class="source-composer" style="margin-top:10px">
+          <input id="memory-search-input" type="text" placeholder="输入关键词检索过往见面或约定…" value="${esc(query)}">
+          <button type="button" class="btn soft" data-action="search-memories">${I('search')} 检索</button>
+        </div>
+        ${query&&recalled.length?`<div class="memory-recalled-list" style="margin-top:8px">${recalled.map(m=>`<div class="memory-recalled-item">${esc(m.formatted)}</div>`).join('')}</div>`:''}
+        <div class="memory-archive-list" style="margin-top:10px">
+          ${filtered.length?filtered.map(m=>{
+            const isMeeting=m.source_type==='meeting_summary';
+            const isDaily=m.source_type==='daily-summary'||m.source_type==='daily_summary';
+            const meetId=m.meeting_id||String(m.source_key||'').replace('meeting:','');
+            return `<div class="memory-item ${m.disputed?'is-disputed':''} ${isMeeting?'is-meeting-memory':''}">
+              <div class="memory-item-top">
+                <span class="memory-badge ${esc(m.source_type)}">${esc(MEM_SOURCE_LABEL[m.source_type]||m.source_type)}</span>
+                ${m.unresolved?'<span class="memory-badge unresolved">待兑现约定</span>':''}
+                ${m.disputed?'<span class="memory-badge disputed">存疑/已纠正</span>':''}
+                <span class="memory-date">${esc((m.created_at||'').slice(0,16).replace('T',' '))}</span>
+              </div>
+              <div class="memory-summary">${esc(m.summary)}</div>
+              <div class="memory-item-actions">
+                ${isMeeting?`<button type="button" class="btn soft tiny-btn" data-action="open-meeting-record" data-id="${esc(meetId)}">${I('book')} 查看见面详情记录</button>`:''}
+                ${isDaily&&m.day_messages?.length?`<button type="button" class="btn soft tiny-btn" data-action="open-daily-messages" data-id="${esc(m.id)}">${I('message')} 查看当日对话 (${m.day_messages.length}条)</button>`:''}
+                ${!m.disputed?`<button type="button" class="btn ghost tiny-btn" data-action="prompt-correct-memory" data-id="${esc(m.id)}">澄清/纠正</button>`:''}
+                <button type="button" class="btn ghost tiny-btn danger-text" data-action="delete-memory" data-id="${esc(m.id)}">删除</button>
+              </div>
+              <div class="memory-correct-box" id="mem-correct-${esc(m.id)}" style="display:none">
+                <input type="text" id="mem-correct-input-${esc(m.id)}" placeholder="输入真实情况，原记忆将标记为存疑…">
+                <button type="button" class="btn soft tiny-btn" data-action="submit-correct-memory" data-id="${esc(m.id)}">确认纠正</button>
+              </div>
+            </div>`;
+          }).join(''):'<div class="caption" style="padding:14px 0">当前分类下暂无归档记录。完成一次线下见面、聊到重要约定或跨日交流后会自动整理归档。</div>'}
         </div>
       </div>`;
     modal(html,`<button class="btn soft" data-action="close-modal">关闭档案</button>`);
@@ -294,21 +587,64 @@ async function openMemoriesModal(query=''){
   }catch(e){toast('读取记忆档案失败：'+e.message)}
 }
 function updateQueueCountdown(){const el=$('chat-queue-status');if(!el)return;
+  if(isCharacterTyping()){el.textContent='对方正在输入中…';return}
   if(state.chatMode!=='chat'){el.textContent='';return}
   const q=state.queue||{},n=q.count||0;
-  if(q.status==='inflight'){el.textContent='正在整合已发送的消息并等待回复…';return}
-  if(!n){el.textContent='';return}
-  if(q.blocked){el.textContent=`${n} 条短信已保存，模型请求失败。点击「让角色继续回复」重试。`;return}
-  const left=Math.max(0,Math.ceil(((q.dueAt||0)-Date.now())/1000));
-  el.textContent=`${n} 条短信已保存 · 安静 ${left} 秒后合并发送（新消息会重新计时）`;
+  if(!n){
+    el.textContent=state.hotChat?'热聊模式已开启 · 发消息停手 1 分钟后对方将立即阅读并回复':'';
+    return;
+  }
+  if(q.blocked){
+    el.textContent=state.settings.mode==='normal'
+      ?`${n} 条消息已发出 · 当前尚未连接 API（可在「终端」配置 API）`
+      :`${n} 条消息已保存 · 模型连接异常，请检查终端配置`;
+    return;
+  }
+  if(state.hotChat||q.paceMode==='hot'){
+    const targetDue=Math.max(Number(q.dueAt||0),(state.lastSendAt||0)+60000);
+    const remSec=Math.max(1,Math.ceil((targetDue-Date.now())/1000));
+    el.textContent=`热聊模式 · 已发出 ${n} 条消息，停手 ${remSec} 秒后对方将已读并回复`;
+  }else{
+    const targetLbl=q.targetTimeLabel||(q.dueAt?fmtTime(new Date(q.dueAt).toISOString()):'稍后');
+    el.textContent=`日常模式 · 已打包 ${n} 条消息（每条附带独立发送时间），对方预计 ${targetLbl} 左右看手机并统一回复`;
+  }
 }
-async function flushChat(force=false){if(state.flushBusy||state.chatBusy||!state.threadId||state.chatMode!=='chat')return;
+async function revealMultipleBubbles(replies,profileId,id){
+  if(!Array.isArray(replies)||replies.length<=1){
+    state.hiddenReplyIds.clear();
+    state.revealingBubbles=false;
+    if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);
+    return;
+  }
+  state.hiddenReplyIds=new Set(replies.slice(1).map(x=>x.id));
+  state.revealingBubbles=true;
+  if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);
+  for(const nextMsg of replies.slice(1)){
+    const delayMs=Math.min(1400,Math.max(550,(nextMsg.text||'').length*38));
+    await new Promise(res=>setTimeout(res,delayMs));
+    state.hiddenReplyIds.delete(nextMsg.id);
+    if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')renderMessages();
+  }
+  state.revealingBubbles=false;
+  state.hiddenReplyIds.clear();
+  if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')renderMessages();
+}
+async function flushChat(force=false){if(state.flushBusy||state.chatBusy||state.revealingBubbles||!state.threadId||state.chatMode!=='chat')return;
   state.flushBusy=true;const id=state.threadId,profileId=state.activeId;
-  try{const r=await api('/chat-flush',{profileId,characterId:id,force});if(r.warning)toast('角色回复失败：'+r.warning);if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id)}
-  catch(e){toast('合批发送失败：'+e.message)}finally{state.flushBusy=false}
+  if(state.tab==='messages'&&state.threadId===id)renderMessages();
+  try{
+    const r=await api('/chat-flush',{profileId,characterId:id,force});
+    if(r.warning)toast(r.warning);
+    state.flushBusy=false;
+    if(r.replies&&r.replies.length>1){
+      await revealMultipleBubbles(r.replies,profileId,id);
+    }else if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages'){
+      await loadThreads(id);
+    }
+  }catch(e){state.flushBusy=false;toast('发送失败：'+e.message);if(state.tab==='messages'&&state.threadId===id)renderMessages()}
 }
 async function flushBackgroundQueues(){
-  if(state.flushBusy||state.chatBusy||!state.activeId)return;
+  if(state.flushBusy||state.chatBusy||state.revealingBubbles||!state.activeId)return;
   state.flushBusy=true;const profileId=state.activeId;
   try{
     const r=await api('/chat-flush-due',{profileId});
@@ -322,26 +658,87 @@ async function flushBackgroundQueues(){
     }
   }catch{}finally{state.flushBusy=false}
 }
+async function checkProactiveMessages(trigger='startup',targetCharId=''){
+  if(state.proactiveBusy||state.flushBusy||state.chatBusy||state.revealingBubbles||!state.activeId)return;
+  if(state.settings.mode==='normal')return;
+  if(trigger!=='manual'&&state.settings.proactive_mode==='off')return;
+  state.proactiveBusy=true;
+  const profileId=state.activeId;
+  const showTypingOnCurrent=Boolean(targetCharId&&state.tab==='messages'&&state.threadId===targetCharId);
+  if(showTypingOnCurrent){
+    state.flushBusy=true;
+    renderMessages();
+  }
+  try{
+    const r=await api('/proactive-check',{profileId,trigger,characterId:targetCharId});
+    const list=r?.delivered||[];
+    if(showTypingOnCurrent)state.flushBusy=false;
+    for(const item of list){
+      toast(`收到来自 ${item.characterName} 的主动消息`);
+      if(state.activeId===profileId&&state.tab==='messages'){
+        if(state.threadId===item.characterId&&item.replies?.length>1){
+          await revealMultipleBubbles(item.replies,profileId,item.characterId);
+        }else{
+          await loadThreads(state.threadId||item.characterId);
+        }
+      }
+    }
+    if(!list.length&&trigger==='manual'){
+      toast('当前还没有已匹配的角色，先去「发现」右滑匹配一位角色吧');
+    }
+  }catch(e){
+    if(showTypingOnCurrent)state.flushBusy=false;
+    if(trigger==='manual')toast('主动消息触发失败：'+e.message);
+  }finally{
+    state.proactiveBusy=false;
+    if(showTypingOnCurrent&&state.tab==='messages')renderMessages();
+  }
+}
 async function tickChatQueue(){
   if(!state.activeId)return;
   if(state.tab==='messages'&&state.threadId&&state.chatMode==='chat'){
     updateQueueCountdown();
     const q=state.queue;
-    if(q?.count>0&&!q.blocked&&q.status!=='inflight'&&q.dueAt<=Date.now()&&!state.chatBusy&&!state.flushBusy){
-      await flushChat(false);
-      return;
+    if(q?.count>0&&!q.blocked&&q.status!=='inflight'&&!state.chatBusy&&!state.flushBusy&&!state.revealingBubbles){
+      const now=Date.now();
+      const isHot=Boolean(state.hotChat||q.paceMode==='hot');
+      const effectiveDue=isHot?Math.max(Number(q.dueAt||0),(state.lastSendAt||0)+60000):Number(q.dueAt||0);
+      if(effectiveDue>0&&now>=effectiveDue){
+        await flushChat(true);
+        return;
+      }
     }
   }
   state.bgTickCount=(state.bgTickCount+1)%3;
-  if(state.bgTickCount===0&&!state.chatBusy&&!state.flushBusy){
+  if(state.bgTickCount===0&&!state.chatBusy&&!state.flushBusy&&!state.revealingBubbles){
     await flushBackgroundQueues();
+  }
+  state.idleTickCount=(state.idleTickCount+1)%15;
+  if(state.idleTickCount===0&&state.settings.proactive_mode!=='off'&&state.settings.mode!=='normal'){
+    const idleMs=Date.now()-(state.lastUserActiveAt||Date.now());
+    if(idleMs>=180000&&!state.chatBusy&&!state.flushBusy&&!state.revealingBubbles&&!state.proactiveBusy){
+      state.lastUserActiveAt=Date.now();
+      await checkProactiveMessages('idle',state.tab==='messages'?state.threadId:'');
+    }
   }
 }
 setInterval(tickChatQueue,1000);
+async function toggleHotChat(){
+  if(!state.threadId||!state.activeId||state.chatBusy)return;
+  const nextHot=!state.hotChat;
+  try{
+    const r=await api('/hot-chat',{profileId:state.activeId,characterId:state.threadId,hotChat:nextHot});
+    state.hotChat=Boolean(r.hotChat);
+    if(r.queue)state.queue=r.queue;
+    if(state.hotChat)state.lastSendAt=Date.now();
+    renderMessages();
+    toast(state.hotChat?'已开启热聊模式：停手 1 分钟后角色将立即阅读并回复':'已切回日常模式：角色将按当下作息时间看手机并把期间消息打包回复');
+  }catch(e){toast(e.message)}
+}
 async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
   const input=$('chat-input'),txt=input?.value.trim();if(!txt)return;
   state.chatBusy=true;const id=state.threadId,mode=state.chatMode,profileId=state.activeId;
-  input.value='';state.draftInputs[id]='';
+  input.value='';state.draftInputs[id]='';state.lastSendAt=Date.now();
   const now=new Date().toISOString();state.messages.push({id:'pending',sender:'user',mode,text:txt,created_at:now,engine:'human'});
   if(mode==='meeting')state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:now,engine:'human'});
   renderMessages();
@@ -352,7 +749,7 @@ async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
 async function continueReply(){if(state.chatBusy||state.flushBusy||state.queue?.status==='inflight'||!state.threadId)return;
   if(state.chatMode==='chat'&&state.queue?.count){return flushChat(true)}
   state.chatBusy=true;const id=state.threadId,profileId=state.activeId,mode=state.chatMode;state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:new Date().toISOString(),engine:'human'});renderMessages();
-  try{const r=await api('/reply',{profileId,characterId:id});if(r.warning)toast(r.warning);if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}catch(e){toast(e.message);if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}finally{state.chatBusy=false;if(state.tab==='messages'&&state.activeId===profileId&&state.threadId===id)renderMessages()}
+  try{const r=await api('/reply',{profileId,characterId:id});if(r.warning)toast(r.warning);if(r.replies&&r.replies.length>1){state.chatBusy=false;await revealMultipleBubbles(r.replies,profileId,id);return}if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}catch(e){toast(e.message);if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}finally{state.chatBusy=false;if(state.tab==='messages'&&state.activeId===profileId&&state.threadId===id)renderMessages()}
 }
 async function deleteMessage(mid){
   if(!mid||!state.threadId||state.chatBusy)return;
@@ -360,23 +757,61 @@ async function deleteMessage(mid){
   try{
     await api('/message-delete',{profileId,characterId:id,messageId:mid});
     if(state.activeId===profileId&&state.threadId===id)await loadThreads(id);
-    toast('消息已删除');
+    toast('已撤回一条消息（对方会看到你撤回了消息）');
   }catch(e){toast(e.message)}
 }
-async function changeMode(){if(!state.threadId||state.chatBusy)return;const next=state.chatMode==='chat'?'meeting':'chat';
-  try{await api('/mode',{profileId:state.activeId,characterId:state.threadId,mode:next});await loadThread(state.threadId);toast(next==='meeting'?'已切换到见面模式：未发送的短信回复已取消，聊天历史保留。现在可直接让角色用小说模式接话。':'已切回手机聊天：后续短信使用 60 秒安静合批。')}catch(e){toast(e.message)}
+async function changeMode(){
+  if(!state.threadId||state.chatBusy||state.flushBusy)return;
+  const id=state.threadId,profileId=state.activeId;
+  const next=state.chatMode==='chat'?'meeting':'chat';
+  if(next==='meeting'){
+    const input=$('chat-input');
+    const draftTxt=input?.value?.trim()||'';
+    try{
+      if(draftTxt){
+        input.value='';
+        state.draftInputs[id]='';
+        state.messages.push({id:'pending',sender:'user',mode:'chat',text:draftTxt,created_at:new Date().toISOString(),engine:'human'});
+        renderMessages();
+        await api('/message',{profileId,characterId:id,text:draftTxt});
+      }
+      state.flushBusy=true;
+      renderMessages();
+      const r=await api('/mode',{profileId,characterId:id,mode:'meeting',triggerOpening:true});
+      if(r.warning)toast(r.warning);
+      state.flushBusy=false;
+      await loadThreads(id);
+      toast('已进入面对面文字小说页面');
+    }catch(e){
+      state.flushBusy=false;
+      renderMessages();
+      toast(e.message);
+    }
+    return;
+  }
+  const loc=$('meeting-location-input')?.value?.trim()||state.meetingLocation||'';
+  state.chatBusy=true;
+  try{
+    await api('/mode',{profileId,characterId:id,mode:'chat',finalizeMeeting:true,location:loc});
+    state.chatBusy=false;
+    await loadThreads(id);
+    toast('已结束见面：聊天页已生成本次见面卡片，点击卡片可查看完整记录');
+  }catch(e){
+    state.chatBusy=false;
+    toast(e.message);
+  }
 }
 function confirmUnmatch(){const t=state.threads.find(x=>x.character.id===state.threadId);if(!t)return;modal(`<h2>要解除与 ${esc(t.character.name)} 的匹配吗？</h2><p>这会把对方从消息列表移除，但不会删除你们的聊天记录或角色的记忆。以后再次匹配时还会认得你。</p>`,`<button class="btn soft" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-unmatch">解除匹配</button>`)}
 // Terminal
 async function loadTerminal(){const [a,b]=await Promise.all([api('/settings'),api('/presets')]);state.settings=a;state.presets=b.entries;renderChrome();renderTerminal()}
-function renderTerminal(){$('topbar-actions').innerHTML=`<span class="status-pill ${state.settings.mode==='live'?'live':''}">${state.settings.mode==='live'?'LIVE API':'DEMO MODE'}</span>`;$('view').innerHTML=`<div class="terminal-screen"><div class="terminal-tabs"><button class="terminal-tab ${state.terminalTab==='api'?'active':''}" data-action="term-tab" data-tab="api">${I('link')} 连接与模型</button><button class="terminal-tab ${state.terminalTab==='presets'?'active':''}" data-action="term-tab" data-tab="presets">${I('book')} 文字预设</button></div>${state.terminalTab==='api'?renderApiSettings():renderPresets()}${globalThis.ParallelOffline&&state.terminalTab==='api'?renderPortableBackup():''}</div>`;if(state.terminalTab==='api'){const form=$('api-settings-form');form.addEventListener('submit',saveSettings);$('api-temperature').addEventListener('input',e=>$('temp-output').textContent=e.target.value);$('api-top-p').addEventListener('input',e=>$('topp-output').textContent=e.target.value)} }
+function renderTerminal(){$('topbar-actions').innerHTML=`<span class="status-pill ${state.settings.mode==='live'?'live':''}">${state.settings.mode==='live'?'LIVE API':(state.settings.mode==='normal'?'NORMAL · 未连接 API':'DEMO MODE')}</span>`;$('view').innerHTML=`<div class="terminal-screen"><div class="terminal-tabs"><button class="terminal-tab ${state.terminalTab==='api'?'active':''}" data-action="term-tab" data-tab="api">${I('link')} 连接与模型</button><button class="terminal-tab ${state.terminalTab==='presets'?'active':''}" data-action="term-tab" data-tab="presets">${I('book')} 文字预设</button></div>${state.terminalTab==='api'?renderApiSettings():renderPresets()}${globalThis.ParallelOffline&&state.terminalTab==='api'?renderPortableBackup():''}</div>`;if(state.terminalTab==='api'){const form=$('api-settings-form');form.addEventListener('submit',saveSettings);$('api-temperature').addEventListener('input',e=>$('temp-output').textContent=e.target.value);$('api-top-p').addEventListener('input',e=>$('topp-output').textContent=e.target.value)} }
 function renderPortableBackup(){return `<div class="terminal-card"><div class="kicker">LOCAL DATA</div><h3>存档备份</h3><p class="caption">单 HTML 版把聊天和 Profile 存在当前浏览器中。移动文件或清理浏览器数据可能导致存档丢失。建议定期导出备份。导出的 JSON 不包含 API Key。</p>${globalThis.ParallelOffline.storageAvailable?'':`<div class="notice" style="margin:12px 0">当前浏览器禁止本地持久化，刷新页面后存档可能消失。请在结束前导出备份。</div>`}<div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="export-backup">${I('book')} 导出存档 JSON</button><label class="btn soft file-upload">${I('refresh')} 恢复存档<input type="file" id="portable-restore" accept=".json,application/json"></label></div></div>`}
 function exportBackup(){const raw=globalThis.ParallelOffline.exportData(),blob=new Blob([raw],{type:'application/json'}),href=URL.createObjectURL(blob),a=document.createElement('a');a.href=href;a.download='Parallel_Backup_'+new Date().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),2000);toast('存档已导出（不包含 API Key）')}
 let pendingRestoreText='';
 async function importBackup(file){if(!file)return;try{pendingRestoreText=await file.text();modal(`<h2>恢复存档确认</h2><p>这将用备份文件 <b>${esc(file.name)}</b> 覆盖当前存档。确定继续吗？</p>`,`<button class="btn ghost" data-action="close-modal">取消</button><button class="btn primary" data-action="confirm-restore-backup">确认恢复</button>`)}catch(e){toast('读取备份失败：'+e.message)}}
 async function confirmRestoreBackup(){if(!pendingRestoreText)return;try{const r=globalThis.ParallelOffline.importData(pendingRestoreText);pendingRestoreText='';closeModal();state.activeId='';state.profileDraft=null;state.threadId='';state.renderedThreadId='';state.draftInputs={};state.candidates=[];state.threads=[];state.messages=[];await bootstrap();toast(`已恢复 ${r.profiles} 个 Profile、${r.messages} 条消息，请重新填写 API Key`)}catch(e){toast('恢复失败：'+e.message)}}
-function renderApiSettings(){const s=state.settings;return `<form id="api-settings-form"><div class="terminal-card"><div class="kicker">CONNECTION</div><h3>连接到你的模型</h3><p class="caption">${globalThis.ParallelOffline?'单文件 HTML 版直接从浏览器调用 OpenAI-compatible API（需要供应商允许 CORS）。':'使用 OpenAI-compatible 接口。通过本机服务调用模型。'}</p><div class="field"><label>API Base URL</label><input id="api-url" autocomplete="off" type="url" placeholder="https://your-provider.example/v1" value="${esc(s.base_url||'')}"></div><div class="field"><label>API Key</label><input id="api-key" type="password" autocomplete="new-password" placeholder="${s.has_key?'已保存密钥（留空不更改）':'sk-...'}"><span class="field-hint">${globalThis.ParallelOffline?'密钥在当前浏览器存储中以明文保存，避免在共享设备使用；如需更安全的 API 代理，请使用服务器版。':'密钥只在本机服务端 data/connection.json 中保存（权限 0600），不要分享 data 文件夹。'}</span></div><div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="clear-key">${I('trash')} 删除已存密钥</button>${s.has_key?'<span class="pill">密钥已保存</span>':''}</div><div class="divider"></div><div class="field"><label>聊天模型 ID</label><div class="inline-row" style="align-items:stretch"><input id="api-model" list="model-list" placeholder="点击拉取，或直接填写模型名" value="${esc(s.model||'')}" style="flex:1;min-width:130px"><datalist id="model-list"></datalist><button type="button" class="btn soft" data-action="fetch-models">${I('refresh')} 拉取</button></div></div></div><div class="terminal-card"><div class="kicker">SAMPLING</div><h3>生成参数</h3><p class="caption">按模型能力调整；不是每家供应商都支持所有参数。</p><div class="range-line"><span>Temperature</span><b id="temp-output">${s.temperature??.85}</b></div><input class="range" id="api-temperature" type="range" min="0" max="2" step="0.05" value="${s.temperature??.85}"><div class="range-line" style="margin-top:19px"><span>Top P</span><b id="topp-output">${s.top_p??1}</b></div><input class="range" id="api-top-p" type="range" min="0.05" max="1" step="0.05" value="${s.top_p??1}"><div class="field" style="margin-top:18px"><label>Max tokens</label><span class="field-hint">小狗乐园建议较长的小说回复；推荐 2400–3500，实际字数由模型决定。</span><input id="api-max-tokens" type="number" min="100" max="4096" value="${s.max_tokens||3000}"></div></div><div class="terminal-card"><div class="kicker">PHOTO &amp; IMAGE AI</div><h3>角色照片呈现与图片生成 AI</h3><p class="caption">如果填写了下方图片生成 AI 的 API 链接、密钥与模型，发现页将调用该接口生成角色照片；如果留空未填写，则保持文字描写显示。</p><div class="field"><label>图片生成 API Base URL（选填）</label><input id="api-image-url" autocomplete="off" type="url" placeholder="https://your-image-provider.example/v1（留空则用文字呈现照片）" value="${esc(s.image_base_url||'')}"></div><div class="field"><label>图片生成 API Key（选填）</label><input id="api-image-key" type="password" autocomplete="new-password" placeholder="${s.has_image_key?'已保存图片密钥（留空不更改）':'sk-...（留空则用文字呈现照片）'}"><span class="field-hint">支持兼容 OpenAI <code>/images/generations</code> 接口的生图服务。不填则自动使用文字描写。</span></div><div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="clear-image-key">${I('trash')} 删除图片密钥</button><span class="pill">${s.image_mode==='live'?'已启用图片生成 AI':(s.has_image_key?'图片密钥已保存':'当前：文字照片呈现')}</span></div><div class="divider"></div><div class="field"><label>图片生成模型 ID（选填）</label><div class="inline-row" style="align-items:stretch"><input id="api-image-model" list="image-model-list" placeholder="点击拉取，或直接填写生图模型名（如 dall-e-3 / gpt-image-1）" value="${esc(s.image_model||'')}" style="flex:1;min-width:130px"><datalist id="image-model-list"></datalist><button type="button" class="btn soft" data-action="fetch-image-models">${I('refresh')} 拉取</button></div></div></div><button type="submit" class="btn primary" style="width:100%;padding:15px">${I('check')} 保存终端配置</button><div class="notice" style="margin-top:14px">演示模式使用已收录的角色目录、确定性的示例匹配和明显标注的演示回复。只有连接模型后才会调用真实 LLM 或生图接口。首次调用可能产生费用。${globalThis.ParallelOffline?'模型供应商需允许网页跨域请求（CORS），否则请运行 Python 服务版。':'模型调用由本机服务端发起。'}</div></form>`}
-async function saveSettings(e){e.preventDefault();try{const data={base_url:$('api-url').value.trim(),model:$('api-model').value.trim(),image_base_url:$('api-image-url').value.trim(),image_model:$('api-image-model').value.trim(),temperature:Number($('api-temperature').value),top_p:Number($('api-top-p').value),max_tokens:Number($('api-max-tokens').value)};if($('api-key').value)data.api_key=$('api-key').value;if($('api-image-key').value)data.image_api_key=$('api-image-key').value;const res=await api('/settings',data);state.settings=res.settings;state.portraitFailed={};renderChrome();renderTerminal();toast('终端配置已保存')}catch(e){toast(e.message)}}
+function renderApiSettings(){const s=state.settings;const pmOff=(s.proactive_mode==='off');return `<form id="api-settings-form"><div class="terminal-card"><div class="kicker">CONNECTION</div><h3>连接到你的模型</h3><p class="caption">${globalThis.ParallelOffline?'单文件 HTML 版直接从浏览器调用 OpenAI-compatible API（需要供应商允许 CORS）。':'使用 OpenAI-compatible 接口。通过本机服务调用模型。'}</p><div class="field"><label>API Base URL</label><input id="api-url" autocomplete="off" type="url" placeholder="https://your-provider.example/v1" value="${esc(s.base_url||'')}"></div><div class="field"><label>API Key</label><input id="api-key" type="password" autocomplete="new-password" placeholder="${s.has_key?'已保存密钥（留空不更改）':'sk-...'}"><span class="field-hint">${globalThis.ParallelOffline?'密钥在当前浏览器存储中以明文保存，避免在共享设备使用；如需更安全的 API 代理，请使用服务器版。':'密钥只在本机服务端 data/connection.json 中保存（权限 0600），不要分享 data 文件夹。'}</span></div><div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="clear-key">${I('trash')} 删除已存密钥</button>${s.has_key?'<span class="pill">密钥已保存</span>':''}</div><div class="divider"></div><div class="field"><label>聊天模型 ID</label><div class="inline-row" style="align-items:stretch"><input id="api-model" list="model-list" placeholder="点击拉取，或直接填写模型名" value="${esc(s.model||'')}" style="flex:1;min-width:130px"><datalist id="model-list"></datalist><button type="button" class="btn soft" data-action="fetch-models">${I('refresh')} 拉取</button></div></div></div><div class="terminal-card"><div class="kicker">PROACTIVE MESSAGES · 角色主动消息</div><h3>角色主动消息开关</h3><p class="caption">控制是否允许已匹配的角色主动给你发消息。</p><div class="field"><label for="api-proactive-mode">主动消息状态</label><select id="api-proactive-mode"><option value="daily" ${!pmOff?'selected':''}>开启</option><option value="off" ${pmOff?'selected':''}>关闭</option></select></div></div><div class="terminal-card"><div class="kicker">SAMPLING</div><h3>生成参数</h3><p class="caption">按模型能力调整；不是每家供应商都支持所有参数。</p><div class="range-line"><span>Temperature</span><b id="temp-output">${s.temperature??.85}</b></div><input class="range" id="api-temperature" type="range" min="0" max="2" step="0.05" value="${s.temperature??.85}"><div class="range-line" style="margin-top:19px"><span>Top P</span><b id="topp-output">${s.top_p??1}</b></div><input class="range" id="api-top-p" type="range" min="0.05" max="1" step="0.05" value="${s.top_p??1}"><div class="field" style="margin-top:18px"><label>Max tokens</label><span class="field-hint">小狗乐园建议较长的小说回复；推荐 2400–3500，实际字数由模型决定。</span><input id="api-max-tokens" type="number" min="100" max="4096" value="${s.max_tokens||3000}"></div></div><div class="terminal-card"><div class="kicker">PHOTO &amp; IMAGE AI</div><h3>角色照片呈现与图片生成 AI</h3><p class="caption">如果填写了下方图片生成 AI 的 API 链接、密钥与模型，发现页将调用该接口生成角色照片；如果留空未填写，则保持文字描写显示。</p><div class="field"><label>图片生成 API Base URL（选填）</label><input id="api-image-url" autocomplete="off" type="url" placeholder="https://your-image-provider.example/v1（留空则用文字呈现照片）" value="${esc(s.image_base_url||'')}"></div><div class="field"><label>图片生成 API Key（选填）</label><input id="api-image-key" type="password" autocomplete="new-password" placeholder="${s.has_image_key?'已保存图片密钥（留空不更改）':'sk-...（留空则用文字呈现照片）'}"><span class="field-hint">支持兼容 OpenAI <code>/images/generations</code> 接口的生图服务。不填则自动使用文字描写。</span></div><div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="clear-image-key">${I('trash')} 删除图片密钥</button><span class="pill">${s.image_mode==='live'?'已启用图片生成 AI':(s.has_image_key?'图片密钥已保存':'当前：文字照片呈现')}</span></div><div class="divider"></div><div class="field"><label>图片生成模型 ID（选填）</label><div class="inline-row" style="align-items:stretch"><input id="api-image-model" list="image-model-list" placeholder="点击拉取，或直接填写生图模型名（如 dall-e-3 / gpt-image-1）" value="${esc(s.image_model||'')}" style="flex:1;min-width:130px"><datalist id="image-model-list"></datalist><button type="button" class="btn soft" data-action="fetch-image-models">${I('refresh')} 拉取</button></div></div></div><button type="submit" class="btn primary" style="width:100%;padding:15px">${I('check')} 保存终端配置</button><div class="notice" style="margin-top:14px">演示模式使用已收录的角色目录、确定性的示例匹配和明显标注的演示回复。只有连接模型后才会调用真实 LLM 或生图接口。首次调用可能产生费用。${globalThis.ParallelOffline?'模型供应商需允许网页跨域请求（CORS），否则请运行 Python 服务版。':'模型调用由本机服务端发起。'}</div></form>`}
+async function saveSettings(e){e.preventDefault();try{const data={base_url:$('api-url').value.trim(),model:$('api-model').value.trim(),proactive_mode:$('api-proactive-mode')?.value||'daily',image_base_url:$('api-image-url').value.trim(),image_model:$('api-image-model').value.trim(),temperature:Number($('api-temperature').value),top_p:Number($('api-top-p').value),max_tokens:Number($('api-max-tokens').value)};if($('api-key').value)data.api_key=$('api-key').value;if($('api-image-key').value)data.image_api_key=$('api-image-key').value;const res=await api('/settings',data);state.settings=res.settings;state.portraitFailed={};renderChrome();renderTerminal();toast('终端配置已保存')}catch(e){toast(e.message)}}
 async function fetchModels(){try{const s=$('api-url')?.value.trim(),m=$('api-model')?.value.trim(),k=$('api-key')?.value;if(s!==state.settings.base_url || k){toast('请先保存 API 地址和密钥，再拉取模型');return}const r=await api('/models');$('model-list').innerHTML=r.models.map(x=>`<option value="${esc(x)}"></option>`).join('');if(!m && r.models[0])$('api-model').value=r.models[0];toast(`找到 ${r.models.length} 个模型，已加入输入框候选`)}catch(e){toast(e.message)}}
 async function fetchImageModels(){try{const s=$('api-image-url')?.value.trim(),m=$('api-image-model')?.value.trim(),k=$('api-image-key')?.value;if(s!==(state.settings.image_base_url||'') || k){toast('请先保存图片 API 地址和密钥，再拉取模型');return}const r=await api('/image-models');$('image-model-list').innerHTML=r.models.map(x=>`<option value="${esc(x)}"></option>`).join('');if(!m && r.models[0])$('api-image-model').value=r.models[0];toast(`找到 ${r.models.length} 个图片模型，已加入输入框候选`)}catch(e){toast(e.message)}}
 function renderPresets(){const items=state.presets.filter(x=>x.mode===state.presetMode);return `<div class="terminal-card"><div class="kicker">TEXT PRESETS</div><h3>Prompt 条目管理</h3><p class="caption">聊天气泡和线下小说使用独立的条目与顺序。这里的编辑会直接影响每次真实模型请求。</p><div class="terminal-tabs"><button class="terminal-tab ${state.presetMode==='chat'?'active':''}" data-action="preset-mode" data-mode="chat">手机聊天</button><button class="terminal-tab ${state.presetMode==='meeting'?'active':''}" data-action="preset-mode" data-mode="meeting">面对面小说</button></div><div class="preset-toolbar"><span class="caption">${items.length} 个 Prompt 条目 · ${items.filter(x=>x.enabled).length} 个启用</span><button class="btn soft" data-action="add-preset">${I('plus')} 添加条目</button></div><div class="inline-row" style="margin:14px 0 8px"><button class="btn soft" data-action="export-preset" data-scope="current">${I('book')} 导出当前模式</button><button class="btn soft" data-action="export-preset" data-scope="all">${I('book')} 导出全部</button><label class="btn soft file-upload">${I('plus')} 导入 JSON<input id="preset-import-file" type="file" accept=".json,application/json"></label></div><p class="caption">支持 Parallel 自有 JSON 与 Elsewhere 自有预设 JSON（后者仅导入面对面小说）。导入前会确认追加或替换；不会影响 Profile、聊天和 API 设置。</p><div class="preset-list">${items.map((p,i)=>`<div class="preset-row"><div class="preset-order"><button class="icon-btn" data-action="move-preset" data-id="${esc(p.id)}" data-dir="-1" ${i===0?'disabled':''}>${I('up')}</button><button class="icon-btn" data-action="move-preset" data-id="${esc(p.id)}" data-dir="1" ${i===items.length-1?'disabled':''}>${I('down')}</button></div><div class="preset-text"><strong>${esc(p.name)}</strong><small>${esc(p.role)} · ${p.content.length} 字符</small></div><button class="icon-btn" title="编辑" data-action="edit-preset" data-id="${esc(p.id)}">${I('edit')}</button><button class="toggle ${p.enabled?'on':''}" title="启停" data-action="toggle-preset" data-id="${esc(p.id)}"></button></div>`).join('')}</div></div><div class="terminal-card"><h3>自定义文字预设</h3><p class="caption">这里仅使用 Parallel 自己的 Prompt 条目。你可以编辑条目、调整顺序，也可以单独导入或导出 Parallel 自有 JSON 预设。</p></div>`}
@@ -439,19 +874,34 @@ if(a==='photo-text-fallback')return photoDescriptionModal(false,true);
 if(a==='photo-description-refresh')return photoDescriptionModal(true,true);
 if(a==='generate-portrait')return generateCardPortrait(false,false);
 if(a==='regenerate-portrait')return generateCardPortrait(true,false);
+if(a==='choose-api-mode'){
+  const useDemo=el.dataset.demo==='yes';
+  try{sessionStorage.setItem('parallel-api-choice',useDemo?'demo':'normal')}catch{}
+  const r=await api('/settings',{demo_enabled:useDemo});
+  state.settings=r.settings;
+  closeModal();
+  renderChrome();
+  if(state.tab==='terminal')renderTerminal();
+  return toast(useDemo?'已进入演示模式':'已保持正常模式（未连接 API）');
+}
 if(a==='close-modal')return closeModal();
 if(a==='open-match'){const id=el.dataset.id;closeModal();state.threadId=id;return navigate('messages')}
 if(a==='select-thread')return loadThread(el.dataset.id);
 if(a==='back-threads'){state.threadId='';state.renderedThreadId='';return renderMessages()}
 if(a==='change-mode')return changeMode();
-if(a==='open-memories')return openMemoriesModal('');
-if(a==='search-memories')return openMemoriesModal($('memory-search-input')?.value.trim()||'');
+if(a==='toggle-hot-chat')return toggleHotChat();
+if(a==='open-char-hub')return openCharacterHubModal();
+if(a==='open-meeting-record')return openMeetingRecordModal(el.dataset.id);
+if(a==='open-daily-messages')return openDailyMessagesModal(el.dataset.id);
+if(a==='open-memories')return openMemoriesModal('',state.memoryCategory||'all');
+if(a==='filter-memories')return openMemoriesModal($('memory-search-input')?.value.trim()||'',el.dataset.cat||'all');
+if(a==='search-memories')return openMemoriesModal($('memory-search-input')?.value.trim()||'',state.memoryCategory||'all');
 if(a==='add-memory'){
   const val=$('memory-add-input')?.value.trim()||'';
   if(!val){toast('请先输入记忆内容');return}
   await api('/memory-action',{profileId:state.activeId,characterId:state.threadId,action:'add',summary:val});
   toast('已写入该角色的共同记忆档案');
-  return openMemoriesModal($('memory-search-input')?.value.trim()||'');
+  return openMemoriesModal($('memory-search-input')?.value.trim()||'',state.memoryCategory||'all');
 }
 if(a==='prompt-correct-memory'){
   const box=$('mem-correct-'+el.dataset.id);
@@ -463,12 +913,12 @@ if(a==='submit-correct-memory'){
   if(!val){toast('请输入澄清后的真实情况');return}
   await api('/memory-action',{profileId:state.activeId,characterId:state.threadId,action:'correct',memoryId:mid,correction:val});
   toast('已标记原记忆存疑并写入澄清记录');
-  return openMemoriesModal($('memory-search-input')?.value.trim()||'');
+  return openMemoriesModal($('memory-search-input')?.value.trim()||'',state.memoryCategory||'all');
 }
 if(a==='delete-memory'){
   await api('/memory-action',{profileId:state.activeId,characterId:state.threadId,action:'delete',memoryId:el.dataset.id});
   toast('记忆条目已删除');
-  return openMemoriesModal($('memory-search-input')?.value.trim()||'');
+  return openMemoriesModal($('memory-search-input')?.value.trim()||'',state.memoryCategory||'all');
 }
 if(a==='export-backup')return exportBackup();
 if(a==='confirm-restore-backup')return confirmRestoreBackup();
@@ -484,6 +934,7 @@ if(a==='clear-image-key'){return modal('<h2>清除图片 API Key？</h2><p>确�
 if(a==='confirm-clear-image-key'){const r=await api('/settings',{clear_image_key:true});state.settings=r.settings;closeModal();renderTerminal();return toast('图片密钥已清除，已恢复文字照片模式')}
 if(a==='fetch-models')return fetchModels();
 if(a==='fetch-image-models')return fetchImageModels();
+if(a==='trigger-proactive-now')return checkProactiveMessages('manual',state.threadId||'');
 if(a==='export-preset')return exportPreset(el.dataset.scope);
 if(a==='apply-preset-import')return applyPresetImport(el.dataset.how);
 if(a==='add-preset')return editPresetModal(null);
@@ -493,6 +944,7 @@ if(a==='move-preset')return movePreset(el.dataset.id,Number(el.dataset.dir));
 if(a==='save-preset')return savePreset(el.dataset.id);
 if(a==='delete-preset'){await api('/preset',{action:'delete',id:el.dataset.id});closeModal();toast('条目已删除');return refreshPresets()}
 }catch(err){toast(err.message)}});
+addEventListener('pointerdown',()=>{state.lastUserActiveAt=Date.now()},{passive:true});
 addEventListener('change',e=>{if(e.target.id==='portable-restore')importBackup(e.target.files[0]);if(e.target.id==='preset-import-file')choosePresetImport(e.target.files[0])});
-addEventListener('keydown',e=>{if(e.target.id==='pf-source-input'&&e.key==='Enter'){e.preventDefault();addSourceTag();return}if(e.target.id==='memory-search-input'&&e.key==='Enter'){e.preventDefault();openMemoriesModal(e.target.value.trim());return}if(e.target.id==='memory-add-input'&&e.key==='Enter'){e.preventDefault();document.querySelector('[data-action="add-memory"]')?.click();return}if(e.key==='Escape')closeModal();if(state.tab==='discover'&&e.target.tagName!=='INPUT'&&e.target.tagName!=='TEXTAREA'&&!$('modal-overlay')){if(e.key==='ArrowLeft')doSwipe('left');if(e.key==='ArrowRight')doSwipe('right')}});
+addEventListener('keydown',e=>{state.lastUserActiveAt=Date.now();if(e.target.id==='pf-source-input'&&e.key==='Enter'){e.preventDefault();addSourceTag();return}if(e.target.id==='memory-search-input'&&e.key==='Enter'){e.preventDefault();openMemoriesModal(e.target.value.trim());return}if(e.target.id==='memory-add-input'&&e.key==='Enter'){e.preventDefault();document.querySelector('[data-action="add-memory"]')?.click();return}if(e.key==='Escape')closeModal();if(state.tab==='discover'&&e.target.tagName!=='INPUT'&&e.target.tagName!=='TEXTAREA'&&!$('modal-overlay')){if(e.key==='ArrowLeft')doSwipe('left');if(e.key==='ArrowRight')doSwipe('right')}});
 bootstrap();

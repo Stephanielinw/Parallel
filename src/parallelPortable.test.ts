@@ -293,3 +293,255 @@ test('Parallel v0.5 Image AI connection settings and text/live mode toggle', asy
   assert.equal(cleared.image_mode, 'text');
 });
 
+test('Parallel v0.5 API detection, normal mode vs demo mode, message recall prompt notice, and multi-bubble replies', async () => {
+  const engine = createPortableEngine();
+  const initial = await engine.request('/settings');
+  assert.equal(initial.has_api_config, false, 'Fresh store has no API config filled');
+
+  // Switch to normal mode (demo_enabled: false) when no API is configured
+  const normalCfg = (await engine.request('/settings', { demo_enabled: false })).settings;
+  assert.equal(normalCfg.demo_enabled, false);
+  assert.equal(normalCfg.mode, 'normal');
+
+  const p = (
+    await engine.request('/profile', {
+      name: 'NaiEn',
+      age: 23,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 65,
+      intent: '认真寻找恋人',
+      sources: ['生化危机 · 游戏'],
+      bio: '测试撤回与多气泡',
+      interests: ['音乐'],
+    })
+  ).profile;
+  const cid = 're-game:leon:re2';
+  for (let i = 0; i < 15; i++) {
+    if ((await engine.request('/swipe', { profileId: p.id, characterId: cid, direction: 'right' })).matched) break;
+  }
+
+  // In normal mode without API config, flushing chat returns warning and null reply instead of generating demo replies
+  const sent = await engine.request('/message', {
+    profileId: p.id,
+    characterId: cid,
+    text: '这条秘密消息一会儿要撤回12345',
+  });
+  assert.equal(sent.queue.count, 1);
+  assert.equal(sent.queue.pendingIds.length, 1);
+
+  const blockedFlush = await engine.request('/chat-flush', {
+    profileId: p.id,
+    characterId: cid,
+    force: true,
+  });
+  assert.equal(blockedFlush.reply, null, 'Normal mode without API does not generate demo reply');
+  assert.ok(blockedFlush.warning.includes('尚未连接 API'), 'Normal mode without API returns clear warning');
+
+  // Recall the user message: AI sees recall notice in prompt, NOT the secret content
+  const threadBefore = await engine.request(`/thread?profileId=${p.id}&characterId=${cid}`);
+  const targetMsg = threadBefore.messages[threadBefore.messages.length - 1];
+  const recallRes = await engine.request('/message-delete', {
+    profileId: p.id,
+    characterId: cid,
+    messageId: targetMsg.id,
+  });
+  assert.equal(recallRes.ok, true);
+  assert.equal(recallRes.recalled, true);
+  assert.equal(recallRes.queue.count, 0);
+
+  const promptAfterRecall = JSON.stringify(engine.buildPromptPreview(p.id, cid, 'chat'));
+  assert.ok(
+    !promptAfterRecall.includes('这条秘密消息一会儿要撤回12345'),
+    'Recalled message content must never leak to AI prompt'
+  );
+  assert.ok(
+    promptAfterRecall.includes('对方刚刚撤回了一条消息'),
+    'AI prompt includes notice that user recalled a message'
+  );
+
+  // Enable demo mode and verify multi-bubble replies array is returned
+  await engine.request('/settings', { demo_enabled: true });
+  await engine.request('/message', {
+    profileId: p.id,
+    characterId: cid,
+    text: '你在干嘛呀？',
+  });
+  const flushed = await engine.request('/chat-flush', {
+    profileId: p.id,
+    characterId: cid,
+    force: true,
+  });
+  assert.ok(Array.isArray(flushed.replies) && flushed.replies.length >= 1, 'Returns replies array for multi-bubble display');
+  assert.ok(flushed.reply && flushed.reply.text, 'Returns last reply item for backwards compatibility');
+
+  // Proactive check (/proactive-check) with an unresolved promise memory
+  await engine.request('/memory-action', {
+    profileId: p.id,
+    characterId: cid,
+    action: 'add',
+    summary: '约定明天一起去靶场练习射击',
+  });
+  const proactiveRes = await engine.request('/proactive-check', {
+    profileId: p.id,
+    trigger: 'manual',
+    characterId: cid,
+  });
+  assert.ok(
+    Array.isArray(proactiveRes.delivered) && proactiveRes.delivered.length === 1,
+    'Proactive check delivers proactive message for matched character'
+  );
+  assert.equal(proactiveRes.delivered[0].characterId, cid);
+  assert.ok(proactiveRes.delivered[0].replies.length >= 1);
+});
+
+test('Parallel v0.5 dedicated meeting novel flow, meeting summary card, and clean grouped memory archive', async () => {
+  const engine = createPortableEngine();
+  const p = (
+    await engine.request('/profile', {
+      name: '奈恩',
+      age: 22,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 65,
+      intent: '认真寻找恋人',
+      sources: ['生化危机 · 游戏'],
+      bio: '测试见面小说模式与见面卡片归档',
+      interests: ['散步'],
+    })
+  ).profile;
+  const cid = 're-game:chris:re5';
+  for (let i = 0; i < 15; i++) {
+    if ((await engine.request('/swipe', { profileId: p.id, characterId: cid, direction: 'right' })).matched) break;
+  }
+
+  // 1. User sends casual chat message (no promise keyword) -> should NOT spam episodicMemories with per-sentence dialogue
+  await engine.request('/message', {
+    profileId: p.id,
+    characterId: cid,
+    text: '我已经到街角咖啡馆门口了，等等，我好像看见你了。',
+  });
+  await engine.request('/chat-flush', {
+    profileId: p.id,
+    characterId: cid,
+    force: true,
+  });
+
+  // 2. User clicks Meet button -> /mode with triggerOpening: true
+  const enterMeeting = await engine.request('/mode', {
+    profileId: p.id,
+    characterId: cid,
+    mode: 'meeting',
+    triggerOpening: true,
+  });
+  assert.equal(enterMeeting.mode, 'meeting');
+  assert.ok(enterMeeting.active_meeting_id, 'Assigns active_meeting_id');
+  assert.ok(enterMeeting.meeting_location.includes('街角咖啡馆'), 'Infers meeting location from recent chat message');
+  assert.ok(enterMeeting.openingReply && enterMeeting.openingReply.mode === 'meeting', 'Generates opening novel scene on entering meeting mode');
+
+  // 3. User sends a turn inside the dedicated meeting novel page
+  const novelReply = await engine.request('/message', {
+    profileId: p.id,
+    characterId: cid,
+    text: '我朝他挥了挥手，笑着走过去坐下，把菜单递给他。',
+    meetingLocation: enterMeeting.meeting_location,
+  });
+  assert.ok(novelReply.reply && novelReply.reply.mode === 'meeting');
+
+  // 4. User clicks End Meeting -> /mode with finalizeMeeting: true
+  const endMeeting = await engine.request('/mode', {
+    profileId: p.id,
+    characterId: cid,
+    mode: 'chat',
+    finalizeMeeting: true,
+    meetingLocation: enterMeeting.meeting_location,
+  });
+  assert.equal(endMeeting.mode, 'chat');
+  assert.ok(endMeeting.meetingRecord, 'Returns finalized meetingRecord for chat timeline card');
+  assert.ok(endMeeting.meetingRecord.location.includes('街角咖啡馆'), 'Meeting card records location');
+  assert.ok(endMeeting.meetingRecord.summary.length > 0, 'Meeting card records summary');
+  assert.ok(Array.isArray(endMeeting.meetingRecord.entries) && endMeeting.meetingRecord.entries.length >= 3, 'Meeting card holds full novel transcript entries');
+
+  // 5. Verify memory archive: no '开始面对面见面' or '返回手机聊天' milestone spam, and includes consolidated meeting_summary card + daily_summary with day_messages
+  const memData = await engine.request(`/memories?profileId=${p.id}&characterId=${encodeURIComponent(cid)}`);
+  const milestones = memData.episodic.filter((m: any) =>
+    String(m.summary).includes('开始面对面见面') || String(m.summary).includes('返回手机聊天')
+  );
+  assert.equal(milestones.length, 0, 'Must never pollute memory archive with mode-switch milestone entries');
+
+  const meetingMems = memData.episodic.filter((m: any) => m.memory_type === 'meeting_summary');
+  assert.equal(meetingMems.length, 1, 'Creates exactly one consolidated meeting summary memory card');
+  assert.ok(meetingMems[0].summary.includes('和 奈恩 在「'), 'Meeting memory card uses "和 奈恩 在「xx」见面" format');
+  assert.equal(meetingMems[0].meeting_id, endMeeting.meetingRecord.id);
+
+  const dailyMems = memData.episodic.filter((m: any) => m.memory_type === 'daily_summary');
+  assert.ok(dailyMems.length >= 1, 'Groups daily chat into 1 daily summary card per day');
+  assert.ok(Array.isArray(dailyMems[0].day_messages) && dailyMems[0].day_messages.length >= 1, 'Daily summary includes day_messages for modal inspection');
+});
+
+test('Parallel v0.5 Daily Mode message bundling (preserving scheduled dueAt & timestamps), Hot Chat Mode toggle, and staggered proactive messages', async () => {
+  const engine = createPortableEngine();
+  const p = (
+    await engine.request('/profile', {
+      name: '奈恩',
+      age: 30,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 65,
+      intent: '认真寻找恋人',
+      sources: ['生化危机 · 游戏'],
+      bio: '测试热聊模式与日常打包模式',
+      interests: ['电影'],
+    })
+  ).profile;
+  const cid = 're-game:leon:re2';
+  for (let i = 0; i < 15; i++) {
+    if ((await engine.request('/swipe', { profileId: p.id, characterId: cid, direction: 'right' })).matched) break;
+  }
+
+  // 1. Default is Daily Mode (hotChat: false)
+  const msg1 = await engine.request('/message', {
+    profileId: p.id,
+    characterId: cid,
+    text: '今天下午天气真好，你在忙什么？',
+  });
+  assert.equal(msg1.queue.paceMode, 'daily');
+  assert.equal(msg1.queue.hotChat, false);
+  assert.equal(msg1.queue.count, 1);
+  const firstDueAt = msg1.queue.dueAt;
+  assert.ok(firstDueAt > Date.now() + 5 * 60 * 1000, 'Daily Mode schedules reply several minutes in the future');
+
+  // 2. Sending a second message in Daily Mode bundles into the same batch WITHOUT postponing dueAt
+  const msg2 = await engine.request('/message', {
+    profileId: p.id,
+    characterId: cid,
+    text: '对了，我刚买了一杯冰拿铁。',
+  });
+  assert.equal(msg2.queue.count, 2);
+  assert.equal(msg2.queue.dueAt, firstDueAt, 'Subsequent messages in Daily Mode bundle without resetting dueAt');
+
+  // 3. Prompt preview includes per-message [短信 HH:MM] timestamps
+  const preview = JSON.stringify(engine.buildPromptPreview(p.id, cid, 'chat'));
+  assert.match(preview, /\[短信 \d{2}:\d{2}\]/, 'Each message in working history carries its own [短信 HH:MM] timestamp');
+
+  // 4. Toggle Hot Chat Mode on -> updates queue to paceMode: 'hot' with 60s dueAt
+  const hotOn = await engine.request('/hot-chat', {
+    profileId: p.id,
+    characterId: cid,
+    hotChat: true,
+  });
+  assert.equal(hotOn.hotChat, true);
+  assert.equal(hotOn.queue.paceMode, 'hot');
+  assert.ok(hotOn.queue.dueAt <= Date.now() + 61000, 'Hot Chat Mode sets 60s quiet window');
+
+  const flushed = await engine.request('/chat-flush', {
+    profileId: p.id,
+    characterId: cid,
+    force: true,
+  });
+  assert.ok(flushed.reply && flushed.replies.length >= 1, 'Flushes bundled messages and replies');
+});
+

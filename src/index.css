@@ -16,8 +16,8 @@
 }
 
 .deck-container {
-  height: min(54vh, 480px);
-  min-height: 380px;
+  height: auto;
+  min-height: 445px;
 }
 
 .messages-layout {
@@ -47,8 +47,8 @@
     padding: calc(14px + max(env(safe-area-inset-top, 0px), 14px)) 16px 12px;
   }
   .deck-container {
-    height: min(50vh, 430px);
-    min-height: 340px;
+    height: auto;
+    min-height: 390px;
   }
   .messages-layout {
     height: calc(100dvh - 205px);

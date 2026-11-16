@@ -16,7 +16,7 @@ CHAT_QUIET_MS=60000
 CHAT_LOCK=threading.RLock()
 MAX_BODY=4*1024*1024
 DEFAULT_PRESETS = [
-  dict(id='chat-main',mode='chat',name='手机聊天 · 自然气泡',enabled=True,role='system',content='你正在使用一款约会软件。只输出角色实际发出的消息正文。用自然、个性化、符合角色的简短聊天气泡；不写第三人称叙述、动作星号、旁白、章节或小说式环境描写。除非角色有理由，不要轻易暴露其隐秘原作身份。'),
+  dict(id='chat-main',mode='chat',name='手机聊天 · 自然气泡',enabled=True,role='system',content='你正在使用一款约会软件。只输出角色实际发出的消息正文。像真人在手机聊天软件上那样自然回复：根据当下情绪与人设，回复可长可短（有时只回短短几个字或一句话，有时连发 2 到 4 条长短不一的消息气泡）。如果要连续发多条气泡，请用换行符或 ||| 把每条气泡隔开（最多 4 条）。不写第三人称叙述、动作星号、旁白或小说式环境描写。除非角色有理由，不要轻易暴露其隐秘原作身份。'),
   dict(id='chat-memory',mode='chat',name='记忆与身份边界',enabled=True,role='system',content='你是有持续人生与记忆的人。认真记住与面前这位人物的相处历史；不要因解除匹配和重新匹配而装作初次见面。不同 Profile 可能是完全不同的人，绝不先验认为他们背后是同一个使用者；玩家扮演的人物和同名 AI 人物也并非同一实例。'),
   dict(id='chat-agency',mode='chat',name='人物自主性',enabled=True,role='system',content='根据原作个性、人物边界和现有关系自然推进，不无条件迎合用户，不强制恋爱。角色可以好奇、拒绝、犹豫、打趣或提出见面。尊重对话中自然形成的经历。'),
   dict(id='meeting-main',mode='meeting',name='线下见面 · 小说模式',enabled=True,role='system',content='你和对方已在同一地点见面。写细腻的小说式现实互动，使用第三人称叙述描述环境、肢体动作、微妙情绪与角色台词。只决定你自己及环境中合理的事，不替玩家控制的角色说话、行动或决定内心感受。保持原作人设和已发生的情节。'),
@@ -90,6 +90,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS presets (id TEXT PRIMARY KEY, mode TEXT NOT NULL,name TEXT NOT NULL,enabled INTEGER NOT NULL,role TEXT NOT NULL,content TEXT NOT NULL,sort_order INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS episodic_memories (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, profile_id TEXT NOT NULL, source_type TEXT NOT NULL, source_key TEXT NOT NULL, knowledge_mode TEXT NOT NULL DEFAULT 'stated', summary TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', importance INTEGER NOT NULL DEFAULT 2, emotional_weight INTEGER NOT NULL DEFAULT 2, unresolved INTEGER NOT NULL DEFAULT 0, clarifies_id TEXT NOT NULL DEFAULT '', disputed INTEGER NOT NULL DEFAULT 0, raw_msg_ids TEXT NOT NULL DEFAULT '[]', event_at TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(owner_id, profile_id, source_key));
         CREATE INDEX IF NOT EXISTS episodic_owner_profile ON episodic_memories(owner_id, profile_id, event_at);
+        CREATE TABLE IF NOT EXISTS meetings (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, character_id TEXT NOT NULL, location TEXT NOT NULL DEFAULT '', time TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, ended_at TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', ai_summary TEXT NOT NULL DEFAULT '', message_ids TEXT NOT NULL DEFAULT '[]', entries TEXT NOT NULL DEFAULT '[]');
         ''')
         if db.execute('SELECT COUNT(*) FROM presets').fetchone()[0]==0:
             for i,p in enumerate(DEFAULT_PRESETS):
@@ -118,13 +119,35 @@ def load_connection():
 
 def public_connection():
     d=load_connection()
+    has_api=bool(d.get('api_key') and d.get('base_url') and d.get('model'))
     has_img=bool(d.get('image_api_key') and d.get('image_base_url') and d.get('image_model'))
+    demo_enabled=d.get('demo_enabled',True) is not False
     return {k:v for k,v in d.items() if k not in ('api_key','image_api_key')} | {
+        'proactive_mode':d.get('proactive_mode','daily'),
         'has_key':bool(d.get('api_key')),
+        'has_api_config':has_api,
+        'demo_enabled':demo_enabled,
         'has_image_key':bool(d.get('image_api_key')),
-        'mode':'live' if d.get('api_key') and d.get('base_url') and d.get('model') else 'demo',
+        'mode':'live' if has_api else ('demo' if demo_enabled else 'normal'),
         'image_mode':'live' if has_img else 'text'
     }
+
+def split_chat_bubbles(raw):
+    cleaned=str(raw or '').strip()
+    if not cleaned:return ['…']
+    parts=[re.sub(r'^\[(?:短信|见面)\]\s*','',s).strip() for s in re.split(r'\s*\|\|\|\s*|\r?\n+',cleaned) if s.strip()]
+    if len(parts)==1 and len(parts[0])>=32:
+        sentences=[s.strip() for s in re.findall(r'[^。！？!?]+[。！？!?]+|[^。！？!?]+$',parts[0]) if s.strip()]
+        if len(sentences)>=2:
+            parts=[];buf=''
+            for s in sentences:
+                if not buf:buf=s
+                elif len(buf+s)<=26 and len(parts)>0:buf+=s
+                else:parts.append(buf);buf=s
+            if buf:parts.append(buf)
+    if len(parts)>4:
+        parts=parts[:3]+[' '.join(parts[3:])]
+    return parts if parts else [cleaned]
 
 def validate_base_url(v):
     if not v:return ''
@@ -163,40 +186,109 @@ def photo_description(c):
     pose=gestures[(h//4)%len(gestures)].replace('他/她',c['name'])
     return f"照片里，{c['name']}出现在{backgrounds[h%len(backgrounds)]}。{pose}。画面没有摆拍的精致感，像是某次短暂停留时随手留下的一张生活照。"
 
-def queue_view(db,pid,cid):
-    x=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
-    if not x:return {'count':0,'dueAt':0,'remainingMs':0,'status':'idle','blocked':False}
-    pending=parse_json(x['pending'],[])
-    return {'count':len(pending),'dueAt':x['due_at'],'remainingMs':max(0,x['due_at']-now_ms()),'status':x['status'],'blocked':bool(x['blocked'])}
+def fmt_hhmm(ts=None):
+    try:
+        if isinstance(ts,(int,float)):
+            dt=datetime.fromtimestamp(ts/1000.0).astimezone()
+        elif isinstance(ts,str) and ts:
+            dt=datetime.fromisoformat(ts.replace('Z','+00:00')).astimezone()
+        else:
+            dt=datetime.now().astimezone()
+        return dt.strftime('%H:%M')
+    except Exception:
+        return ''
 
-def queue_add(db,pid,cid,mid):
+def compute_persona_delay(c,msg_text=''):
+    txt=str(msg_text or '')
+    if re.search(r'到了|在门口|出来|急|快回|见一面|你在哪|抬头|等你',txt):
+        return 3,'感知到你可能有急事或已在附近，很快拿起手机'
+    seed=((c.get('id','') if c else '')+utc()[:13]).encode('utf8')
+    h=int(hashlib.sha256(seed).hexdigest()[:8],16)
+    base=12+(h%24)
+    target_lbl=fmt_hhmm(now_ms()+base*60000)
+    return base,f"日常模式 · {(c.get('name') if c else None) or '对方'}正在忙手头的事，预计 {target_lbl} 左右看手机并统一回复"
+
+def queue_view(db,pid,cid):
+    m_state=MEETING_STATE.get((pid,cid),{})
+    hot_chat=bool(m_state.get('hot_chat',False))
+    x=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
+    if not x:
+        return {'count':0,'pendingIds':[],'dueAt':0,'remainingMs':0,'status':'idle','blocked':False,'paceMode':'hot' if hot_chat else 'daily','hotChat':hot_chat,'delayMinutes':1 if hot_chat else 0,'targetTimeLabel':'','scheduleReason':''}
+    pending=parse_json(x['pending'],[])
+    due_at=int(x['due_at'] or 0)
+    return {
+        'count':len(pending),
+        'pendingIds':list(pending),
+        'dueAt':due_at,
+        'remainingMs':max(0,due_at-now_ms()),
+        'status':x['status'],
+        'blocked':bool(x['blocked']),
+        'paceMode':m_state.get('pace_mode') or ('hot' if hot_chat else 'daily'),
+        'hotChat':hot_chat,
+        'delayMinutes':m_state.get('delay_minutes') or (1 if hot_chat else 20),
+        'targetTimeLabel':fmt_hhmm(due_at) if due_at else m_state.get('target_time_label',''),
+        'scheduleReason':m_state.get('schedule_reason','')
+    }
+
+def queue_add(db,pid,cid,mid,msg_text=''):
+    m_state=MEETING_STATE.setdefault((pid,cid),{})
+    hot_chat=bool(m_state.get('hot_chat',False))
+    c=BY_ID.get(cid)
     x=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
     pending=parse_json(x['pending'],[]) if x else []
+    was_empty=(len(pending)==0)
     if mid not in pending:pending.append(mid)
-    if x:db.execute('UPDATE chat_queue SET pending=?,due_at=?,blocked=0 WHERE profile_id=? AND character_id=?',(js(pending),now_ms()+CHAT_QUIET_MS,pid,cid))
-    else:db.execute('INSERT INTO chat_queue(profile_id,character_id,pending,due_at) VALUES (?,?,?,?)',(pid,cid,js(pending),now_ms()+CHAT_QUIET_MS))
+    now=now_ms()
+    cur_due=int(x['due_at'] or 0) if x else 0
+    if hot_chat:
+        due_at=now+CHAT_QUIET_MS
+        m_state['pace_mode']='hot'
+        m_state['delay_minutes']=1
+        m_state['target_time_label']=fmt_hhmm(due_at)
+        m_state['schedule_reason']='热聊模式 · 停手 1 分钟后立即阅读并回复'
+    else:
+        m_state['pace_mode']='daily'
+        if was_empty or cur_due<=now:
+            delay_min,reason=compute_persona_delay(c,msg_text)
+            due_at=now+delay_min*60000
+            m_state['delay_minutes']=delay_min
+            m_state['target_time_label']=fmt_hhmm(due_at)
+            m_state['schedule_reason']=reason
+        else:
+            due_at=cur_due
+    if x:db.execute('UPDATE chat_queue SET pending=?,due_at=?,blocked=0 WHERE profile_id=? AND character_id=?',(js(pending),due_at,pid,cid))
+    else:db.execute('INSERT INTO chat_queue(profile_id,character_id,pending,due_at) VALUES (?,?,?,?)',(pid,cid,js(pending),due_at))
     return queue_view(db,pid,cid)
 
 def queue_cancel(db,pid,cid):
     # The texts remain in message history; the next meeting reply can see them.
+    m_state=MEETING_STATE.get((pid,cid))
+    if m_state:
+        m_state['target_time_label']=''
+        m_state['schedule_reason']=''
     db.execute("UPDATE chat_queue SET pending='[]',due_at=0,status='idle',inflight='',inflight_sources='[]',blocked=0,revision=revision+1 WHERE profile_id=? AND character_id=?",(pid,cid))
 
 def queue_flush(db,p,c,force=False):
     pid,cid=p['id'],c['id']
     with CHAT_LOCK:
         q=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
-        if not q:return {'queued':False,'reply':None,'queue':queue_view(db,pid,cid)}
-        if q['status']=='inflight':return {'queued':True,'inflight':True,'reply':None,'queue':queue_view(db,pid,cid)}
+        if not q:return {'queued':False,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
+        if q['status']=='inflight':return {'queued':True,'inflight':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
         pending_list=parse_json(q['pending'],[])
-        if not pending_list:return {'queued':False,'reply':None,'queue':queue_view(db,pid,cid)}
-        if q['blocked'] and not force:return {'queued':True,'reply':None,'queue':queue_view(db,pid,cid)}
-        if not force and now_ms()<q['due_at']:return {'queued':True,'reply':None,'queue':queue_view(db,pid,cid)}
+        if not pending_list:return {'queued':False,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
+        if q['blocked'] and not force:return {'queued':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
+        if not force and now_ms()<q['due_at']:return {'queued':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
+        cur_mode=public_connection()['mode']
+        if cur_mode=='normal':
+            db.execute("UPDATE chat_queue SET blocked=1 WHERE profile_id=? AND character_id=?",(pid,cid))
+            db.commit()
+            return {'queued':True,'reply':None,'replies':[],'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。','queue':queue_view(db,pid,cid)}
         sources=pending_list;token=uid();revision=q['revision']
         db.execute("UPDATE chat_queue SET pending='[]',due_at=0,status='inflight',inflight=?,inflight_sources=?,blocked=0 WHERE profile_id=? AND character_id=?",(token,js(sources),pid,cid))
         last=db.execute('SELECT rowid FROM messages WHERE id=?',(sources[-1],)).fetchone()
-        prompt=compile_messages(db,p,c,'chat',through_rowid=last['rowid'] if last else None)
+        prompt=compile_messages(db,p,c,'chat',through_rowid=last['rowid'] if last else None,pending_ids=sources)
         db.commit()
-    settings=load_connection();warning='';engine='demo';reply=None
+    settings=load_connection();warning='';engine='demo';reply=None;replies=[]
     if all(settings.get(k) for k in ('base_url','api_key','model')):
         try:txt=completion(prompt);engine='live'
         except Exception as e:warning=str(e);engine='error'
@@ -205,7 +297,7 @@ def queue_flush(db,p,c,force=False):
         current=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
         rel=db.execute('SELECT mode,status FROM relations WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
         if not current or current['inflight']!=token or current['revision']!=revision or not rel or rel['mode']!='chat' or rel['status']!='matched':
-            return {'queued':False,'reply':None,'discarded':True,'queue':queue_view(db,pid,cid)}
+            return {'queued':False,'reply':None,'replies':[],'discarded':True,'queue':queue_view(db,pid,cid)}
         if engine=='error':
             newer=parse_json(current['pending'],[])
             restore=[m for m in sources if m not in newer]+newer
@@ -214,17 +306,21 @@ def queue_flush(db,p,c,force=False):
             else:
                 db.execute("UPDATE chat_queue SET pending=?,due_at=?,status='idle',inflight='',inflight_sources='[]',blocked=1 WHERE profile_id=? AND character_id=?",(js(restore),now_ms(),pid,cid))
         else:
-            reply=write_message(db,pid,cid,'ai','chat',txt,engine)
-            log_event(db,pid,cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+txt[:180])
+            bubble_texts=split_chat_bubbles(txt)
+            replies=[write_message(db,pid,cid,'ai','chat',b_txt,engine) for b_txt in bubble_texts]
+            reply=replies[-1] if replies else None
+            combined_txt=' / '.join(bubble_texts)
+            log_event(db,pid,cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+combined_txt[:180])
             user_rows=[]
             for mid in sources:
                 ur=db.execute('SELECT * FROM messages WHERE id=?',(mid,)).fetchone()
                 if ur:user_rows.append(dict(ur))
-            record_dialogue_episode(db,p,c,user_rows,reply,'chat')
+            if reply:
+                record_dialogue_episode(db,p,c,user_rows,dict(reply,text=combined_txt),'chat')
             db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),pid,cid))
             db.execute("UPDATE chat_queue SET status='idle',inflight='',inflight_sources='[]',blocked=0 WHERE profile_id=? AND character_id=?",(pid,cid))
         db.commit()
-    return {'queued':False,'reply':reply,'warning':warning,'queue':queue_view(db,pid,cid)}
+    return {'queued':False,'reply':reply,'replies':replies,'warning':warning,'queue':queue_view(db,pid,cid)}
 
 def queue_flush_due(db,p):
     pid=p['id'];now=now_ms();flushed=[]
@@ -370,21 +466,23 @@ def append_episodic_memory(db,*,owner_id,profile_id,source_type,source_key,knowl
         (mid,owner_id,profile_id,source_type,source_key,knowledge_mode,summary_clean,js(tags_clean),imp,emo,unres,str(clarifies_id or ''),disp,js(raw_ids),ev_at,now_str))
     return mid
 
+PROMISE_KEYWORDS=('约定','答应','下次','周末','明天见','约好','等你','不见不散','一起去','什么时候见','最喜欢','最讨厌','过敏','生日','秘密','记住','别忘')
+MEETING_STATE={}
+PROACTIVE_LOG={}
+
 def record_dialogue_episode(db,p,c,user_msgs,ai_msg,mode):
-    if not ai_msg:return None
+    if not ai_msg or mode=='meeting':return None
     u_texts=[m['text'].strip() for m in (user_msgs or []) if m and m.get('text')]
     u_joined=' / '.join(u_texts)[:110]
     a_text=str(ai_msg.get('text','')).strip()[:110]
-    mode_label='见面' if mode=='meeting' else '对话'
-    if u_joined:
-        summary=f"{p['name']}陈述（{mode_label}文字）：{u_joined}；{c['name']}回应：{a_text}"
-    else:
-        summary=f"{c['name']}（{mode_label}发言）：{a_text}"
     combined=(u_joined+' '+a_text)
-    imp=3 if mode=='meeting' else 2
-    if any(w in combined for w in ('喜欢','讨厌','约定','下次','周末','生日','秘密','过去','曾经','记得','答应','咖啡','酒','电影','音乐','摩托','任务','安全','伤口','家')):
-        imp=min(5,imp+1)
-    unres=1 if any(w in combined for w in ('？','?','下次','改天','明天见','约好','等你','还没')) else 0
+    if not any(w in combined for w in PROMISE_KEYWORDS):
+        return None
+    unres=1 if any(w in combined for w in ('下次','改天','明天','周末','约好','约定','答应','等你','一起去','不见不散')) else 0
+    if u_joined:
+        summary=f"与 {p['name']} 聊到约定/重点：「{u_joined[:75]}」（{c['name']}回应：「{a_text[:65]}」）"
+    else:
+        summary=f"{c['name']}提到：「{a_text[:100]}」"
     raw_ids=[m['id'] for m in (user_msgs or []) if m and m.get('id')]+[ai_msg['id']]
     return append_episodic_memory(
         db,
@@ -392,15 +490,108 @@ def record_dialogue_episode(db,p,c,user_msgs,ai_msg,mode):
         profile_id=p['id'],
         source_type='dialogue',
         source_key='turn:'+ai_msg['id'],
-        knowledge_mode='experienced' if mode=='meeting' else 'stated',
+        knowledge_mode='stated',
         summary=summary,
         tags=extract_memory_tags(u_joined or a_text,6),
-        importance=imp,
-        emotional_weight=3 if mode=='meeting' else 2,
+        importance=4,
+        emotional_weight=3,
         unresolved=unres,
         raw_msg_ids=raw_ids,
         event_at=ai_msg.get('created_at') or utc()
     )
+
+def infer_meeting_location(db,pid,cid,custom_loc=''):
+    clean_custom=str(custom_loc or '').strip()
+    if clean_custom:return clean_custom[:40]
+    recent=db.execute('SELECT text FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 10',(pid,cid)).fetchall()
+    pat=re.compile(r'(?:在|到|去|约在|来到|站在|坐在)?([\u4e00-\u9fa5A-Za-z0-9]{0,8}(?:咖啡店门口|咖啡馆门口|咖啡厅门口|咖啡厅|咖啡店|咖啡馆|酒吧|酒馆|餐厅|书店|唱片行|公园|海边|江边|车站|天台|公寓|靶场|电影院|便利店|图书馆|安全屋|广场|长椅|窗边|店门口|街角|街头|路口))')
+    for row in recent:
+        m=pat.search(str(row['text'] or ''))
+        if m and m.group(1):
+            loc=re.sub(r'^(?:我已经到了|我已经到|已经到了|已经到|我到了|我到|到了|约在|来到|站在|坐在|在|到|去)+','',m.group(1)).strip()
+            if len(loc)>=2:return loc[:32]
+    return '约定的街角咖啡馆'
+
+def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary=''):
+    if ai_summary and len(str(ai_summary).strip())>=6:
+        return str(ai_summary).strip()[:160]
+    u_turns=[m for m in m_msgs if m['sender']=='user' and m.get('engine')!='recalled']
+    a_turns=[m for m in m_msgs if m['sender']=='ai' and m.get('engine')!='recalled']
+    if u_turns:
+        first_u=re.sub(r'\s+',' ',u_turns[0]['text'])[:38]
+        last_u=re.sub(r'\s+',' ',u_turns[-1]['text'])[:34] if len(u_turns)>1 else ''
+        return f"{p['name']}「{first_u}」{('、再到「'+last_u+'」') if last_u else ''}，与 {c['name']} 面对面互动了 {len(m_msgs)} 个回合。"
+    if a_turns:
+        snippet=re.sub(r'\s+',' ',a_turns[0]['text'])[:48]
+        return f"{snippet}…（共 {len(m_msgs)} 段面对面互动）"
+    return f"在「{loc}」见了一面。"
+
+def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
+    if not m_msgs:return None
+    existed=db.execute('SELECT * FROM meetings WHERE id=?',(meeting_id,)).fetchone()
+    loc=infer_meeting_location(db,p['id'],c['id'],custom_loc or (existed['location'] if existed else ''))
+    started_at=m_msgs[0]['created_at'] or utc()
+    ended_at=m_msgs[-1]['created_at'] or utc()
+    time_str=str(started_at)[:16].replace('T',' ')
+    ai_sum=ai_summary or (existed['ai_summary'] if existed else '')
+    summary=build_meeting_summary_text(p,c,loc,m_msgs,ai_sum)
+    entries=[{'id':m['id'],'sender':m['sender'],'speaker':p['name'] if m['sender']=='user' else c['name'],'text':m['text'],'created_at':m['created_at']} for m in m_msgs]
+    msg_ids=[m['id'] for m in m_msgs]
+    db.execute('''INSERT OR REPLACE INTO meetings (id,profile_id,character_id,location,time,started_at,ended_at,summary,ai_summary,message_ids,entries)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)''',(meeting_id,p['id'],c['id'],loc,time_str,started_at,ended_at,summary,ai_sum,js(msg_ids),js(entries)))
+    rec={
+        'id':meeting_id,
+        'profile_id':p['id'],
+        'character_id':c['id'],
+        'location':loc,
+        'time':time_str,
+        'started_at':started_at,
+        'ended_at':ended_at,
+        'summary':summary,
+        'ai_summary':ai_sum,
+        'message_ids':msg_ids,
+        'entries':entries
+    }
+    append_episodic_memory(
+        db,
+        owner_id=c['id'],
+        profile_id=p['id'],
+        source_type='meeting_summary',
+        source_key='meeting:'+meeting_id,
+        knowledge_mode='experienced',
+        summary=f"和 {p['name']} 在「{loc}」见面：{summary}",
+        tags=[loc,'见面']+extract_memory_tags(summary,5),
+        importance=4,
+        emotional_weight=4,
+        unresolved=0,
+        raw_msg_ids=msg_ids,
+        event_at=ended_at
+    )
+    return rec
+
+def ensure_meeting_records(db,p,c):
+    all_rows=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at,id',(p['id'],c['id'])).fetchall()
+    all_msgs=[dict(r) for r in all_rows]
+    groups=[]
+    cur=[]
+    for m in all_msgs:
+        if m['mode']=='meeting':
+            cur.append(m)
+        elif cur:
+            groups.append(cur)
+            cur=[]
+    if cur:groups.append(cur)
+    m_state=MEETING_STATE.get((p['id'],c['id']),{})
+    for idx,g in enumerate(groups):
+        is_last=(idx==len(groups)-1)
+        mid=(m_state.get('active_meeting_id') if (is_last and m_state.get('active_meeting_id')) else ('meet_'+g[0]['id']))
+        for m in g:m['meeting_id']=mid
+        custom_loc=m_state.get('meeting_location','') if is_last else ''
+        upsert_meeting_record(db,p,c,mid,g,custom_loc)
+    db.execute("DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_type='milestone'",(c['id'],p['id']))
+    rows=db.execute('SELECT * FROM meetings WHERE profile_id=? AND character_id=? ORDER BY started_at',(p['id'],c['id'])).fetchall()
+    meetings=[dict(r)|{'message_ids':parse_json(r['message_ids'],[]),'entries':parse_json(r['entries'],[])} for r in rows]
+    return all_msgs, meetings
 
 CORRECTION_PATTERNS=('不，我们没有','我们没有过','没有过','你记错了','记错了','记岔了','搞错了','不是在','没去过','从来没','并没有','没有这回事','那是别人','你认错人了')
 
@@ -440,36 +631,32 @@ def detect_and_apply_correction(db,p,c,user_msg):
 
 def ensure_daily_summaries(db,p,c,active_msg_ids):
     pid,cid=p['id'],c['id']
-    all_msgs=db.execute('SELECT id,sender,mode,text,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at,id',(pid,cid)).fetchall()
+    all_msgs=db.execute("SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND mode='chat' ORDER BY created_at,id",(pid,cid)).fetchall()
     if not all_msgs:return
-    today_str=utc()[:10]
     by_day={}
     for m in all_msgs:
-        if m['id'] in active_msg_ids:continue
+        if m['engine']=='recalled':continue
         day=str(m['created_at'])[:10]
-        if len(all_msgs)<=8 and day==today_str:continue
         by_day.setdefault(day,[]).append(dict(m))
     for day,day_msgs in by_day.items():
         if len(day_msgs)<2:continue
-        chat_n=sum(1 for m in day_msgs if m['mode']=='chat')
-        meet_n=sum(1 for m in day_msgs if m['mode']=='meeting')
         combined=' '.join(m['text'][:60] for m in day_msgs if m['sender']=='user') or ' '.join(m['text'][:60] for m in day_msgs)
         tags=extract_memory_tags(combined,6)
-        topics='、'.join(tags[:5]) if tags else '日常寒暄'
-        summary=f"{day} 日常归纳：与 {p['name']} 共互动 {len(day_msgs)} 条（线上短信 {chat_n} 条，线下见面 {meet_n} 条），主要提及：{topics}。"
+        topics='、'.join(tags[:5]) if tags else '日常寒暄与近况'
+        summary=f"{day} 聊天归档：与 {p['name']} 共聊了 {len(day_msgs)} 条手机消息，主要聊到：{topics}。"
         append_episodic_memory(
             db,
             owner_id=cid,
             profile_id=pid,
             source_type='daily-summary',
             source_key='day:'+day,
-            knowledge_mode='experienced' if meet_n>0 else 'stated',
+            knowledge_mode='stated',
             summary=summary,
             tags=tags,
-            importance=3 if meet_n>0 else 2,
+            importance=2,
             emotional_weight=2,
             unresolved=0,
-            raw_msg_ids=[m['id'] for m in day_msgs[-8:]],
+            raw_msg_ids=[m['id'] for m in day_msgs[-16:]],
             event_at=day_msgs[-1]['created_at']
         )
 
@@ -499,13 +686,13 @@ def retrieve_relevant_memories(db,pid,cid,query_text='',exclude_msg_ids=None,lim
         overlap_score=tag_hits*6 + term_hits*3
         if item['source_type']=='correction':
             score=overlap_score + 9.0
-        elif item['source_type']=='milestone':
-            score=overlap_score + (4.5 if asks_past else 1.5)
+        elif item['source_type'] in ('milestone','meeting_summary'):
+            score=overlap_score + (5.5 if asks_past else 2.0)
         elif item['source_type']=='daily-summary':
             score=overlap_score + (6.0 if asks_past else 1.0)
         else:
             score=overlap_score + item['importance']*1.1 + (2.5 if item['unresolved'] else 0.0)
-        if overlap_score==0 and item['source_type'] not in ('correction',) and not item['unresolved'] and not (asks_past and item['source_type'] in ('daily-summary','milestone')):
+        if overlap_score==0 and item['source_type'] not in ('correction',) and not item['unresolved'] and not (asks_past and item['source_type'] in ('daily-summary','milestone','meeting_summary')):
             continue
         scored.append((score,overlap_score,item))
     scored.sort(key=lambda t:(t[0],t[2]['event_at']),reverse=True)
@@ -549,7 +736,7 @@ def format_episodic_entry(entry):
     if entry.get('disputed'):
         line=f"- {date_part} [旧记录·已被澄清存疑] {entry['summary']}"
         if entry.get('correction_note'):
-            line+=f" -> ⚠️ 最新澄清：{entry['correction_note']}"
+            line+=f" -> [最新澄清] {entry['correction_note']}"
         return line
     line=f"- {date_part} {mode_tag} {entry['summary']}"
     if entry.get('disputed_original'):
@@ -560,24 +747,24 @@ def format_episodic_entry(entry):
 
 def relationship_baseline_summary(db,pid,cid,p_name):
     rel=db.execute('SELECT status,mode,attempts,updated_at FROM relations WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
-    milestones=db.execute("SELECT type,summary,created_at FROM events WHERE character_id=? AND profile_id=? AND type IN ('matched','unmatched','meeting','return') ORDER BY created_at",(cid,pid)).fetchall()
+    milestones=db.execute("SELECT type,summary,created_at FROM events WHERE character_id=? AND profile_id=? AND type IN ('matched','unmatched') ORDER BY created_at",(cid,pid)).fetchall()
     total_msgs=db.execute('SELECT COUNT(*) FROM messages WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()[0]
-    meet_msgs=db.execute("SELECT COUNT(*) FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting'",(pid,cid)).fetchone()[0]
+    meet_count=db.execute("SELECT COUNT(*) FROM meetings WHERE profile_id=? AND character_id=?",(pid,cid)).fetchone()[0]
     had_unmatch=any(m['type']=='unmatched' for m in milestones)
     reunited=had_unmatch and rel and rel['status']=='matched'
     parts=[f"与 {p_name} 当前状态：{'已匹配' if rel and rel['status']=='matched' else '未匹配'}（当前模式：{'线下见面' if rel and rel['mode']=='meeting' else '线上短信'}）"]
     if reunited:parts.append('曾解除匹配后再次重逢（保留过往记忆）')
-    parts.append(f"累计对话 {total_msgs} 条（其中线下见面互动 {meet_msgs} 条）")
+    parts.append(f"累计对话 {total_msgs} 条{f'（已归档 {meet_count} 次线下见面）' if meet_count else ''}")
     if milestones:
-        recent_ms='；'.join(f"{str(m['created_at'])[:10]} {m['summary']}" for m in milestones[-3:])
-        parts.append(f"关键节点：{recent_ms}")
+        recent_ms='；'.join(f"{str(m['created_at'])[:10]} {m['summary']}" for m in milestones[-2:])
+        parts.append(f"匹配记录：{recent_ms}")
     return '；'.join(parts)+'。'
 
 def select_working_history(db,pid,cid,mode='chat',through_rowid=None):
     if through_rowid is not None:
-        rows=db.execute('SELECT id,sender,mode,text,created_at FROM messages WHERE profile_id=? AND character_id=? AND rowid<=? ORDER BY rowid DESC LIMIT 24',(pid,cid,through_rowid)).fetchall()
+        rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND rowid<=? ORDER BY rowid DESC LIMIT 24',(pid,cid,through_rowid)).fetchall()
     else:
-        rows=db.execute('SELECT id,sender,mode,text,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 24',(pid,cid)).fetchall()
+        rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 24',(pid,cid)).fetchall()
     chron=list(reversed([dict(r) for r in rows]))
     if not chron:return []
     win_limit=8 if mode=='meeting' else 10
@@ -595,21 +782,6 @@ def write_message(db,pid,cid,sender,mode,txt,engine='human'):
 def log_event(db,pid,cid,kind,summary):
     now_str=utc()
     db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',(uid(),pid,cid,kind,summary[:500],now_str))
-    if kind in ('matched','unmatched','meeting','return'):
-        append_episodic_memory(
-            db,
-            owner_id=cid,
-            profile_id=pid,
-            source_type='milestone',
-            source_key=f'milestone:{kind}:{now_str[:19]}',
-            knowledge_mode='program-fact',
-            summary=summary[:260],
-            tags=[kind,'关系节点'],
-            importance=4,
-            emotional_weight=3,
-            unresolved=0,
-            event_at=now_str
-        )
 
 def latest_memory(db,cid,pid):
     # Preserve relationship milestones (matched, unmatched, meeting, return) so chat volume never erases them.
@@ -644,7 +816,7 @@ def completion(messages,*,json_mode=False,max_tokens=None):
         raise RuntimeError(f'模型接口返回 HTTP {exc.code}；请检查地址、模型和额度')
     except urllib.error.URLError as exc:raise RuntimeError('无法连接模型接口：'+str(exc.reason)[:140])
 
-def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None):
+def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_ids=None):
     ordered=db.execute('SELECT * FROM presets WHERE mode=? AND enabled=1 ORDER BY sort_order,id',(mode,)).fetchall()
     def macros(t):return t.replace('{{user}}',p['name']).replace('{{char}}',c['name'])
     sys_parts=[macros(x['content']) for x in ordered if x['role']=='system']
@@ -673,26 +845,59 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None):
     for x in ordered:
         if x['role']!='system':messages.append({'role':x['role'],'content':macros(x['content'])})
     for msg in working_history:
-        messages.append({'role':'assistant' if msg['sender']=='ai' else 'user','content':('[见面]' if msg['mode']=='meeting' else '[短信]')+msg['text']})
-    messages.append({'role':'system','content':'【第四层 · 当前状态 (Current State)】当前输出模式：'+('线下小说式 RP（不要替玩家行动）' if mode=='meeting' else '约会 App 手机聊天；仅发聊天气泡，不写小说旁白')+'。只输出下一条角色回复。'})
+        t_tag=fmt_hhmm(msg.get('created_at'))
+        prefix=(f"[见面 {t_tag}]" if t_tag else "[见面]") if msg['mode']=='meeting' else (f"[短信 {t_tag}]" if t_tag else "[短信]")
+        if msg.get('engine')=='recalled':
+            messages.append({'role':'assistant' if msg['sender']=='ai' else 'user','content':'[系统提示：对方刚刚撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'})
+        else:
+            messages.append({'role':'assistant' if msg['sender']=='ai' else 'user','content':prefix+msg['text']})
+    batch_hint=''
+    if mode=='chat' and pending_ids and len(pending_ids)>1:
+        bundled_rows=[]
+        for mid in pending_ids:
+            row=db.execute('SELECT id,text,created_at FROM messages WHERE id=?',(mid,)).fetchone()
+            if row:bundled_rows.append(dict(row))
+        if len(bundled_rows)>1:
+            tl=' -> '.join(f"[{fmt_hhmm(x['created_at'])}]「{x['text'][:60]}」" for x in bundled_rows)
+            batch_hint=f"\n【打包消息时间线】你在未看手机的这段时间里，对方陆续给你发来了 {len(bundled_rows)} 条消息（按发送时间先后：{tl}）。你现在刚拿起手机把这些消息一次性读完，请结合这些消息各自的时间戳跨度与内容，像真人一样自然连贯地统一回复。"
+    messages.append({'role':'system','content':'【第四层 · 当前状态 (Current State)】当前输出模式：'+('线下小说式 RP（不要替玩家行动）' if mode=='meeting' else '约会 App 手机聊天；仅发聊天气泡，不写小说旁白。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）'+batch_hint)+'。'})
     return messages
 
 def demo_text(db,p,c,mode):
     past=db.execute('SELECT COUNT(*) FROM messages WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()[0]
     if mode=='meeting':
-        return f"{c['name'].split()[0]}抬起头，视线在你脸上停了一瞬。周围的人声渐渐变成背景。他把手机收起来，轻声说：‘你来了。’"
-    if past<=2:return f"嗯，我在。你想先从什么聊起？"
-    lines=['这点倒是挺有意思。你为什么这么想？','我可能需要想一想再回答你。','你说的我会记住。那你呢？','你有时候真的会让我意外。']
+        m_state=MEETING_STATE.get((p['id'],c['id']),{})
+        loc=infer_meeting_location(db,p['id'],c['id'],m_state.get('meeting_location',''))
+        meet_count=db.execute("SELECT COUNT(*) FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting'",(p['id'],c['id'])).fetchone()[0]
+        if meet_count<=1:
+            return f"{c['name']}正站在{loc}微光映照的一侧。听见你的脚步声，对方抬起头，目光穿过人群定格在你身上。\n\n周围嘈杂的声响仿佛在这一刻退远了些。{c['name']}把手机收进衣袋，朝你走近两步，神情里带着一点见到真人时的微怔与放松：\n\n“你到了。比我想象的还要快一点……走吧，我们先找个安静的位置坐下聊。”"
+        scenes=[
+            f"{c['name']}安静地听完你的话，视线在你脸上停留了片刻，指尖轻轻碰了碰桌沿，眼底浮现出一丝温和的笑意。\n\n“原来你是这么想的。在手机里聊的时候我还不太确定，现在当面听你说，感觉完全不一样。”\n\n微风拂过{loc}的一角，{c['name']}微微倾身靠近了些，示意你继续往下说。",
+            f"{c['name']}垂下眼眸思索了两秒，随后抬眼望向你，语气比平时在消息里更加坦诚低缓：\n\n“这种事我平时很少跟别人提。不过既然今天和你在这里见面……我觉得告诉你也没关系。”",
+            f"四周的光影安静地流动着。{c['name']}替你整理了一下手边的东西，紧绷的肩线彻底放松下来：\n\n“今天能出来见你一面，真的很不错。接下来你还想去哪里走走吗？”"
+        ]
+        return scenes[meet_count%len(scenes)]
+    if past<=2:return "嗯，我在。|||你想先从什么聊起？"
+    lines=['这点倒是挺有意思。|||不过……你为什么会突然这么想？','等一下。|||我刚忙完手头的事，现在空下来了。|||你刚刚说的那个，我其实一直记得。','我可能需要想一想再回答你。','真的？|||你有时候真的会让我意外。|||那下次见面的时候，当面跟我细说吧。']
     return lines[past%len(lines)]
 
 def match_reply(db,p,c,again=False):
-    if load_connection().get('api_key') and load_connection().get('model'):
+    cur_mode=public_connection()['mode']
+    if cur_mode=='normal':
+        return [],'normal-pending'
+    if cur_mode=='live':
         try:
-            prompt=compile_messages(db,p,c,'chat');prompt.append({'role':'user','content':'你刚刚'+('再次' if again else '')+'和此人匹配成功。你可以发送一条简短的第一句话；如果曾经吵架或解除匹配，你记得过去，不要装作初识。'})
-            return completion(prompt,max_tokens=180),'live'
+            prompt=compile_messages(db,p,c,'chat')
+            if again:
+                prompt.append({'role':'user','content':f"【系统事件：重逢匹配】你刚刚和 {p['name']} 重新匹配上了，你记得你们之前的经历。请根据你的性格与过往记忆，主动发 1～2 条有真实重逢感的手机开场消息（多条气泡之间用 ||| 分隔，绝不要用生硬套话）。"})
+            else:
+                interests_str='、'.join(p.get('interests') or []) or '无'
+                prompt.append({'role':'user','content':f"【系统事件：首次匹配】你刚刚在约会软件上与 {p['name']} 互相右滑匹配成功。请结合你的原作性格、所处境遇以及对方的公开资料（简介：{p.get('bio') or '无'}；兴趣：{interests_str}），主动给对方发 1～2 条自然、有个人特色的第一条手机消息（多条气泡之间用 ||| 分隔，绝对不要说“看来我们匹配上了”这种千篇一律的套话）。"})
+            raw=completion(prompt,max_tokens=220)
+            return split_chat_bubbles(raw),'live'
         except Exception:pass
-    if again:return f"又见面了，{p['name']}。上次的事……我没有忘。",'demo'
-    return f"Hey，{p['name']}。看来我们匹配上了。",'demo'
+    demo_txt=f"{p['name']}，没想到这么快又刷到你了。|||又见面了……上次的事我没有忘。" if again else f"Hey，{p['name']}。|||看来我们匹配上了。"
+    return split_chat_bubbles(demo_txt),'demo'
 
 def match_decision(db,p,c,attempt):
     settings=load_connection()
@@ -708,22 +913,22 @@ def match_decision(db,p,c,attempt):
     seed=int(hashlib.sha256((p['id']+c['id']+str(attempt)).encode()).hexdigest()[:8],16)
     return (seed%100)<72,'demo'
 
-def generate_bios(db,characters):
+def generate_bios(db,characters,force_refresh=False):
     settings=load_connection()
     if not all(settings.get(k) for k in ('base_url','api_key','model')):return 'catalog-demo'
-    pending=[c for c in characters if not db.execute('SELECT 1 FROM character_bios WHERE character_id=?',(c['id'],)).fetchone()]
+    pending=list(characters) if force_refresh else [c for c in characters if not db.execute('SELECT 1 FROM character_bios WHERE character_id=?',(c['id'],)).fetchone()]
     if not pending:return 'cached-ai-bios'
     compact=[{'id':c['id'],'name':c['name'],'source':c['source'],'version':c['version'],'canon':c['canon'],'example':c['bio']} for c in pending]
-    rules='根据给定的、已收录的原作人物身份，为他们各写一条符合个性的约会软件公开简介。不得编造新的角色、错误时间线或伪造重要原作事实。特工隐秘职业不应随意曝光。每条中文不超过80字，真实自然。只输出 JSON 对象，形如 {"profiles":[{"id":"exact-id","bio":"..."}]}，只用输入中的ID。'
+    rules='根据给定的、已收录的原作人物身份，为他们各写一条符合当下性格与心境的约会软件公开简介。不得编造新的角色、错误时间线或伪造重要原作事实；若是刷新，请换一个贴合人设的新角度描写。每条中文不超过80字，真实自然。只输出 JSON 对象，形如 {"profiles":[{"id":"exact-id","bio":"..."}]}，只用输入中的ID。'
     try:
-        out=completion([{'role':'system','content':rules},{'role':'user','content':js(compact)}],json_mode=True,max_tokens=850)
+        out=completion([{'role':'system','content':rules},{'role':'user','content':js(compact)}],json_mode=True,max_tokens=950)
         value=parse_json(out,{})
         valid={c['id'] for c in pending};count=0
         for x in value.get('profiles',[]):
             if not isinstance(x,dict) or x.get('id') not in valid or not isinstance(x.get('bio'),str):continue
             bio=x['bio'].strip()
-            if 8<=len(bio)<=160:
-                db.execute('INSERT OR IGNORE INTO character_bios VALUES (?,?,?)',(x['id'],bio,utc()));count+=1
+            if 6<=len(bio)<=160:
+                db.execute('INSERT OR REPLACE INTO character_bios VALUES (?,?,?)',(x['id'],bio,utc()));count+=1
         db.commit();return 'live-generated' if count else 'catalog-demo'
     except Exception as err:
         print('Optional bio generation unavailable:',str(err)[:160],file=sys.stderr)
@@ -768,15 +973,19 @@ class Handler(BaseHTTPRequestHandler):
                         c=BY_ID.get(r['character_id']);
                         if not c:continue
                         last=db.execute('SELECT text,sender,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 1',(p['id'],c['id'])).fetchone()
-                        threads.append({'character':char_view(db,c),'relation':dict(r),'last':dict(last) if last else None,'queue':queue_view(db,p['id'],c['id'])})
+                        m_state=MEETING_STATE.get((p['id'],c['id']),{})
+                        threads.append({'character':char_view(db,c),'relation':dict(r)|{'hot_chat':bool(m_state.get('hot_chat',False))},'last':dict(last) if last else None,'queue':queue_view(db,p['id'],c['id'])})
                     return self.respond({'threads':threads})
                 if route=='/api/thread':
                     p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid)
                     if not c:raise ValueError('角色不存在')
                     rel=db.execute('SELECT * FROM relations WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()
                     if not rel or rel['status']!='matched':raise ValueError('尚未匹配或已解除匹配')
-                    msgs=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at,id',(p['id'],cid)).fetchall()
-                    return self.respond({'character':char_view(db,c),'profile':p,'relation':dict(rel),'messages':[dict(m) for m in msgs],'queue':queue_view(db,p['id'],cid)})
+                    msgs,meetings=ensure_meeting_records(db,p,c)
+                    db.commit()
+                    m_state=MEETING_STATE.get((p['id'],cid),{})
+                    rel_dict=dict(rel)|{'active_meeting_id':m_state.get('active_meeting_id',''),'meeting_location':m_state.get('meeting_location',''),'hot_chat':bool(m_state.get('hot_chat',False))}
+                    return self.respond({'character':char_view(db,c),'profile':p,'relation':rel_dict,'messages':msgs,'meetings':meetings,'queue':queue_view(db,p['id'],cid)})
                 if route=='/api/memories':
                     p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid)
                     if not c:raise ValueError('角色不存在')
@@ -784,13 +993,27 @@ class Handler(BaseHTTPRequestHandler):
                     mode=rel['mode'] if rel else 'chat'
                     working=select_working_history(db,p['id'],cid,mode=mode)
                     working_ids={m['id'] for m in working}
+                    all_msgs,meetings=ensure_meeting_records(db,p,c)
                     ensure_daily_summaries(db,p,c,working_ids)
                     db.commit()
                     q_str=arg('query').strip() or (' '.join(m['text'] for m in working[-3:] if m['sender']=='user')) or (' '.join(m['text'] for m in working[-2:]))
                     recalled=retrieve_relevant_memories(db,p['id'],cid,query_text=q_str,exclude_msg_ids=set() if arg('query').strip() else working_ids,limit=4,max_chars=1200)
                     all_rows=db.execute('SELECT * FROM episodic_memories WHERE owner_id=? AND profile_id=? ORDER BY event_at DESC,id DESC',(cid,p['id'])).fetchall()
-                    memories=[dict(r)|{'tags':parse_json(r['tags'],[]),'raw_msg_ids':parse_json(r['raw_msg_ids'],[]),'disputed':1 if r['disputed'] else 0,'unresolved':1 if r['unresolved'] else 0,'created_at':r['event_at']} for r in all_rows]
-                    total_msgs=db.execute('SELECT COUNT(*) FROM messages WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()[0]
+                    meet_by_key={'meeting:'+m['id']:m for m in meetings}
+                    memories=[]
+                    for r in all_rows:
+                        m_type='daily_summary' if r['source_type']=='daily-summary' else r['source_type']
+                        item=dict(r)|{'memory_type':m_type,'tags':parse_json(r['tags'],[]),'raw_msg_ids':parse_json(r['raw_msg_ids'],[]),'disputed':1 if r['disputed'] else 0,'unresolved':1 if r['unresolved'] else 0,'created_at':r['event_at']}
+                        if item['source_type']=='meeting_summary' and item['source_key'] in meet_by_key:
+                            item['meeting_id']=meet_by_key[item['source_key']]['id']
+                            item['meeting_data']=meet_by_key[item['source_key']]
+                        elif item['source_type']=='daily-summary':
+                            day_str=str(item['source_key']).replace('day:','')
+                            raw_set=set(item['raw_msg_ids'])
+                            d_msgs=[{'id':x['id'],'sender':x['sender'],'speaker':p['name'] if x['sender']=='user' else c['name'],'text':x['text'],'created_at':x['created_at']} for x in all_msgs if x['id'] in raw_set or (day_str and str(x['created_at'])[:10]==day_str and x['mode']=='chat')]
+                            item['day_messages']=d_msgs
+                        memories.append(item)
+                    total_msgs=len(all_msgs)
                     base_sum=relationship_baseline_summary(db,p['id'],cid,p['name'])
                     return self.respond({
                         'ownerId':cid,
@@ -803,7 +1026,9 @@ class Handler(BaseHTTPRequestHandler):
                         'totalMessagesCount':total_msgs,
                         'queryUsed':q_str,
                         'recalledPreview':[dict(m)|{'formatted':format_episodic_entry(m)} for m in recalled],
-                        'memories':memories
+                        'memories':memories,
+                        'episodic':memories,
+                        'meetings':meetings
                     })
                 if route=='/api/photo-description':
                     cid=arg('characterId');c=BY_ID.get(cid)
@@ -848,7 +1073,8 @@ class Handler(BaseHTTPRequestHandler):
                     p=profile_get(db,data.get('profileId'));choices=possible_candidates(db,p)
                     random.SystemRandom().shuffle(choices)
                     selected=choices[:10]
-                    generation=generate_bios(db,selected)
+                    force_refresh=bool(data.get('refresh'))
+                    generation=generate_bios(db,selected,force_refresh=force_refresh)
                     out=[]
                     for c in selected:
                         d=char_view(db,c)
@@ -896,27 +1122,160 @@ class Handler(BaseHTTPRequestHandler):
                     matched,engine=match_decision(db,p,c,attempt)
                     status='matched' if matched else 'pending'
                     db.execute('INSERT OR REPLACE INTO relations VALUES (?,?,?,?,?,?)',(p['id'],cid,status,'chat',attempt,utc()))
+                    greeting_replies=[]
                     if matched:
                         log_event(db,p['id'],cid,'matched','与 '+p['name']+(' 重新匹配' if again else ' 首次匹配'))
-                        txt,msg_engine=match_reply(db,p,c,again)
-                        write_message(db,p['id'],cid,'ai','chat',txt,msg_engine)
-                    db.commit();return self.respond({'direction':'right','matched':matched,'engine':engine,'character':char_view(db,c),'again':again})
+                        bubbles,msg_engine=match_reply(db,p,c,again)
+                        if bubbles:
+                            greeting_replies=[write_message(db,p['id'],cid,'ai','chat',b_txt,msg_engine) for b_txt in bubbles]
+                            if greeting_replies:
+                                record_dialogue_episode(db,p,c,[],dict(greeting_replies[-1],text=' / '.join(bubbles)),'chat')
+                    db.commit();return self.respond({'direction':'right','matched':matched,'engine':engine,'character':char_view(db,c),'again':again,'replies':greeting_replies})
+                if route=='/api/hot-chat':
+                    p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId',''));c=BY_ID.get(cid)
+                    if not c:raise ValueError('角色不存在')
+                    r=db.execute('SELECT * FROM relations WHERE profile_id=? AND character_id=? AND status=?',(p['id'],cid,'matched')).fetchone()
+                    if not r:raise ValueError('尚未匹配')
+                    m_state=MEETING_STATE.setdefault((p['id'],cid),{})
+                    next_hot=bool(data['hotChat']) if 'hotChat' in data else (not bool(m_state.get('hot_chat',False)))
+                    m_state['hot_chat']=next_hot
+                    with CHAT_LOCK:
+                        q=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()
+                        if q and q['status']!='inflight':
+                            pending=parse_json(q['pending'],[])
+                            if pending:
+                                now=now_ms()
+                                if next_hot:
+                                    due_at=now+CHAT_QUIET_MS
+                                    m_state['pace_mode']='hot'
+                                    m_state['delay_minutes']=1
+                                    m_state['target_time_label']=fmt_hhmm(due_at)
+                                    m_state['schedule_reason']='热聊模式 · 停手 1 分钟后立即阅读并回复'
+                                else:
+                                    last_m=db.execute('SELECT text FROM messages WHERE id=?',(pending[-1],)).fetchone()
+                                    delay_min,reason=compute_persona_delay(c,last_m['text'] if last_m else '')
+                                    due_at=now+delay_min*60000
+                                    m_state['pace_mode']='daily'
+                                    m_state['delay_minutes']=delay_min
+                                    m_state['target_time_label']=fmt_hhmm(due_at)
+                                    m_state['schedule_reason']=reason
+                                db.execute('UPDATE chat_queue SET due_at=? WHERE profile_id=? AND character_id=?',(due_at,p['id'],cid))
+                                db.commit()
+                    return self.respond({'ok':True,'hotChat':next_hot,'relation':dict(r)|{'hot_chat':next_hot},'queue':queue_view(db,p['id'],cid)})
+                if route=='/api/proactive-check':
+                    p=profile_get(db,data.get('profileId'))
+                    trigger=str(data.get('trigger','startup'))
+                    target_cid=str(data.get('characterId',''))
+                    conn=public_connection()
+                    cur_mode=conn['mode']
+                    p_mode=conn.get('proactive_mode','daily')
+                    if cur_mode=='normal':return self.respond({'sent':[],'skipped':'no-api'})
+                    if p_mode=='off' and trigger!='manual':return self.respond({'sent':[],'skipped':'off'})
+                    now=now_ms()
+                    if trigger!='manual':
+                        recent_ts=[ts for (pid_k,_),ts in PROACTIVE_LOG.items() if pid_k==p['id']]
+                        if recent_ts and (now-max(recent_ts))<30*60*1000:
+                            return self.respond({'delivered':[],'sent':[],'skipped':'global-stagger-cooldown'})
+                    rows=db.execute("SELECT * FROM relations WHERE profile_id=? AND status='matched' AND mode='chat' ORDER BY updated_at DESC",(p['id'],)).fetchall()
+                    chosen=[]
+                    for r in rows:
+                        cid=r['character_id']
+                        if target_cid and cid!=target_cid:continue
+                        if cid not in BY_ID:continue
+                        qv=queue_view(db,p['id'],cid)
+                        if qv['status']=='inflight' or (trigger!='manual' and qv['count']>0):continue
+                        unres=db.execute('SELECT * FROM episodic_memories WHERE owner_id=? AND profile_id=? AND unresolved=1 AND disputed=0 ORDER BY event_at DESC LIMIT 1',(cid,p['id'])).fetchone()
+                        if trigger in ('manual','idle','startup'):
+                            chosen.append((cid,BY_ID[cid],'promise' if unres else 'idle',dict(unres) if unres else None))
+                    sent=[]
+                    for cid,c,reason,unres in chosen[:1]:
+                        engine='demo';txt=''
+                        if cur_mode=='live':
+                            try:
+                                ms=compile_messages(db,p,c,'chat')
+                                mem_hint=f"你翻看手机时，想起你们之前未聊完的话题或约定：「{unres['summary']}」。" if unres else "你在自己的世界里刚忙完手头的事，突然想起了对方。"
+                                ms.append({'role':'user','content':f"【系统事件：角色主动发消息】距离你们上次联系已经过了一段时间，{p['name']} 还没有发来新消息。{mem_hint}请以完全符合 {c['name']} 原作性格与当前关系状态的方式，主动给 {p['name']} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白）。"})
+                                txt=completion(ms,max_tokens=220);engine='live'
+                            except Exception:continue
+                        else:
+                            txt=f"对了，{p['name']}。|||之前我们聊到的那件事，我刚才突然想起来了。|||你现在有空吗？" if unres else f"今天怎么这么安静？|||刚忙完手头的事，顺便看看你在不在。"
+                            engine='demo'
+                        b_list=split_chat_bubbles(txt)[:3]
+                        reps=[write_message(db,p['id'],cid,'ai','chat',b,engine) for b in b_list]
+                        if reps:
+                            log_event(db,p['id'],cid,'ai_proactive',c['name']+' 主动联系 '+p['name']+'：'+(' / '.join(b_list))[:180])
+                            record_dialogue_episode(db,p,c,[],dict(reps[-1],text=' / '.join(b_list)),'chat')
+                            if unres:db.execute('UPDATE episodic_memories SET unresolved=0 WHERE id=?',(unres['id'],))
+                            db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),p['id'],cid))
+                            PROACTIVE_LOG[(p['id'],cid)]=now_ms()
+                            sent.append({'characterId':cid,'characterName':c['name'],'reason':reason,'replies':reps,'reply':reps[-1]})
+                    db.commit();return self.respond({'delivered':sent,'sent':sent,'matchedCount':len(rows)})
                 if route=='/api/unmatch':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId')
                     r=db.execute('SELECT * FROM relations WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()
                     if not r:raise ValueError('关系不存在')
+                    MEETING_STATE.pop((p['id'],cid),None)
                     db.execute("UPDATE relations SET status='unmatched',mode='chat',updated_at=? WHERE profile_id=? AND character_id=?",(utc(),p['id'],cid))
                     queue_cancel(db,p['id'],cid);log_event(db,p['id'],cid,'unmatched','与 '+p['name']+' 解除匹配；过去的相处没有被抹去');db.commit();return self.respond({'ok':True})
                 if route=='/api/mode':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId');mode=data.get('mode')
+                    c=BY_ID.get(cid)
+                    if not c:raise ValueError('角色不存在')
                     if mode not in ('chat','meeting'):raise ValueError('模式无效')
                     r=db.execute('SELECT * FROM relations WHERE profile_id=? AND character_id=? AND status=?',(p['id'],cid,'matched')).fetchone()
                     if not r:raise ValueError('未匹配')
-                    db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
+                    m_state=MEETING_STATE.setdefault((p['id'],cid),{})
+                    loc_input=str(data.get('location') or data.get('meetingLocation') or '').strip()[:40]
+                    if loc_input:
+                        m_state['meeting_location']=loc_input
+                    meeting_record=None;opening_reply=None;warning=''
                     if r['mode']!=mode:
                         with CHAT_LOCK:queue_cancel(db,p['id'],cid)
-                    if r['mode']!=mode:log_event(db,p['id'],cid,'meeting' if mode=='meeting' else 'return','与 '+p['name']+(' 在线下见面' if mode=='meeting' else ' 返回手机消息'))
-                    db.commit();return self.respond({'mode':mode})
+                        if mode=='meeting':
+                            db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
+                            m_state['active_meeting_id']='meet_'+uid()
+                            m_state['meeting_location']=infer_meeting_location(db,p['id'],cid,loc_input)
+                            log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 在线下见面')
+                            if data.get('triggerOpening') is True and public_connection()['mode']!='normal':
+                                engine='demo';settings=load_connection()
+                                if all(settings.get(k) for k in ('base_url','api_key','model')):
+                                    try:reply_txt=completion(compile_messages(db,p,c,'meeting'));engine='live'
+                                    except Exception as e:warning=str(e);reply_txt='（模型连接失败，请检查终端设置后重试。）';engine='error'
+                                else:reply_txt=demo_text(db,p,c,'meeting')
+                                opening_reply=write_message(db,p['id'],cid,'ai','meeting',reply_txt,engine)
+                                m_state['active_meeting_id']='meet_'+opening_reply['id']
+                                if engine!='error':
+                                    log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply_txt[:180])
+                                meeting_record=upsert_meeting_record(db,p,c,m_state['active_meeting_id'],[opening_reply],m_state['meeting_location'])
+                        else:
+                            all_rows=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at,id',(p['id'],cid)).fetchall()
+                            m_msgs=[]
+                            for row in reversed(all_rows):
+                                if row['mode']=='meeting':m_msgs.insert(0,dict(row))
+                                else:break
+                            if m_msgs:
+                                mid='meet_'+m_msgs[0]['id']
+                                ai_sum='';ai_loc=loc_input or m_state.get('meeting_location','')
+                                if data.get('finalizeMeeting') is True and public_connection()['mode']=='live':
+                                    try:
+                                        transcript='\n'.join(f"{p['name'] if x['sender']=='user' else c['name']}：{x['text'][:180]}" for x in m_msgs[-10:])
+                                        sum_json=completion([
+                                            {'role':'system','content':f"请根据以下 {c['name']} 与 {p['name']} 的见面互动记录，提取见面地点与一句温暖简练的见面梗概（如：和{p['name']}在街角咖啡馆见面，聊了近况并度过了安静的傍晚）。只输出 JSON 对象：{{\"location\":\"地点（不超过12字）\",\"summary\":\"见面梗概（不超过65字）\"}}"},
+                                            {'role':'user','content':transcript}
+                                        ],json_mode=True,max_tokens=160)
+                                        parsed=parse_json(sum_json,{})
+                                        if parsed.get('location') and not loc_input:ai_loc=str(parsed['location']).strip()[:32]
+                                        if parsed.get('summary'):ai_sum=str(parsed['summary']).strip()[:150]
+                                    except Exception:pass
+                                meeting_record=upsert_meeting_record(db,p,c,mid,m_msgs,ai_loc,ai_sum)
+                            db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
+                            m_state['active_meeting_id']=''
+                            log_event(db,p['id'],cid,'return','与 '+p['name']+' 返回手机消息')
+                    elif mode=='meeting':
+                        _,meetings=ensure_meeting_records(db,p,c)
+                        if meetings:meeting_record=meetings[-1]
+                    db.commit()
+                    return self.respond({'mode':mode,'meetingId':m_state.get('active_meeting_id',''),'active_meeting_id':m_state.get('active_meeting_id',''),'location':m_state.get('meeting_location',''),'meeting_location':m_state.get('meeting_location',''),'meetingRecord':meeting_record,'openingReply':opening_reply,'warning':warning})
                 if route=='/api/chat-flush':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId')
                     if not cid:
@@ -932,13 +1291,19 @@ class Handler(BaseHTTPRequestHandler):
                 if route=='/api/message-delete':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId');mid=str(data.get('messageId',''))
                     if not mid:raise ValueError('缺少消息 ID')
-                    db.execute('DELETE FROM messages WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],cid))
+                    recalled_text='[系统提示：对方撤回了一条消息（你没有看清具体内容）]'
+                    db.execute("UPDATE messages SET text=?,engine='recalled' WHERE id=? AND profile_id=? AND character_id=?",(recalled_text,mid,p['id'],cid))
+                    mem_rows=db.execute('SELECT id,raw_msg_ids FROM episodic_memories WHERE owner_id=? AND profile_id=?',(cid,p['id'])).fetchall()
+                    for mr in mem_rows:
+                        if mid in parse_json(mr['raw_msg_ids'],[]):
+                            db.execute('UPDATE episodic_memories SET summary=? WHERE id=?',(f"{p['name']}撤回了一条消息（具体内容未知）",mr['id']))
+                    log_event(db,p['id'],cid,'message_recalled',p['name']+' 撤回了一条消息')
                     with CHAT_LOCK:
                         q=db.execute('SELECT pending,due_at FROM chat_queue WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()
                         if q:
                             pending=[x for x in parse_json(q['pending'],[]) if x!=mid]
                             db.execute('UPDATE chat_queue SET pending=?,due_at=? WHERE profile_id=? AND character_id=?',(js(pending),q['due_at'] if pending else 0,p['id'],cid))
-                    db.commit();return self.respond({'ok':True,'queue':queue_view(db,p['id'],cid)})
+                    db.commit();return self.respond({'ok':True,'recalled':True,'queue':queue_view(db,p['id'],cid)})
                 if route=='/api/memory-action':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId');c=BY_ID.get(cid)
                     if not c:raise ValueError('角色不存在')
@@ -971,18 +1336,23 @@ class Handler(BaseHTTPRequestHandler):
                     qv=queue_view(db,p['id'],cid)
                     if mode=='chat' and (qv['count'] or qv['status']=='inflight'):
                         return self.respond(queue_flush(db,p,c,force=True))
+                    if public_connection()['mode']=='normal':
+                        return self.respond({'reply':None,'replies':[],'mode':mode,'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。'})
                     engine='demo';warning='';settings=load_connection()
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
                         try:reply=completion(compile_messages(db,p,c,mode));engine='live'
                         except Exception as e:warning=str(e);reply='（模型连接失败，请检查终端设置后重试。）';engine='error'
                     else:reply=demo_text(db,p,c,mode)
-                    ai_msg=write_message(db,p['id'],cid,'ai',mode,reply,engine)
-                    if engine!='error':
-                        log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply[:180])
+                    bubble_texts=split_chat_bubbles(reply) if (mode=='chat' and engine!='error') else [reply]
+                    replies=[write_message(db,p['id'],cid,'ai',mode,b_txt,engine) for b_txt in bubble_texts]
+                    ai_msg=replies[-1] if replies else None
+                    if engine!='error' and ai_msg:
+                        combined_txt=' / '.join(bubble_texts)
+                        log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+combined_txt[:180])
                         last_u=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND sender='user' ORDER BY created_at DESC,id DESC LIMIT 1",(p['id'],cid)).fetchone()
-                        record_dialogue_episode(db,p,c,[dict(last_u)] if last_u else [],ai_msg,mode)
+                        record_dialogue_episode(db,p,c,[dict(last_u)] if last_u else [],dict(ai_msg,text=combined_txt),mode)
                     db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),p['id'],cid))
-                    db.commit();return self.respond({'reply':ai_msg,'mode':mode,'warning':warning})
+                    db.commit();return self.respond({'reply':ai_msg,'replies':replies,'mode':mode,'warning':warning})
                 if route=='/api/message':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId');c=BY_ID.get(cid)
                     if not c:raise ValueError('角色不存在')
@@ -995,10 +1365,12 @@ class Handler(BaseHTTPRequestHandler):
                     detect_and_apply_correction(db,p,c,user_msg)
                     if mode=='chat':
                         log_event(db,p['id'],cid,'user_message','与 '+p['name']+' 的聊天：'+txt[:180])
-                        with CHAT_LOCK:queue_add(db,p['id'],cid,user_msg['id'])
+                        with CHAT_LOCK:queue_add(db,p['id'],cid,user_msg['id'],txt)
                         db.commit()
-                        return self.respond({'user':user_msg,'reply':None,'queued':True,'mode':'chat','queue':queue_view(db,p['id'],cid)})
+                        return self.respond({'user':user_msg,'reply':None,'replies':[],'queued':True,'mode':'chat','queue':queue_view(db,p['id'],cid)})
                     log_event(db,p['id'],cid,'user_message','与 '+p['name']+' 的'+('见面' if mode=='meeting' else '聊天')+'：'+txt[:180])
+                    if public_connection()['mode']=='normal':
+                        db.commit();return self.respond({'user':user_msg,'reply':None,'replies':[],'auto_meeting':auto,'mode':mode,'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。'})
                     engine='demo';warning='';settings=load_connection()
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
                         try:reply=completion(compile_messages(db,p,c,mode));engine='live'
@@ -1009,9 +1381,11 @@ class Handler(BaseHTTPRequestHandler):
                         log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply[:180])
                         record_dialogue_episode(db,p,c,[user_msg],ai_msg,mode)
                     db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),p['id'],cid))
-                    db.commit();return self.respond({'user':user_msg,'reply':ai_msg,'auto_meeting':auto,'mode':mode,'warning':warning})
+                    db.commit();return self.respond({'user':user_msg,'reply':ai_msg,'replies':[ai_msg],'auto_meeting':auto,'mode':mode,'warning':warning})
                 if route=='/api/settings':
                     d=load_connection();
+                    if 'demo_enabled' in data:d['demo_enabled']=bool(data['demo_enabled'])
+                    if 'proactive_mode' in data and data['proactive_mode'] in ('off','daily','active'):d['proactive_mode']=data['proactive_mode']
                     if 'base_url' in data:d['base_url']=validate_base_url(str(data['base_url']).strip())
                     if 'api_key' in data:
                         v=str(data['api_key']);
