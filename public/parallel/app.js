@@ -46,18 +46,62 @@ sent:'<path d="M12.5 25.5c2.6 2.8 5.2 5.6 7.6 8.6c5.3-6.7 10.9-13.2 16.8-19.5"/>
 read:'<path d="M7.5 25.5c2.4 2.6 4.8 5.3 7 8.1c5-6.4 10.3-12.6 15.8-18.6M19.5 26.2c2.1 2.3 4.2 4.6 6.2 7.1c4.8-6.2 9.9-12.2 15.2-18"/>',
 unmatch:'<path d="M24 39c-7-5.5-13.5-10.8-15.5-17.5c-1.5-5 1-9.5 5.5-10.3c4-.7 7.7 1.6 10 5.4c2.3-3.9 6-6.2 10-5.4c4.5.9 7 5.4 5.4 10.4c-2.1 6.7-8.5 12-15.4 17.4"/><path d="M26.5 15.2l-4.2 7l4.8 3.6l-4.8 8"/>',
 hotchat:'<path d="M26.5 8.5c-5.4 5.8-10.4 11.8-14.2 17.6c3.4.2 6.8.3 10.2.3c-1.2 4.4-2.5 8.8-4 13.1c6.2-6.1 11.8-12.6 16.2-19.2c-3.5-.2-7-.3-10.5-.3c.9-3.8 1.7-7.7 2.3-11.5"/>',
-monitor:'<path d="M8.5 24c4.4-6.4 9.8-9.7 15.5-9.7s11.1 3.3 15.5 9.7c-4.4 6.4-9.8 9.7-15.5 9.7S12.9 30.4 8.5 24"/><path d="M24 19.2c2.8-.1 4.8 1.9 4.8 4.8s-2 4.8-4.8 4.8s-4.8-1.9-4.8-4.8s2-4.7 4.8-4.8"/>'
+monitor:'<path d="M8.5 24c4.4-6.4 9.8-9.7 15.5-9.7s11.1 3.3 15.5 9.7c-4.4 6.4-9.8 9.7-15.5 9.7S12.9 30.4 8.5 24"/><path d="M24 19.2c2.8-.1 4.8 1.9 4.8 4.8s-2 4.8-4.8 4.8s-4.8-1.9-4.8-4.8s2-4.7 4.8-4.8"/>',
+diary:'<path d="M12.5 9.5c7.8-.6 15.6-.6 23 .1c.7 9.6.7 19.3.1 28.9c-7.5.6-15.2.6-22.8.1c-.6-9.7-.6-19.4-.3-29.1"/><path d="M18.5 9.5c.1 4.2.1 8.4 0 12.6c1.8-1.4 3.5-2.8 5.2-4.2c1.7 1.4 3.4 2.8 5.1 4.2c.1-4.2.1-8.4 0-12.6m-10.3 19h11m-11 5.5h7.5"/>',
+calendar:'<path d="M9.5 14.5c9.6-.8 19.3-.8 29 0c.7 7.8.7 15.7 0 23.5c-9.7.8-19.4.8-29 0c-.7-7.8-.7-15.7 0-23.5"/><path d="M16.5 9.5v6m15-6v6m-21.5 6.5h28m-21 6.5h.01m6.99 0h.01m6.99 0h.01m-14 6h.01m6.99 0h.01"/>',
+mic:'<path d="M24 9.5c3.4 0 5.6 2.3 5.6 5.8v9.2c0 3.5-2.2 5.8-5.6 5.8s-5.6-2.3-5.6-5.8v-9.2c0-3.5 2.2-5.8 5.6-5.8"/><path d="M13 22.5c0 6.5 4.6 11.2 11 11.2s11-4.7 11-11.2M24 33.8v6.2m-6 0h12"/>',
+sticker:'<path d="M24 8.5c8.8 0 15.5 6.7 15.5 15.5S32.8 39.5 24 39.5S8.5 32.8 8.5 24S15.2 8.5 24 8.5"/><path d="M18.2 20.5h.01M29.8 20.5h.01M17.5 28c2.2 3.2 5.6 4.5 9.6 3.6c1.4-.3 2.6-1.1 3.4-2.1"/>',
+phone:'<path d="M14.5 10.5c2-.8 4.1-.4 5.4 1.4l2.3 3.6c.9 1.4.7 3.2-.5 4.4l-2.1 2.1c2 3.7 5.1 6.8 8.8 8.8l2.1-2.1c1.2-1.2 3-1.4 4.4-.5l3.6 2.3c1.8 1.3 2.2 3.4 1.4 5.4c-1.4 3.1-4.9 4.5-8.4 3.6C20.2 36.6 11.4 27.8 8.5 16.5c-.9-3.5.5-7 3.6-8.4Z"/>',
+video:'<path d="M8.5 14.5c7.8-.6 15.7-.6 23.5 0c.6 6.3.6 12.7 0 19c-7.8.6-15.7.6-23.5 0c-.6-6.3-.6-12.7 0-19"/><path d="M32 20.5l8.5-4.8c.8-.4 1.5.1 1.5 1v14.6c0 .9-.7 1.4-1.5 1L32 27.5"/>'
 };
+const CHAT_PLUS_ITEMS=[
+  {id:'photo',label:'照片',icon:'photo'},
+  {id:'voice',label:'语音',icon:'mic'},
+  {id:'sticker',label:'表情包',icon:'sticker'},
+  {id:'call',label:'电话',icon:'phone'},
+  {id:'videocall',label:'视频电话',icon:'video'}
+];
 const I=(name,cls='ic')=>`<svg class="${cls}" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]||ICONS.info}</svg>`;
 const esc=s=>String(s??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const $=id=>document.getElementById(id);
+const localDateStr=ts=>{try{const d=new Date(ts||Date.now());return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}catch{return new Date().toISOString().slice(0,10)}};
+const displayName=c=>String(c?.nickname||c?.display_name||c?.name||'').trim()||c?.name||'';
 const api=async(path,data)=>{if(globalThis.ParallelOffline)return globalThis.ParallelOffline.request(path,data);const o=await fetch('/api'+path,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});let body;try{body=await o.json()}catch{throw Error('服务端没有返回 JSON')}if(!o.ok)throw Error(body.error||'请求失败');return body};
-const state={tab:'discover',profiles:[],sources:[],settings:{},activeId:(()=>{try{return localStorage.getItem('parallel-active-profile')||''}catch{return ''}})(),candidates:[],deckIndex:0,threads:[],threadId:'',messages:[],meetings:[],activeMeetingId:'',meetingLocation:'',hotChat:false,memoryCategory:'all',lastMemoriesData:null,chatMode:'chat',chatBusy:false,queue:{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paceMode:'daily',hotChat:false,delayMinutes:0,targetTimeLabel:'',scheduleReason:''},flushBusy:false,revealingBubbles:false,hiddenReplyIds:new Set(),lastSendAt:0,lastUserActiveAt:Date.now(),proactiveBusy:false,idleTickCount:0,terminalTab:'api',presetMode:'chat',presets:[],profileDraft:null,identResults:[],editPresetId:null,presetImportDraft:null,loading:false,draftInputs:{},renderedThreadId:'',bgTickCount:0,apiCheckPrompted:false};
+const state={tab:'discover',profiles:[],sources:[],settings:{},activeId:(()=>{try{return localStorage.getItem('parallel-active-profile')||''}catch{return ''}})(),candidates:[],deckIndex:0,threads:[],threadId:'',messages:[],meetings:[],surveillanceMap:{},diaryMap:{},diarySummaryMap:{},lastKnownDate:localDateStr(),activeMeetingId:'',meetingLocation:'',hotChat:false,chatPlusOpen:false,profileMenuOpen:false,memoryCategory:'all',lastMemoriesData:null,chatMode:'chat',chatBusy:false,queue:{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paceMode:'daily',hotChat:false,delayMinutes:0,targetTimeLabel:'',scheduleReason:''},flushBusy:false,revealingBubbles:false,hiddenReplyIds:new Set(),lastSendAt:0,lastUserActiveAt:Date.now(),proactiveBusy:false,idleTickCount:0,terminalTab:'api',presetMode:'chat',presets:[],profileDraft:null,identResults:[],editPresetId:null,presetImportDraft:null,loading:false,draftInputs:{},renderedThreadId:'',bgTickCount:0,apiCheckPrompted:false};
 const tabs=[{id:'profile',label:'我的',detail:'我的 Profile',icon:'user'},{id:'discover',label:'发现',detail:'发现心动',icon:'sparkleheart'},{id:'messages',label:'消息',detail:'你的消息',icon:'message'},{id:'terminal',label:'终端',detail:'终端设置',icon:'terminal'}];
 let toastTimer;
 function toast(text){const node=$('toast');node.textContent=text;node.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>node.classList.remove('show'),4000)}
 function activeProfile(){return state.profiles.find(p=>p.id===state.activeId)||null}
 function avatar(p,cls='mini-avatar'){return `<span class="${cls}" style="background:${p?.accent||'linear-gradient(135deg,#F9E0AE,#F7C5CC)'}">${p?.avatar||p?.portrait?`<img src="${esc(p.avatar||p.portrait)}" alt="">`:esc((p?.name||'?')[0].toUpperCase())}</span>`}
+function renderProfileDropdownHtml(){
+  const cur=activeProfile();
+  if(!cur)return '';
+  const isOpen=Boolean(state.profileMenuOpen);
+  return `<div class="profile-dropdown-wrap ${isOpen?'is-open':''}" id="topbar-profile-dropdown">
+    <button type="button" class="btn soft profile-dropdown-btn" data-action="toggle-profile-menu" aria-haspopup="listbox" aria-expanded="${isOpen?'true':'false'}" title="点击下拉切换账户">
+      ${I('user')}
+      <span class="profile-dropdown-name">${esc(cur.name)}</span>
+      <span class="profile-dropdown-caret">${I('down')}</span>
+    </button>
+    <div class="profile-dropdown-menu ${isOpen?'open':''}" role="listbox" aria-label="切换账户">
+      <div class="profile-dropdown-head">切换扮演身份 (${state.profiles.length})</div>
+      <div class="profile-dropdown-list">
+        ${state.profiles.map(p=>{
+          const isCur=p.id===state.activeId;
+          const tagLine=(p.sources||[]).slice(0,2).join(' · ')||'未设作品 Tag';
+          return `<button type="button" role="option" aria-selected="${isCur?'true':'false'}" class="profile-dropdown-item ${isCur?'active':''}" data-action="quick-switch-profile" data-id="${esc(p.id)}">
+            ${avatar(p,'mini-avatar')}
+            <span class="profile-dropdown-info">
+              <b>${esc(p.name)}${p.age?`, ${p.age}`:''}</b>
+              <small>${esc(tagLine)}</small>
+            </span>
+            ${isCur?`<span class="profile-dropdown-check">${I('check')}</span>`:''}
+          </button>`;
+        }).join('')}
+      </div>
+    </div>
+  </div>`;
+}
 const fmtTime=s=>{try{return new Date(s).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}catch{return ''}};
 const genderText={male:'男性',female:'女性',nonbinary:'非二元',other:'其他',all:'不限'};
 function getModeLabel(s){
@@ -99,7 +143,11 @@ function renderChrome(){const nav=x=>`<button type="button" class="${x.id===stat
 async function navigate(tab){
   const existingInput=$('chat-input');
   if(existingInput&&state.threadId)state.draftInputs[state.threadId]=existingInput.value;
-  state.tab=tab;renderChrome();$('view').scrollTop=0;$('view').innerHTML='<div class="empty-state"><div class="empty-illustration">'+I('spark')+'</div><p>正在读取...</p></div>';try{if(tab==='profile')renderProfile();if(tab==='discover')await loadCandidates(false);if(tab==='messages')await loadThreads();if(tab==='terminal')await loadTerminal()}catch(e){toast(e.message);$('view').innerHTML=`<div class="empty-state"><h2>没有读取成功</h2><p>${esc(e.message)}</p><button class="btn soft" data-action="retry">重试</button></div>`}}
+  state.profileMenuOpen=false;
+  state.tab=tab;
+  const vEl=$('view');
+  if(vEl)vEl.classList.toggle('is-discover-view',tab==='discover');
+  renderChrome();$('view').scrollTop=0;$('view').innerHTML='<div class="empty-state"><div class="empty-illustration">'+I('spark')+'</div><p>正在读取...</p></div>';try{if(tab==='profile')renderProfile();if(tab==='discover')await loadCandidates(false);if(tab==='messages')await loadThreads();if(tab==='terminal')await loadTerminal()}catch(e){toast(e.message);$('view').innerHTML=`<div class="empty-state"><h2>没有读取成功</h2><p>${esc(e.message)}</p><button class="btn soft" data-action="retry">重试</button></div>`}}
 // Profile controls
 function newDraft(){return {id:'',name:'',age:'',gender:'female',interested_in:['all'],min_age:18,max_age:60,intent:'认识新朋友',bio:'',interests:[],sources:[],avatar:'',role_character_id:'',role_hint:''}}
 function renderProfile(draft){const p=activeProfile();const d=draft||state.profileDraft||p||newDraft();state.profileDraft=structuredClone(d);const creating=!d.id;
@@ -115,11 +163,11 @@ function removeSourceTag(btn){btn.remove();$('pf-source-input')?.focus()}
 async function identifyAction(){const name=$('pf-name').value.trim();if(!name){toast('先填写姓名');return}try{const data=await api('/identify?name='+encodeURIComponent(name));const holder=$('identify-results');const selected=$('pf-role-id').value;holder.innerHTML=data.matches.length?`<div class="identify-box"><div class="caption">找到 ${data.matches.length} 个已收录的角色版本。请选择准确的平行世界身份：</div>${data.matches.map(c=>`<button type="button" class="ident-option ${selected===c.id?'active':''}" data-action="choose-identity" data-id="${esc(c.id)}">${I('usercheck')}<span><b>${esc(c.name)}</b> · ${esc(c.version)}<br><span class="subtle">${esc(c.source)}</span></span></button>`).join('')}<button type="button" class="btn ghost" data-action="clear-role">不使用原作身份</button></div>`:`<div class="notice">本地目录没有找到“${esc(name)}”。请在下方补充作品名称和时期；暂时不会假装已经确认原作设定。在线人物识别待接入外部可核实资料源。</div>`}catch(e){toast(e.message)}}
 async function uploadAvatar(e){const file=e.target.files?.[0];if(!file)return;if(!file.type.startsWith('image/')){toast('请选择图片');return}const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{const cv=document.createElement('canvas');const scale=Math.min(1,520/Math.max(img.width,img.height));cv.width=Math.round(img.width*scale);cv.height=Math.round(img.height*scale);cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);state.profileDraft=readProfileDraft();state.profileDraft.avatar=cv.toDataURL('image/jpeg',.74);URL.revokeObjectURL(url);renderProfile(state.profileDraft);toast('头像已添加，保存 Profile 后生效')};img.onerror=()=>toast('头像读取失败');img.src=url}
 // Discover and swipe
-async function loadCandidates(showToast=false){$('topbar-actions').innerHTML=`${activeProfile()?`<button class="icon-btn" title="刷新 10 位候选" data-action="refresh">${I('refresh')}</button><button class="btn soft" data-action="go-profile">${I('user')} ${esc(activeProfile().name)}</button>`:''}`;if(!activeProfile()){return $('view').innerHTML=empty('dog','先创建你的 Profile','填写身份与作品来源后，就可以开始滑卡。','创建 Profile','profile')}
+async function loadCandidates(showToast=false){$('topbar-actions').innerHTML=`${activeProfile()?`<button class="icon-btn" title="刷新 10 位候选" data-action="refresh">${I('refresh')}</button>${renderProfileDropdownHtml()}`:''}`;if(!activeProfile()){return $('view').innerHTML=empty('dog','先创建你的 Profile','填写身份与作品来源后，就可以开始滑卡。','创建 Profile','profile')}
     if(!(activeProfile().sources||[]).length&&!state.allowAllSources){return $('view').innerHTML=`<div class="empty-state"><div class="empty-illustration">${I('compass')}</div><h2>还没有填写希望匹配的作品</h2><p>请先在你的 Profile 中添加「希望匹配的作品」Tag（如：生化危机、巫师3、漫威电影、赛博朋克2077），平行世界将只为你匹配对应作品中的角色。</p><div class="inline-row" style="justify-content:center"><button class="btn primary" data-action="nav" data-tab="profile">去添加作品 Tag ${I('arrow')}</button><button class="btn soft" data-action="allow-all-sources">不限作品 · 随机探索全部</button></div></div>`}
     const d=await api('/discover',{profileId:state.activeId,refresh:Boolean(showToast)});state.candidates=d.candidates;state.deckIndex=0;renderDiscover(d.total_available);if(showToast)toast(`已刷新：${d.candidates.length} 位候选${d.generation==='live-generated'?' · AI 已重新生成角色档案':''}${d.candidates.length<10?'（当前目录不足 10 位）':''}`);}
 function empty(icon,title,description,button,target){return `<div class="empty-state"><div class="empty-illustration">${I(icon)}</div><h2>${esc(title)}</h2><p>${esc(description)}</p>${button?`<button class="btn primary" data-action="nav" data-tab="${target}">${esc(button)} ${I('arrow')}</button>`:''}</div>`}
-function renderDiscover(total=state.candidates.length){const c=state.candidates[state.deckIndex];$('view').innerHTML=`<div class="discover-screen"><div class="discover-intro"><div><div class="kicker">YOUR NEXT CONNECTION</div><p>${esc(activeProfile()?.name||'')}，今天会遇见谁？</p></div><span class="counter">${c?`${state.deckIndex+1} / ${state.candidates.length}`:'0 / 0'} · ${total} 可选</span></div><div class="deck-container"><div class="deck-shadow"></div>${c?renderCard(c):`<div class="deck-empty">${I('sparkleheart')}<h3>${total===0?'暂时没有符合条件的角色':'这轮已经刷完啦'}</h3><p>${total===0?'你添加的作品 Tag 已经保存，但当前本地目录里没有符合这些条件的角色。可以先调整 Tag；后续再接入新作品识别。':'刷新再遇见新的候选，也可能再次刷到熟悉的人。'}</p>${total===0?`<button class="btn primary" data-action="nav" data-tab="profile">${I('user')} 编辑作品 Tag</button>`:`<button class="btn primary" data-action="refresh">${I('refresh')} 刷新候选</button>`}</div>`}</div>${c?`<div class="swipe-actions"><button class="pass" data-action="swipe-left" title="不感兴趣">${I('x')}</button><button class="details" data-action="card-details" title="查看背景">${I('info')}</button><button class="like" data-action="swipe-right" title="感兴趣">${I('heart')}</button></div>`:''}<div class="discover-bottom-note">左滑不感兴趣 · 右滑感兴趣<br>所有候选均来自已收录原作，不生成原创 AI 人物</div></div>`;if(c){attachSwipe();if(state.settings.image_mode==='live'&&!c.portrait&&state.portraitBusyId!==c.id&&!(state.portraitFailed&&state.portraitFailed[c.id]))generateCardPortrait(false,true)}}
+function renderDiscover(total=state.candidates.length){const c=state.candidates[state.deckIndex];$('view').classList.add('is-discover-view');$('view').innerHTML=`<div class="discover-screen"><div class="discover-intro"><p class="discover-greeting">${esc(activeProfile()?.name||'')}，今天会遇见谁？</p><span class="counter">${c?`${state.deckIndex+1} / ${state.candidates.length}`:'0 / 0'} · ${total} 可选</span></div><div class="deck-container"><div class="deck-shadow"></div>${c?renderCard(c):`<div class="deck-empty">${I('sparkleheart')}<h3>${total===0?'暂时没有符合条件的角色':'这轮已经刷完啦'}</h3><p>${total===0?'你添加的作品 Tag 已经保存，但当前本地目录里没有符合这些条件的角色。可以先调整 Tag；后续再接入新作品识别。':'刷新再遇见新的候选，也可能再次刷到熟悉的人。'}</p>${total===0?`<button class="btn primary" data-action="nav" data-tab="profile">${I('user')} 编辑作品 Tag</button>`:`<button class="btn primary" data-action="refresh">${I('refresh')} 刷新候选</button>`}</div>`}</div>${c?`<div class="swipe-actions"><button class="pass" data-action="swipe-left" title="不感兴趣">${I('x')}</button><button class="details" data-action="card-details" title="查看背景">${I('info')}</button><button class="like" data-action="swipe-right" title="感兴趣">${I('heart')}</button></div>`:''}</div>`;if(c){attachSwipe();if(state.settings.image_mode==='live'&&!c.portrait&&state.portraitBusyId!==c.id&&!(state.portraitFailed&&state.portraitFailed[c.id]))generateCardPortrait(false,true)}}
 function renderCard(c){
   const useImg=state.settings.image_mode==='live'||!!c.portrait;
   if(c.portrait){
@@ -166,7 +214,7 @@ async function photoDescriptionModal(regenerate=false,forceText=false){const c=s
   }catch(e){toast('照片文字描述失败：'+e.message)}
 }
 // Messages
-async function loadThreads(preselect){$('topbar-actions').innerHTML=`<button class="btn soft" data-action="go-discover">${I('sparkleheart')} 继续发现</button>`;if(!activeProfile())return $('view').innerHTML=empty('dog','先创建 Profile','消息会按你当前扮演的身份分别展示。','创建 Profile','profile');const r=await api('/threads?profileId='+encodeURIComponent(state.activeId));state.threads=r.threads;if(preselect)state.threadId=preselect;if(!state.threads.find(x=>x.character.id===state.threadId))state.threadId=window.innerWidth>580?(state.threads[0]?.character.id||''):'';if(state.threadId)await loadThread(state.threadId,false);else renderMessages()}
+async function loadThreads(preselect){$('topbar-actions').innerHTML=`<button class="btn soft" data-action="go-discover">${I('sparkleheart')} 继续发现</button>${renderProfileDropdownHtml()}`;if(!activeProfile())return $('view').innerHTML=empty('dog','先创建 Profile','消息会按你当前扮演的身份分别展示。','创建 Profile','profile');const r=await api('/threads?profileId='+encodeURIComponent(state.activeId));state.threads=r.threads;if(preselect)state.threadId=preselect;if(!state.threads.find(x=>x.character.id===state.threadId))state.threadId=window.innerWidth>580?(state.threads[0]?.character.id||''):'';if(state.threadId)await loadThread(state.threadId,false);else renderMessages()}
 function isCharacterTyping(){
   return Boolean(state.flushBusy||state.queue?.status==='inflight'||state.revealingBubbles||(state.chatBusy&&state.chatMode==='meeting'));
 }
@@ -177,17 +225,29 @@ async function loadThread(cid,render=true){
   state.threadId=cid;
   state.messages=r.messages||[];
   state.meetings=r.meetings||[];
+  if(r.surveillance)state.surveillanceMap[cid]=r.surveillance;
+  if(r.diarySummary)state.diarySummaryMap[cid]=r.diarySummary;
+  const tItem=state.threads.find(x=>x.character.id===cid);
+  if(tItem&&r.character)tItem.character=r.character;
   state.chatMode=r.relation.mode;
   state.hotChat=Boolean(r.relation.hot_chat||r.queue?.hotChat);
   state.activeMeetingId=r.relation.active_meeting_id||'';
   state.meetingLocation=r.relation.meeting_location||'';
   state.queue=r.queue||{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paceMode:state.hotChat?'hot':'daily',hotChat:state.hotChat};
+  if(state.settings?.mode==='live'&&r.surveillance?.engine!=='live'){
+    const pid=state.activeId;
+    api('/surveillance',{profileId:pid,characterId:cid}).then(surv=>{
+      if(surv&&state.activeId===pid)state.surveillanceMap[cid]=surv;
+    }).catch(()=>{});
+  }
   if(render)renderMessages();else renderMessages();
 }
 function renderMessagesListItems(){
   return `<div class="threads-header">CONNECTIONS · ${state.threads.length}</div>${state.threads.map(x=>{
     const lastTxt=(x.last?.engine==='recalled'||x.last?.recalled)?'撤回了一条消息':(x.last?.text||'刚刚匹配');
-    return `<button class="thread-card ${x.character.id===state.threadId?'active':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(x.character.name)}${x.queue?.count?`<span class="thread-queue-badge" title="${x.queue.count} 条已发出消息"></span>`:''}</b><p>${esc(lastTxt)}</p></span></button>`;
+    const dName=displayName(x.character);
+    const hasNick=Boolean(x.character.nickname&&x.character.nickname!==x.character.name);
+    return `<button class="thread-card ${x.character.id===state.threadId?'active':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(dName)}${hasNick?`<span class="thread-truename-hint">（${esc(x.character.name)}）</span>`:''}${x.queue?.count?`<span class="thread-queue-badge" title="${x.queue.count} 条已发出消息"></span>`:''}</b><p>${esc(lastTxt)}</p></span></button>`;
   }).join('')}`;
 }
 function formatNovelParagraphs(text){
@@ -316,10 +376,10 @@ function renderChatMessagesHtml(c){
     }
     const m=b.msg;
     if(m.engine==='recalled'||m.recalled){
-      return `<div class="recall-notice" data-recalled-id="${esc(m.id)}">${I('refresh','recall-ic')}<span>${m.sender==='user'?'你撤回了一条消息（对方会看见你撤回了消息）':`${esc(c.name)} 撤回了一条消息`}</span></div>`;
+      return `<div class="recall-notice" data-recalled-id="${esc(m.id)}">${I('refresh','recall-ic')}<span>${m.sender==='user'?'你撤回了一条消息':`${esc(c.name)} 撤回了一条消息`}</span></div>`;
     }
     const canRecall=m.sender==='user'&&m.id&&m.id!=='pending'&&m.id!=='typing';
-    const recallBtn=canRecall?`<button type="button" class="msg-del-btn" data-action="delete-message" data-id="${esc(m.id)}" title="撤回此条消息（对方会看到你撤回了一条消息，但不知道内容）" aria-label="撤回此条消息">撤回</button>`:'';
+    const recallBtn=canRecall?`<button type="button" class="msg-del-btn" data-action="delete-message" data-id="${esc(m.id)}" title="撤回此条消息" aria-label="撤回此条消息">撤回</button>`:'';
     let receiptHtml='';
     if(m.sender==='user'){
       const isUnread=(m.id==='pending'||(pendingSet.has(m.id)&&!charTyping));
@@ -340,9 +400,9 @@ function renderHeaderModeButton(meeting){
   }
   const isHot=Boolean(state.hotChat);
   const hotTitle=isHot
-    ?'当前：热聊模式（你停手 1 分钟后对方立即已读并回复）· 点击切换回日常模式'
-    :'当前：日常模式（按角色作息判定回复时间，期间多条消息自动打包）· 点击开启热聊模式';
-  return `<button type="button" class="icon-btn hot-chat-btn ${isHot?'is-hot':''}" data-action="toggle-hot-chat" aria-pressed="${isHot?'true':'false'}" aria-label="${isHot?'热聊模式已开启':'开启热聊模式'}" title="${hotTitle}">${I('hotchat')}</button><button type="button" class="icon-btn mode-icon-btn" data-action="change-mode" aria-label="进入面对面见面" title="进入面对面见面（角色回复后将直接进入独立文字小说页面）">${I('map')}</button>`;
+    ?'当前：热聊模式 · 点击切换回日常模式'
+    :'当前：日常模式 · 点击开启热聊模式';
+  return `<button type="button" class="icon-btn hot-chat-btn ${isHot?'is-hot':''}" data-action="toggle-hot-chat" aria-pressed="${isHot?'true':'false'}" aria-label="${isHot?'热聊模式已开启':'开启热聊模式'}" title="${hotTitle}">${I('hotchat')}</button><button type="button" class="icon-btn mode-icon-btn" data-action="change-mode" aria-label="进入面对面见面" title="进入面对面见面">${I('map')}</button>`;
 }
 function renderMessages(){
   const selected=state.threads.find(x=>x.character.id===state.threadId);
@@ -368,10 +428,17 @@ function renderMessages(){
     const meeting=state.chatMode==='meeting';
     const chatViewEl=layoutEl.querySelector('.chat-view');
     if(chatViewEl)chatViewEl.classList.toggle('meeting-mode',meeting);
+    const nameEl=layoutEl.querySelector('.chat-heading-text b');
+    if(nameEl){
+      nameEl.textContent=displayName(selected.character);
+      nameEl.title=displayName(selected.character);
+    }
     const subEl=layoutEl.querySelector('.chat-heading small');
     if(subEl){
+      const c=selected.character;
+      const subText=c.nickname?`原名：${c.name} · ${c.version}`:c.version;
       subEl.className=charTyping?'typing-header-hint':'';
-      subEl.textContent=charTyping?'对方正在输入中…':selected.character.version;
+      subEl.textContent=charTyping?'对方正在输入中…':subText;
     }
     const modeSlot=layoutEl.querySelector('#chat-mode-btn-slot');
     if(modeSlot)modeSlot.innerHTML=renderHeaderModeButton(meeting);
@@ -381,6 +448,13 @@ function renderMessages(){
     existingInput.placeholder=meeting?'写下你在见面时的动作、神态或台词……':'输入消息……';
     const sendBtn=layoutEl.querySelector('#chat-form .send');
     if(sendBtn)sendBtn.disabled=isBusy;
+    const plusBtn=layoutEl.querySelector('#chat-form .chat-plus-btn');
+    if(plusBtn){
+      plusBtn.classList.toggle('active',Boolean(state.chatPlusOpen));
+      plusBtn.setAttribute('aria-expanded',state.chatPlusOpen?'true':'false');
+    }
+    const plusPanel=$('chat-plus-panel');
+    if(plusPanel)plusPanel.classList.toggle('open',Boolean(state.chatPlusOpen));
     updateQueueCountdown();
     return;
   }
@@ -403,46 +477,215 @@ function renderMessages(){
 }
 function renderChat(thread){
   const c=thread.character;
+  const dName=displayName(c);
+  const subText=c.nickname?`原名：${c.name} · ${c.version}`:c.version;
   const meeting=state.chatMode==='meeting';
   const isBusy=state.chatBusy||state.flushBusy||state.queue?.status==='inflight';
   const charTyping=isCharacterTyping();
-  return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表" title="返回列表">${I('back')}</button><button type="button" class="chat-avatar-trigger" data-action="open-char-hub" aria-label="打开角色互动弹窗" title="点击头像打开角色功能菜单（含记忆档案）">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b title="${esc(c.name)}">${esc(c.name)}</b><small class="${charTyping?'typing-header-hint':''}" title="${esc(c.version)}">${charTyping?'对方正在输入中…':esc(c.version)}</small></div></button></div><div class="chat-header-actions"><span id="chat-mode-btn-slot">${renderHeaderModeButton(meeting)}</span><button type="button" class="icon-btn danger-icon" data-action="unmatch" aria-label="解除匹配" title="解除匹配">${I('unmatch')}</button></div></div><div id="chat-body" class="chat-body ${meeting?'meeting-novel-body':''}">${renderChatMessagesHtml(c)}</div><form id="chat-form" class="chat-compose"><textarea id="chat-input" rows="1" placeholder="${meeting?'写下你在见面时的动作、神态或台词……':'输入消息……'}" maxlength="4000" required></textarea><button class="send" type="submit" title="发送消息" ${isBusy?'disabled':''}>${I('send')}</button></form><div class="chat-queue-status" id="chat-queue-status" aria-live="polite"></div>`;
+  const plusOpen=Boolean(state.chatPlusOpen);
+  const plusItemsHtml=CHAT_PLUS_ITEMS.map(item=>`<button type="button" class="chat-plus-item" data-action="chat-plus-item" data-feature="${item.id}" data-label="${item.label}">
+    <span class="chat-plus-icon">${I(item.icon)}</span>
+    <span class="chat-plus-label">${item.label}</span>
+  </button>`).join('');
+  return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表" title="返回列表">${I('back')}</button><button type="button" class="chat-avatar-trigger" data-action="open-char-hub" aria-label="打开角色专属空间" title="点击打开角色专属空间（监控、日记、记忆档案与备注）">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b title="${esc(dName)}">${esc(dName)}</b><small class="${charTyping?'typing-header-hint':''}" title="${esc(subText)}">${charTyping?'对方正在输入中…':esc(subText)}</small></div></button></div><div class="chat-header-actions"><span id="chat-mode-btn-slot">${renderHeaderModeButton(meeting)}</span><button type="button" class="icon-btn danger-icon" data-action="unmatch" aria-label="解除匹配" title="解除匹配">${I('unmatch')}</button></div></div><div id="chat-body" class="chat-body ${meeting?'meeting-novel-body':''}">${renderChatMessagesHtml(c)}</div><form id="chat-form" class="chat-compose"><textarea id="chat-input" rows="1" placeholder="${meeting?'写下你在见面时的动作、神态或台词……':'输入消息……'}" maxlength="4000" required></textarea><button class="send" type="submit" title="发送消息" ${isBusy?'disabled':''}>${I('send')}</button><button class="chat-plus-btn ${plusOpen?'active':''}" type="button" data-action="toggle-chat-plus" aria-label="更多功能" aria-expanded="${plusOpen?'true':'false'}" title="更多功能（照片、语音、表情包、电话、视频电话）">${I('plus')}</button></form><div id="chat-plus-panel" class="chat-plus-panel ${plusOpen?'open':''}" role="region" aria-label="聊天扩展功能面板"><div class="chat-plus-grid">${plusItemsHtml}</div></div><div class="chat-queue-status" id="chat-queue-status" aria-live="polite"></div>`;
 }
-function openCharacterHubModal(){
+function openCharacterHubModal(editingNick=false){
   const thread=state.threads.find(x=>x.character.id===state.threadId);
   if(!thread)return;
   const c=thread.character;
+  const dName=displayName(c);
+  const hasNick=Boolean(c.nickname&&c.nickname.trim());
+  const surv=state.surveillanceMap[c.id];
+  const curLoc=surv?.current?.location||'';
+  const dSum=state.diarySummaryMap[c.id];
+  const latestDiaryHint=dSum?.latestDate?`最新：${dSum.latestDate} 日记`:'每日 00:00 自动生成';
   const html=`<div class="kicker">CHARACTER POCKET · 角色专属空间</div>
     <div class="char-hub-header">
-      ${avatar({...c,avatar:c.portrait})}
-      <div class="char-hub-title">
-        <h2>${esc(c.name)}</h2>
-        <p class="caption">${esc(c.source)} · ${esc(c.version)}</p>
+      <div class="char-hub-top">
+        ${avatar({...c,avatar:c.portrait},'mini-avatar char-hub-avatar')}
+        <div class="char-hub-title">
+          <button type="button" class="char-hub-name-btn" data-action="toggle-nickname-edit" title="点击角色名字修改专属备注（留空恢复原名）">
+            <span class="char-hub-display-name">${esc(dName)}</span>
+            <span class="char-hub-edit-pill">${I('edit')}<span>${hasNick?'改备注':'备注'}</span></span>
+          </button>
+          <div class="char-hub-source-line">${esc(c.source)} · ${esc(c.version)}</div>
+        </div>
+      </div>
+      <div id="char-hub-nick-editor" class="char-hub-nick-editor" style="display:${editingNick?'grid':'none'}">
+        <input id="char-hub-nick-input" type="text" maxlength="36" value="${esc(c.nickname||'')}" placeholder="输入给 TA 的备注名（留空恢复原名）">
+        <div class="char-hub-nick-actions">
+          ${hasNick?`<button type="button" class="btn soft tiny-btn" data-action="reset-nickname">恢复原名</button>`:''}
+          <button type="button" class="btn ghost tiny-btn" data-action="cancel-nickname">取消</button>
+          <button type="button" class="btn primary tiny-btn" data-action="save-nickname">${I('check')} 保存备注</button>
+        </div>
+      </div>
+      <div class="char-hub-truename-bar">
+        <span class="truename-tag">角色真名：<b>${esc(c.name)}</b></span>
+        <span class="truename-status">${hasNick?`已设备注：${esc(dName)}`:'未设备注 · 显示原名'}</span>
       </div>
     </div>
     <div class="char-hub-grid">
+      <button type="button" class="char-hub-item" data-action="open-surveillance" title="查看角色此刻在哪、在做什么，或选择日期查看过往角色经历">
+        <span class="char-hub-ic">${I('monitor')}</span>
+        <b>实时监控</b>
+        <small>${esc(curLoc?`此刻在：${curLoc}`:'查看实时画面与过往行踪')}</small>
+      </button>
+      <button type="button" class="char-hub-item" data-action="open-diary" title="每日 00:00 根据前日监控自动生成角色私密日记，可按日期翻阅过往">
+        <span class="char-hub-ic">${I('diary')}</span>
+        <b>角色日记</b>
+        <small>${esc(latestDiaryHint)}</small>
+      </button>
       <button type="button" class="char-hub-item" data-action="open-memories" title="查看与管理该角色的记忆档案">
         <span class="char-hub-ic">${I('book')}</span>
         <b>记忆档案</b>
         <small>查看见面回忆与按日归档</small>
       </button>
       <button type="button" class="char-hub-item is-placeholder" disabled title="即将推出">
-        <span class="char-hub-ic">${I('spark')}</span>
-        <b>待定功能</b>
-        <small>预留图标槽位</small>
-      </button>
-      <button type="button" class="char-hub-item is-placeholder" disabled title="即将推出">
-        <span class="char-hub-ic">${I('heart')}</span>
-        <b>待定功能</b>
-        <small>预留图标槽位</small>
-      </button>
-      <button type="button" class="char-hub-item is-placeholder" disabled title="即将推出">
         <span class="char-hub-ic">${I('compass')}</span>
         <b>待定功能</b>
-        <small>预留图标槽位</small>
+        <small>预留专属空间槽位</small>
       </button>
     </div>`;
   modal(html,`<button class="btn soft" data-action="close-modal">关闭</button>`);
+  if(editingNick){
+    setTimeout(()=>{$('char-hub-nick-input')?.focus();$('char-hub-nick-input')?.select()},40);
+  }
+}
+async function saveCharacterNickname(nickValue){
+  const thread=state.threads.find(x=>x.character.id===state.threadId);
+  if(!thread||!state.activeId)return;
+  const clean=String(nickValue??'').trim().slice(0,36);
+  try{
+    const r=await api('/nickname',{profileId:state.activeId,characterId:thread.character.id,nickname:clean});
+    if(r.character)thread.character=r.character;
+    else thread.character.nickname=clean;
+    renderMessages();
+    openCharacterHubModal(false);
+    toast(clean?`已将备注修改为「${clean}」`:`已恢复显示原名「${thread.character.name}」`);
+  }catch(e){toast('修改备注失败：'+e.message)}
+}
+async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
+  const thread=state.threads.find(x=>x.character.id===state.threadId);
+  if(!thread||!state.activeId)return;
+  const c=thread.character;
+  const dName=displayName(c);
+  try{
+    const data=await api('/surveillance',{profileId:state.activeId,characterId:c.id,date:selectedDate||'',refresh:Boolean(forceRefresh)});
+    if(data.isToday!==false)state.surveillanceMap[c.id]=data;
+    const isToday=data.isToday!==false;
+    const cur=data.current||{};
+    const unlocked=data.unlockedSlots||[];
+    const lockedCount=Number(data.lockedCount||0);
+    const todayStr=data.today||localDateStr();
+    const curDateVal=data.date||todayStr;
+    const sourceBadge=s=>{
+      if(s.isCurrent)return '正在进行';
+      if(s.source==='meeting')return '线下见面足迹';
+      if(s.source==='meeting_shift')return '见面后行程';
+      if(s.source==='chat_update')return '聊天动态同步';
+      return s.status||'已发生';
+    };
+    const html=`<div class="kicker">LIVE SURVEILLANCE · 角色行踪监控</div>
+      <div class="modal-head-bar">
+        <div class="modal-head-titles">
+          <h2>${esc(dName)} 的${isToday?'实时监控':'过往经历监控'}</h2>
+          <p class="caption">${esc(curDateVal)} · ${isToday?`当前时间 ${esc(data.nowTime||fmtTime(new Date().toISOString()))} · 与聊天及见面地点双向实时同步`:'过往日期全天 00:00–23:59 经历归档'}</p>
+        </div>
+        <div class="modal-head-controls">
+          <div class="modal-date-picker" data-action="open-date-picker" title="点击打开日历选择日期">
+            ${I('calendar')}
+            <input type="date" id="surv-date-input" class="modal-date-input" value="${esc(curDateVal)}" max="${esc(todayStr)}" aria-label="选择监控日期">
+          </div>
+          ${!isToday?`<button type="button" class="btn soft tiny-btn" data-action="select-surv-date" data-date="${esc(todayStr)}">回到今日</button>`:''}
+          ${state.settings?.mode==='live'?`<button type="button" class="btn soft tiny-btn" data-action="refresh-surveillance" data-date="${esc(curDateVal)}">${I('refresh')} 同步</button>`:''}
+        </div>
+      </div>
+      ${isToday?`<div class="surv-live-card">
+        <div class="surv-live-head">
+          <span class="surv-live-badge"><i class="surv-live-dot"></i> 此刻实时画面 · ${esc(cur.status||'日常活动')}</span>
+          <span class="surv-live-time">${esc(cur.start||'00:00')} – ${esc(cur.end||'23:59')}</span>
+        </div>
+        <div class="surv-live-loc">${I('map')}<span>${esc(cur.location||`${c.name}的常去地点`)}</span></div>
+        <div class="surv-live-act">${esc(cur.activity||'正在处理日常事务')}</div>
+        <div class="surv-live-scene">${esc(cur.scene||`${c.name}正在当下所在的位置处理日常事务。`)}</div>
+        <div class="surv-live-actions">
+          <span class="caption">如果在聊天中直接点「进入见面」，将默认前往该实时地点</span>
+          ${state.chatMode==='chat'?`<button type="button" class="btn primary tiny-btn" data-action="surv-enter-meeting" data-loc="${esc(cur.location||'')}">${I('map')} 前往此处与 TA 见面</button>`:`<span class="pill">当前正在线下见面中</span>`}
+        </div>
+      </div>`:''}
+      <div class="surv-section-head">
+        <h3>${isToday?'今日已发生足迹（随时间自然解锁）':`${esc(curDateVal)} 全天经历回溯`}</h3>
+        <span class="caption">已解锁 ${unlocked.length} / ${data.totalSlotsCount||unlocked.length} 个时段</span>
+      </div>
+      <div class="surv-timeline">
+        ${unlocked.map(s=>`<div class="surv-slot ${s.isCurrent?'is-current':''} ${s.source==='meeting'?'is-meeting':''}">
+          <div class="surv-slot-top">
+            <span class="surv-slot-time">${esc(s.start)} – ${esc(s.end)}</span>
+            <span class="surv-slot-loc">${I('map')}<span>${esc(s.location)}</span></span>
+            <span class="surv-slot-tag">${esc(sourceBadge(s))}</span>
+          </div>
+          <div class="surv-slot-act">${esc(s.activity)}</div>
+          ${(!isToday&&s.scene)?`<div class="surv-slot-scene">${esc(s.scene)}</div>`:''}
+        </div>`).join('')}
+      </div>
+      ${lockedCount>0?`<div class="surv-locked-note">${I('clock')}<span>今日后续还有 ${lockedCount} 个未到时间的行程时段，将随现实时间推进自动解锁，也可由你们接下来的聊天与见面动态改写。</span></div>`:''}`;
+    modal(html,`<button class="btn soft" data-action="open-char-hub">返回角色空间</button><button class="btn primary" data-action="close-modal">关闭监控</button>`);
+    const mEl=document.querySelector('#modal-root .modal');
+    if(mEl)mEl.classList.add('modal-wide');
+  }catch(e){toast('读取实时监控失败：'+e.message)}
+}
+async function openDiaryModal(selectedDate='',forceRefresh=false){
+  const thread=state.threads.find(x=>x.character.id===state.threadId);
+  if(!thread||!state.activeId)return;
+  const c=thread.character;
+  const dName=displayName(c);
+  try{
+    const data=await api('/diary',{profileId:state.activeId,characterId:c.id,date:selectedDate||'',refresh:Boolean(forceRefresh)});
+    state.diaryMap[c.id]=data;
+    state.diarySummaryMap[c.id]={latestDate:data.latestDate,availableDates:data.availableDates,latestTitle:data.diary?.title||''};
+    const diary=data.diary||{};
+    const isLatest=(diary.date===data.latestDate);
+    const curDiaryDate=diary.date||data.latestDate||localDateStr();
+    const maxDiaryDate=data.latestDate||localDateStr();
+    const footprints=Array.isArray(diary.footprints)?diary.footprints:[];
+    const html=`<div class="kicker">CHARACTER DIARY · 角色私密日记</div>
+      <div class="modal-head-bar">
+        <div class="modal-head-titles">
+          <h2>${esc(dName)} 的日记本</h2>
+          <p class="caption">系统于每日 00:00 根据前日监控行踪自动执笔 · 默认仅展示单篇日记</p>
+        </div>
+        <div class="modal-head-controls">
+          <div class="modal-date-picker" data-action="open-date-picker" title="点击打开日历选择日记日期">
+            ${I('calendar')}
+            <input type="date" id="diary-date-input" class="modal-date-input" value="${esc(curDiaryDate)}" max="${esc(maxDiaryDate)}" aria-label="选择日记日期">
+          </div>
+          ${!isLatest?`<button type="button" class="btn soft tiny-btn" data-action="select-diary-date" data-date="${esc(maxDiaryDate)}">最新一篇</button>`:''}
+          ${state.settings?.mode==='live'?`<button type="button" class="btn soft tiny-btn" data-action="refresh-diary" data-date="${esc(curDiaryDate)}">${I('refresh')} 重新执笔</button>`:''}
+        </div>
+      </div>
+      <article class="diary-sheet">
+        <header class="diary-sheet-head">
+          <div class="diary-meta-pills">
+            <span class="diary-date-pill">${I('calendar')}<span>${esc(curDiaryDate)}${isLatest?' · 最新一篇':' · 过往日记'}</span></span>
+            <span class="diary-meta-tag">天气：${esc(diary.weather||'晴朗微风')}</span>
+            <span class="diary-meta-tag">心情：${esc(diary.mood||'专注沉稳')}</span>
+          </div>
+          <span class="diary-focus-badge ${diary.intimacy_stage==='deep_love'?'is-deeplove':''}" title="${esc(data.intimacy?.desc||'')}">${esc(diary.intimacy_label||data.intimacy?.label||'独立生活 · 自有天地')}</span>
+        </header>
+        <h3 class="diary-title">${esc(diary.title||`《${c.name}的日常手记》`)}</h3>
+        <div class="diary-prose">${formatNovelParagraphs(diary.content||'')}</div>
+        <footer class="diary-sheet-foot">
+          <div class="diary-foot-top">
+            <span class="caption">${I('monitor','inline-doodle-ic')} <b>本文源自 ${esc(curDiaryDate)} 的角色监控经历：</b></span>
+            <button type="button" class="btn ghost tiny-btn" data-action="select-surv-date" data-date="${esc(curDiaryDate)}">${I('monitor')} 查看当日监控记录</button>
+          </div>
+          ${footprints.length?`<div class="diary-footprint-chips">${footprints.map(f=>`<span class="diary-fp-chip">${esc(f)}</span>`).join('')}</div>`:''}
+        </footer>
+      </article>`;
+    modal(html,`<button class="btn soft" data-action="open-char-hub">返回角色空间</button><button class="btn primary" data-action="close-modal">合上日记</button>`);
+    const mEl=document.querySelector('#modal-root .modal');
+    if(mEl)mEl.classList.add('modal-wide');
+  }catch(e){toast('读取角色日记失败：'+e.message)}
 }
 const MEM_SOURCE_LABEL={
   meeting_summary:'见面回忆',
@@ -586,28 +829,9 @@ async function openMemoriesModal(query='',category=state.memoryCategory||'all'){
     if(mEl)mEl.classList.add('modal-wide');
   }catch(e){toast('读取记忆档案失败：'+e.message)}
 }
-function updateQueueCountdown(){const el=$('chat-queue-status');if(!el)return;
-  if(isCharacterTyping()){el.textContent='对方正在输入中…';return}
-  if(state.chatMode!=='chat'){el.textContent='';return}
-  const q=state.queue||{},n=q.count||0;
-  if(!n){
-    el.textContent=state.hotChat?'热聊模式已开启 · 发消息停手 1 分钟后对方将立即阅读并回复':'';
-    return;
-  }
-  if(q.blocked){
-    el.textContent=state.settings.mode==='normal'
-      ?`${n} 条消息已发出 · 当前尚未连接 API（可在「终端」配置 API）`
-      :`${n} 条消息已保存 · 模型连接异常，请检查终端配置`;
-    return;
-  }
-  if(state.hotChat||q.paceMode==='hot'){
-    const targetDue=Math.max(Number(q.dueAt||0),(state.lastSendAt||0)+60000);
-    const remSec=Math.max(1,Math.ceil((targetDue-Date.now())/1000));
-    el.textContent=`热聊模式 · 已发出 ${n} 条消息，停手 ${remSec} 秒后对方将已读并回复`;
-  }else{
-    const targetLbl=q.targetTimeLabel||(q.dueAt?fmtTime(new Date(q.dueAt).toISOString()):'稍后');
-    el.textContent=`日常模式 · 已打包 ${n} 条消息（每条附带独立发送时间），对方预计 ${targetLbl} 左右看手机并统一回复`;
-  }
+function updateQueueCountdown(){
+  const el=$('chat-queue-status');
+  if(el)el.textContent='';
 }
 async function revealMultipleBubbles(replies,profileId,id){
   if(!Array.isArray(replies)||replies.length<=1){
@@ -696,6 +920,19 @@ async function checkProactiveMessages(trigger='startup',targetCharId=''){
 }
 async function tickChatQueue(){
   if(!state.activeId)return;
+  const curDate=localDateStr();
+  if(state.lastKnownDate&&curDate!==state.lastKnownDate){
+    state.lastKnownDate=curDate;
+    if(state.threadId){
+      api('/diary',{profileId:state.activeId,characterId:state.threadId}).then(d=>{
+        if(d){
+          state.diaryMap[state.threadId]=d;
+          state.diarySummaryMap[state.threadId]={latestDate:d.latestDate,availableDates:d.availableDates,latestTitle:d.diary?.title||''};
+        }
+        toast('已过零点 · 已根据前日监控自动生成角色最新日记');
+      }).catch(()=>{});
+    }
+  }
   if(state.tab==='messages'&&state.threadId&&state.chatMode==='chat'){
     updateQueueCountdown();
     const q=state.queue;
@@ -732,7 +969,7 @@ async function toggleHotChat(){
     if(r.queue)state.queue=r.queue;
     if(state.hotChat)state.lastSendAt=Date.now();
     renderMessages();
-    toast(state.hotChat?'已开启热聊模式：停手 1 分钟后角色将立即阅读并回复':'已切回日常模式：角色将按当下作息时间看手机并把期间消息打包回复');
+    toast(state.hotChat?'已开启热聊模式':'已切回日常模式');
   }catch(e){toast(e.message)}
 }
 async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
@@ -757,7 +994,7 @@ async function deleteMessage(mid){
   try{
     await api('/message-delete',{profileId,characterId:id,messageId:mid});
     if(state.activeId===profileId&&state.threadId===id)await loadThreads(id);
-    toast('已撤回一条消息（对方会看到你撤回了消息）');
+    toast('已撤回一条消息');
   }catch(e){toast(e.message)}
 }
 async function changeMode(){
@@ -849,7 +1086,63 @@ async function movePreset(id,dir){const list=state.presets.filter(x=>x.mode===st
 function modal(html,buttons){$('modal-root').innerHTML=`<div class="modal-overlay" id="modal-overlay"><div class="modal" role="dialog" aria-modal="true"><button class="icon-btn modal-close" data-action="close-modal">${I('x')}</button>${html}<div class="modal-actions">${buttons||`<button class="btn soft" data-action="close-modal">好的</button>`}</div></div></div>`}
 function closeModal(){$('modal-root').innerHTML=''}
 // Central action delegation
-addEventListener('click',async e=>{const el=e.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;try{
+addEventListener('click',async e=>{
+if(state.profileMenuOpen&&!e.target.closest('#topbar-profile-dropdown')){
+  state.profileMenuOpen=false;
+  $('topbar-profile-dropdown')?.classList.remove('is-open');
+  document.querySelector('#topbar-profile-dropdown .profile-dropdown-menu')?.classList.remove('open');
+  document.querySelector('#topbar-profile-dropdown .profile-dropdown-btn')?.setAttribute('aria-expanded','false');
+}
+const el=e.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;try{
+if(a==='toggle-profile-menu'){
+  state.profileMenuOpen=!state.profileMenuOpen;
+  $('topbar-profile-dropdown')?.classList.toggle('is-open',state.profileMenuOpen);
+  const menu=document.querySelector('#topbar-profile-dropdown .profile-dropdown-menu');
+  if(menu)menu.classList.toggle('open',state.profileMenuOpen);
+  el.setAttribute('aria-expanded',state.profileMenuOpen?'true':'false');
+  return;
+}
+if(a==='quick-switch-profile'){
+  const nextId=el.dataset.id;
+  state.profileMenuOpen=false;
+  $('topbar-profile-dropdown')?.classList.remove('is-open');
+  const menu=document.querySelector('#topbar-profile-dropdown .profile-dropdown-menu');
+  if(menu)menu.classList.remove('open');
+  if(!nextId||nextId===state.activeId)return;
+  state.activeId=nextId;
+  try{localStorage.setItem('parallel-active-profile',state.activeId)}catch{}
+  state.profileDraft=null;
+  state.threadId='';
+  state.renderedThreadId='';
+  state.candidates=[];
+  state.allowAllSources=false;
+  renderChrome();
+  const curName=activeProfile()?.name||'';
+  if(state.tab==='discover')await loadCandidates(false);
+  else if(state.tab==='messages')await loadThreads();
+  else if(state.tab==='profile')renderProfile(activeProfile());
+  toast(`已切换至账户「${curName}」`);
+  return;
+}
+if(a==='toggle-chat-plus'){
+  state.chatPlusOpen=!state.chatPlusOpen;
+  el.classList.toggle('active',state.chatPlusOpen);
+  el.classList.toggle('is-open',state.chatPlusOpen);
+  el.setAttribute('aria-expanded',state.chatPlusOpen?'true':'false');
+  const panel=$('chat-plus-panel');
+  if(panel){
+    panel.classList.toggle('open',state.chatPlusOpen);
+    panel.classList.toggle('is-open',state.chatPlusOpen);
+  }
+  const body=$('chat-body');
+  if(body)body.scrollTop=body.scrollHeight;
+  return;
+}
+if(a==='chat-plus-item'){
+  const label=el.dataset.label||'功能';
+  toast(`「${label}」功能位置已就绪，接下来可以为你定制具体交互`);
+  return;
+}
 if(a==='nav')return await navigate(el.dataset.tab);
 if(a==='retry')return await navigate(state.tab);
 if(a==='go-profile')return navigate('profile');
@@ -890,7 +1183,49 @@ if(a==='select-thread')return loadThread(el.dataset.id);
 if(a==='back-threads'){state.threadId='';state.renderedThreadId='';return renderMessages()}
 if(a==='change-mode')return changeMode();
 if(a==='toggle-hot-chat')return toggleHotChat();
-if(a==='open-char-hub')return openCharacterHubModal();
+if(a==='open-char-hub')return openCharacterHubModal(false);
+if(a==='toggle-nickname-edit'){
+  const ed=$('char-hub-nick-editor');
+  if(ed){
+    const nextShow=ed.style.display==='none';
+    ed.style.display=nextShow?'grid':'none';
+    if(nextShow){$('char-hub-nick-input')?.focus();$('char-hub-nick-input')?.select()}
+  }else{
+    openCharacterHubModal(true);
+  }
+  return;
+}
+if(a==='save-nickname')return saveCharacterNickname($('char-hub-nick-input')?.value||'');
+if(a==='reset-nickname')return saveCharacterNickname('');
+if(a==='cancel-nickname'){
+  const ed=$('char-hub-nick-editor');
+  if(ed)ed.style.display='none';
+  return;
+}
+if(a==='open-date-picker'){
+  if(e.target.tagName!=='INPUT'){
+    const inp=el.querySelector('input[type="date"]');
+    if(inp){
+      inp.focus();
+      try{if(typeof inp.showPicker==='function')inp.showPicker()}catch{}
+    }
+  }else{
+    try{if(typeof e.target.showPicker==='function')e.target.showPicker()}catch{}
+  }
+  return;
+}
+if(a==='open-surveillance')return openSurveillanceModal(false,'');
+if(a==='refresh-surveillance')return openSurveillanceModal(true,el.dataset.date||'');
+if(a==='select-surv-date')return openSurveillanceModal(false,el.dataset.date||'');
+if(a==='open-diary')return openDiaryModal('',false);
+if(a==='refresh-diary')return openDiaryModal(el.dataset.date||'',true);
+if(a==='select-diary-date')return openDiaryModal(el.dataset.date||'',false);
+if(a==='surv-enter-meeting'){
+  const loc=el.dataset.loc||'';
+  if(loc)state.meetingLocation=loc;
+  closeModal();
+  return changeMode();
+}
 if(a==='open-meeting-record')return openMeetingRecordModal(el.dataset.id);
 if(a==='open-daily-messages')return openDailyMessagesModal(el.dataset.id);
 if(a==='open-memories')return openMemoriesModal('',state.memoryCategory||'all');
@@ -945,6 +1280,11 @@ if(a==='save-preset')return savePreset(el.dataset.id);
 if(a==='delete-preset'){await api('/preset',{action:'delete',id:el.dataset.id});closeModal();toast('条目已删除');return refreshPresets()}
 }catch(err){toast(err.message)}});
 addEventListener('pointerdown',()=>{state.lastUserActiveAt=Date.now()},{passive:true});
-addEventListener('change',e=>{if(e.target.id==='portable-restore')importBackup(e.target.files[0]);if(e.target.id==='preset-import-file')choosePresetImport(e.target.files[0])});
-addEventListener('keydown',e=>{state.lastUserActiveAt=Date.now();if(e.target.id==='pf-source-input'&&e.key==='Enter'){e.preventDefault();addSourceTag();return}if(e.target.id==='memory-search-input'&&e.key==='Enter'){e.preventDefault();openMemoriesModal(e.target.value.trim());return}if(e.target.id==='memory-add-input'&&e.key==='Enter'){e.preventDefault();document.querySelector('[data-action="add-memory"]')?.click();return}if(e.key==='Escape')closeModal();if(state.tab==='discover'&&e.target.tagName!=='INPUT'&&e.target.tagName!=='TEXTAREA'&&!$('modal-overlay')){if(e.key==='ArrowLeft')doSwipe('left');if(e.key==='ArrowRight')doSwipe('right')}});
+addEventListener('change',e=>{
+  if(e.target.id==='portable-restore')importBackup(e.target.files[0]);
+  if(e.target.id==='preset-import-file')choosePresetImport(e.target.files[0]);
+  if(e.target.id==='surv-date-input'&&e.target.value)openSurveillanceModal(false,e.target.value);
+  if(e.target.id==='diary-date-input'&&e.target.value)openDiaryModal(e.target.value,false);
+});
+addEventListener('keydown',e=>{state.lastUserActiveAt=Date.now();if(e.target.id==='char-hub-nick-input'&&e.key==='Enter'){e.preventDefault();saveCharacterNickname(e.target.value);return}if(e.target.id==='pf-source-input'&&e.key==='Enter'){e.preventDefault();addSourceTag();return}if(e.target.id==='memory-search-input'&&e.key==='Enter'){e.preventDefault();openMemoriesModal(e.target.value.trim());return}if(e.target.id==='memory-add-input'&&e.key==='Enter'){e.preventDefault();document.querySelector('[data-action="add-memory"]')?.click();return}if(e.key==='Escape')closeModal();if(state.tab==='discover'&&e.target.tagName!=='INPUT'&&e.target.tagName!=='TEXTAREA'&&!$('modal-overlay')){if(e.key==='ArrowLeft')doSwipe('left');if(e.key==='ArrowRight')doSwipe('right')}});
 bootstrap();

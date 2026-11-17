@@ -18,7 +18,7 @@
   const stamp=()=>new Date().toISOString();
   const uid=()=>typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'p'+Math.random().toString(36).slice(2)+Date.now().toString(36);
   const pairKey=(p,c)=>p+'|'+c;
-  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},bios:{},bioTags:{},proactiveLog:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:3000,auto_portraits:false,proactive_mode:'daily'}});
+  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:3000,auto_portraits:false,proactive_mode:'daily'}});
   let db;let storageAvailable=true;
   const ensureDbFields=target=>{
     target.photoDescriptions ||= {};
@@ -27,6 +27,8 @@
     target.bios ||= {};
     target.bioTags ||= {};
     target.proactiveLog ||= {};
+    target.surveillance ||= {};
+    target.diaries ||= {};
     target.meetings ||= [];
     target.episodicMemories ||= [];
     if(target.connection){
@@ -198,7 +200,10 @@
       const combinedTxt=bubbleTexts.join(' / ');
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180));
       const userRows=pending.map(mid=>db.messages.find(m=>m.id===mid)).filter(Boolean);
-      if(reply)recordDialogueEpisode(p,c,userRows,{...reply,text:combinedTxt},'chat');
+      if(reply){
+        recordDialogueEpisode(p,c,userRows,{...reply,text:combinedTxt},'chat');
+        syncSurveillanceFromChat(p,c,userRows,combinedTxt);
+      }
       if(r)r.updated_at=stamp();
     }
     save();return {reply,replies,queued:false,warning,queue:queueInfo(p.id,c.id)};
@@ -215,7 +220,11 @@
     }
     return {flushed};
   }
-  const char=c=>({...c,portrait:db.portraits[c.id]||null,bio:db.bios[c.id]||c.bio,tags:(Array.isArray(db.bioTags?.[c.id])&&db.bioTags[c.id].length)?db.bioTags[c.id]:c.tags});
+  const char=(c,pid='')=>{
+    const rel=pid?relation(pid,c.id):null;
+    const nick=String(rel?.nickname||'').trim();
+    return {...c,nickname:nick,display_name:nick||c.name,portrait:db.portraits[c.id]||null,bio:db.bios[c.id]||c.bio,tags:(Array.isArray(db.bioTags?.[c.id])&&db.bioTags[c.id].length)?db.bioTags[c.id]:c.tags};
+  };
   const STOPWORDS=new Set(['今天','昨天','明天','我们','你们','他们','什么','怎么','可以','觉得','知道','没有','就是','一个','还是','因为','所以','如果','已经','现在','这样','那样','哈哈','呵呵','嗯嗯','好的','好吧','不是','不要','不会','不能','自己','这里','那里','时候','地方','东西','事情','问题','真的','其实','或者','而且','然后','不过','但是','只是','虽然','一下','一点','一些','一直','一起','起来','出来','过来','进去','回去','看着','听着','说着','想着','请问','谢谢','你好','再见','晚安','早安','手机','消息','短信','见面','回应','陈述','对话','文字','对方','角色']);
   const extractQueryTerms=text=>{
     if(!text)return [];
@@ -324,6 +333,565 @@
       event_at:userMsg.created_at||stamp()
     });
   };
+  const localDateStr=ts=>{
+    try{
+      const d=new Date(ts||Date.now());
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    }catch{return new Date().toISOString().slice(0,10)}
+  };
+  const hhmmToMin=str=>{
+    const m=String(str||'00:00').match(/^(\d{1,2}):(\d{2})/);
+    if(!m)return 0;
+    return Math.min(1439,Math.max(0,Number(m[1])*60+Number(m[2])));
+  };
+  const minToHHMM=mins=>{
+    const clamped=Math.min(1439,Math.max(0,Math.round(mins)));
+    return `${String(Math.floor(clamped/60)).padStart(2,'0')}:${String(clamped%60).padStart(2,'0')}`;
+  };
+  const offsetDateStr=(baseDateStr,deltaDays)=>{
+    try{
+      const [y,m,d]=String(baseDateStr||localDateStr()).split('-').map(Number);
+      const dt=new Date(y,(m||1)-1,(d||1)+deltaDays);
+      return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+    }catch{return localDateStr(Date.now()+deltaDays*86400000)}
+  };
+  const buildDefaultSurveillanceSlots=(p,c,dateStr)=>{
+    const src=String(c.source||'');
+    let h=0;for(const ch of (c.id+dateStr))h=(Math.imul(31,h)+ch.charCodeAt(0))|0;
+    const shift=((h>>>0)%3)*10;
+    const variant=((h>>>2)>>>0)%3;
+    let raw=[];
+    if(src.includes('巫师')){
+      const morningLocs=['城郊林间小径','旧磨坊外围林地','河谷旧哨站遗址'];
+      const morningActs=['沿途勘查与采集草药','排查委托留下的痕迹','巡视周边地形与水源'];
+      const afternoonLocs=['工匠铺与市集街口','炼金材料铺与铁匠坊','城门告示板与草药摊'];
+      const afternoonActs=['补充物资与修整银剑','采购炼金基底与保养皮具','核对近期委托与购置补给'];
+      raw=[
+        ['00:00','06:50','旅店二楼客房','深眠休整','夜间休整与冥想',`${c.name}在安静的木屋客房里休整，常用的随身装备整齐搁在床尾矮凳上，呼吸平缓。`],
+        ['06:50','08:30','旅店后院与马厩','清晨整备','晨起洗漱与擦拭装备',`晨雾还未散尽，${c.name}坐在院子长凳上检查随身护具与行囊，为白天的行程做准备。`],
+        ['08:30','11:30',morningLocs[variant],'外出巡查',morningActs[variant],`林间光线斑驳，${c.name}沿着小路缓步前行，步伐沉稳，留意着四周的风吹草动。`],
+        ['11:30','13:30','旧城区酒馆靠窗座','午间小憩','吃简餐与稍作休息',`酒馆里人不算多，${c.name}选了最僻静的角落位置坐下用午餐，目光偶尔投向窗外街道。`],
+        ['13:30','16:30',afternoonLocs[variant],'处理日常事务',afternoonActs[variant],`与熟识的匠人交谈了几句，仔细清点完所需物资，正准备前往下一个歇脚处。`],
+        ['16:30','19:00','约定的街角咖啡馆','傍晚闲暇','坐在靠窗位置喝热饮放松',`${c.name}坐在靠窗的木桌旁，手边放着一杯温热的饮品，难得享受片刻安静时光。`],
+        ['19:00','21:00','河畔石桥步道','傍晚散步','沿河岸慢步透气',`夕阳余晖洒在水面上，${c.name}双手插在衣袋里沿河岸慢走，难得没有紧绷的任务压力。`],
+        ['21:00','22:45','落脚处 · 起居室','夜间独处','擦拭随身器械与翻阅手记',`室内点着柔和的暖灯，${c.name}卸下外衣靠在椅背上，整理着白天的见闻与手记。`],
+        ['22:45','23:59','落脚处 · 卧室','准备入睡','熄灯休息',`结束了白天的奔波，房间归于安静，随身物品妥善放在床头。`]
+      ];
+    }else if(src.includes('赛博朋克')){
+      const morningLocs=['工作室与设备间','地下超梦剪辑室','车库改装台'];
+      const morningActs=['调试设备与处理手头委托','校准超梦轨道与清理缓存','检修引擎线路与改装配件'];
+      const afternoonLocs=['城区外勤路线','日本街电子零件铺','河谷区旧仓库街口'];
+      const afternoonActs=['在城里跑腿与交接事务','淘换绝版芯片与老旧零件','完成中间人交代的收尾工作'];
+      raw=[
+        ['00:00','07:30','沃森区公寓 · 卧室','深夜熟睡','拉下百叶窗休息',`百叶窗滤掉了窗外霓虹广告牌的微光，${c.name}在安静的房间里熟睡，手机连着充电线放在床头。`],
+        ['07:30','09:00','街角合成咖啡摊','晨间醒神','买热咖啡与早点',`${c.name}站在清晨人还不多的街角摊位前等一杯热美式，迎着微凉的晨风活动了一下肩膀。`],
+        ['09:00','12:00',morningLocs[variant],'专注忙碌',morningActs[variant],`工作台上亮着几块全息屏幕，${c.name}专注地处理着手头的工作，偶尔停下来喝口水。`],
+        ['12:00','13:45','丽姿街区简餐店','午休时间','吃午餐与放空',`挑了个离音响远一点的卡座，${c.name}慢条斯理地解决午餐，看着窗外匆忙的行人。`],
+        ['13:45','16:30',afternoonLocs[variant],'外出办事',afternoonActs[variant],`穿过午后车流密集的街区，${c.name}刚办完手头的一桩正事，靠在路边栏杆旁歇脚。`],
+        ['16:30','19:00','约定的街角咖啡馆','傍晚小憩','喝咖啡听歌放松',`店里放着舒缓的旧时代音乐，${c.name}坐在靠窗的位置，手指轻轻叩着杯壁。`],
+        ['19:00','21:15','海边观景栈道','吹风散步','看日落与晚风散步',`晚风带着一点微凉的湿气，${c.name}站在栏杆边望着远处的灯火，神色平静柔和。`],
+        ['21:15','23:00','沃森区公寓 · 客厅','居家独处','窝在沙发里听老唱片与整理工具',`换上了舒适的居家T恤，室内留了一盏落地灯，${c.name}正半靠在沙发上听音乐放松。`],
+        ['23:00','23:59','沃森区公寓 · 卧室','夜间休整','准备入睡',`洗漱完毕后关掉了客厅大灯，房间里只余下微弱的待机指示灯。`]
+      ];
+    }else if(src.includes('漫威')){
+      const morningLocs=['总部简报室与训练区','战术模拟训练馆','市区联络站档案室'];
+      const morningActs=['审阅简报与日常格斗训练','完成高强度体能与战术对抗','复盘近期行动记录与安全巡检'];
+      const afternoonLocs=['装备维护区与档案室','布鲁克林旧街区书店','后勤保障中心'];
+      const afternoonActs=['核对档案与维护随身装备','翻看历史旧刊与补充日用品','测试新调校的战术护具'];
+      raw=[
+        ['00:00','07:00','私人公寓 · 卧室','夜间熟睡','深度睡眠休整',`房间里十分安静，窗外是城市凌晨的微光，${c.name}呼吸均匀，正在休息。`],
+        ['07:00','08:30','晨间公园跑道','晨练与买早餐','晨跑后顺路买咖啡',`刚结束清晨的例行锻炼，${c.name}手里拎着热咖啡和纸袋早餐，步履轻快地走回住处。`],
+        ['08:30','11:45',morningLocs[variant],'日常勤务',morningActs[variant],`${c.name}正在专注处理白天的日常勤务与训练，神情认真投入。`],
+        ['11:45','13:30','街区复古简餐厅','午间休息','吃午饭与看报',`阳光透过玻璃窗照在餐桌上，${c.name}摘下外套搭在椅背上，享受安静的午餐时间。`],
+        ['13:30','16:30',afternoonLocs[variant],'午后事务',afternoonActs[variant],`下午的事务不算紧急，${c.name}有条不紊地收尾手头的事情。`],
+        ['16:30','19:00','约定的街角咖啡馆','傍晚闲暇','喝咖啡看书小憩',`选了店里最安静的靠窗角落，${c.name}面前放着一杯热饮，目光温和地望向窗外行人。`],
+        ['19:00','21:00','旧唱片行与河岸步道','傍晚散步','逛旧书店与散步回程',`顺路逛了逛街角的旧书与唱片店，随后沿着河岸步道慢慢走回家。`],
+        ['21:00','22:50','私人公寓 · 客厅','居家放松','听黑胶老歌与阅读书籍',`留声机里放着轻柔的爵士乐，${c.name}坐在沙发旁看书，享受夜晚的独处时光。`],
+        ['22:50','23:59','私人公寓 · 卧室','睡前休息','准备熄灯入睡',`夜色渐深，${c.name}整理好明天的安排，靠在床头准备休息。`]
+      ];
+    }else{
+      const morningLocs=['外勤联络处与靶场','战术射击训练场','行动简报室与装备库'];
+      const morningActs=['战术训练与装备校准','进行例行射击考核与体能训练','整理外勤装备与查阅行动简报'];
+      const afternoonLocs=['档案室与街区巡查点','西区安全屋与器材室','市政街区外围巡查线'];
+      const afternoonActs=['整理卷宗与外勤巡查','清点应急物资与核对路线','完成例行街区安全排查'];
+      raw=[
+        ['00:00','07:00','个人住所 · 卧室','深夜休整','安静熟睡休息',`房间窗帘拉得很严，随身物品整齐放在床头柜上，${c.name}呼吸平稳克制。`],
+        ['07:00','08:30','街角晨间咖啡店','晨间醒神','买热美式与简餐',`趁早高峰前靠在吧台边等一杯黑咖啡，${c.name}顺手规划着白天的勤务安排。`],
+        ['08:30','11:40',morningLocs[variant],'日常勤务',morningActs[variant],`${c.name}刚完成上午的例行训练与装备维护，正在擦拭随身器械并核对勤务记录。`],
+        ['11:40','13:30','旧城区小餐馆','午间简餐','靠窗位置用餐小憩',`选了视野开阔的角落位置吃午饭，${c.name}神情比工作时松弛了不少。`],
+        ['13:30','16:30',afternoonLocs[variant],'午后事务',afternoonActs[variant],`${c.name}翻阅着近期的报告卷宗，偶尔停下笔望向窗外街道，指尖轻轻敲击桌面。`],
+        ['16:30','19:00','约定的街角咖啡馆','傍晚小憩','喝咖啡与看书放松',`靠窗的位置放着一杯喝了一半的咖啡，${c.name}正低头翻阅旧书，享受片刻清闲。`],
+        ['19:00','20:45','河畔步道与便利超市','傍晚散步','采购日用品与散步',`拎着刚买的日用品沿河岸慢步走回住处，晚风吹动${c.name}的外套衣角。`],
+        ['20:45','22:45','个人住所 · 客厅','居家独处','换上便服保养装备与看书',`换上了宽松舒适的居家便服，电台低声放着背景音，${c.name}正坐在桌旁整理私人物品。`],
+        ['22:45','23:59','个人住所 · 书桌旁','睡前整理','夜读与准备休息',`台灯亮着暖黄色的光，结束了白天的忙碌，${c.name}正准备洗漱休息。`]
+      ];
+    }
+    return raw.map((item,idx)=>{
+      let sMin=hhmmToMin(item[0]);
+      let eMin=hhmmToMin(item[1]);
+      if(idx>0&&idx<raw.length-1){
+        sMin=Math.min(1400,sMin+shift);
+        eMin=Math.min(1425,eMin+shift);
+      }else if(idx===0){
+        eMin=Math.min(1400,eMin+shift);
+      }else if(idx===raw.length-1){
+        sMin=Math.min(1425,sMin+shift);
+      }
+      return {
+        id:`slot_${idx+1}`,
+        start:idx===0?'00:00':minToHHMM(sMin),
+        end:idx===raw.length-1?'23:59':minToHHMM(eMin),
+        location:item[2],
+        status:item[3],
+        activity:item[4],
+        scene:item[5],
+        source:'schedule'
+      };
+    });
+  };
+  const getSurveillanceStore=(p,c)=>{
+    db.surveillance ||= {};
+    const key=pairKey(p.id,c.id);
+    let store=db.surveillance[key];
+    // Migrate legacy single-day record if needed
+    if(store&&store.date&&Array.isArray(store.slots)){
+      const legacy=store;
+      store={byDate:{[legacy.date]:legacy}};
+      db.surveillance[key]=store;
+    }
+    if(!store||typeof store.byDate!=='object'||!store.byDate){
+      store={byDate:{}};
+      db.surveillance[key]=store;
+    }
+    const today=localDateStr();
+    const yesterday=offsetDateStr(today,-1);
+    const twoDaysAgo=offsetDateStr(today,-2);
+    for(const dStr of [twoDaysAgo,yesterday,today]){
+      if(!store.byDate[dStr]||!Array.isArray(store.byDate[dStr].slots)||!store.byDate[dStr].slots.length){
+        store.byDate[dStr]={
+          date:dStr,
+          profile_id:p.id,
+          character_id:c.id,
+          engine:'demo',
+          updated_at:stamp(),
+          slots:buildDefaultSurveillanceSlots(p,c,dStr)
+        };
+      }
+    }
+    // Also ensure any date that had historical meetings or messages has a surveillance record
+    for(const m of (db.meetings||[])){
+      if(m.profile_id===p.id&&m.character_id===c.id&&m.started_at){
+        const mDate=String(m.started_at).slice(0,10);
+        if(/^\d{4}-\d{2}-\d{2}$/.test(mDate)&&!store.byDate[mDate]){
+          store.byDate[mDate]={
+            date:mDate,
+            profile_id:p.id,
+            character_id:c.id,
+            engine:'demo',
+            updated_at:stamp(),
+            slots:buildDefaultSurveillanceSlots(p,c,mDate)
+          };
+        }
+      }
+    }
+    return store;
+  };
+  const getOrInitSurveillance=(p,c,targetDate='')=>{
+    const store=getSurveillanceStore(p,c);
+    const today=localDateStr();
+    const dStr=(targetDate&&/^\d{4}-\d{2}-\d{2}$/.test(targetDate))?targetDate:today;
+    if(!store.byDate[dStr]||!Array.isArray(store.byDate[dStr].slots)||!store.byDate[dStr].slots.length){
+      store.byDate[dStr]={
+        date:dStr,
+        profile_id:p.id,
+        character_id:c.id,
+        engine:'demo',
+        updated_at:stamp(),
+        slots:buildDefaultSurveillanceSlots(p,c,dStr)
+      };
+    }
+    return store.byDate[dStr];
+  };
+  const getCurrentSurveillanceSlot=(p,c)=>{
+    const rec=getOrInitSurveillance(p,c,localDateStr());
+    const r=relation(p.id,c.id);
+    const nowHHMM=fmtHHMM(Date.now())||'12:00';
+    const nowMin=hhmmToMin(nowHHMM);
+    if(r?.mode==='meeting'){
+      const loc=r.meeting_location||'约定的街角咖啡馆';
+      return {
+        id:'live_meeting',
+        start:fmtHHMM(r.meeting_started_at||Date.now())||nowHHMM,
+        end:nowHHMM,
+        location:loc,
+        status:`正与 ${p.name} 当面见面中`,
+        activity:`在「${loc}」与 ${p.name} 面对面相处`,
+        scene:`${c.name}放下了原本的日常安排，此刻正身处「${loc}」与 ${p.name} 面对面互动。`,
+        source:'meeting',
+        isCurrent:true,
+        isMeetingLive:true
+      };
+    }
+    let active=null;
+    for(const s of rec.slots){
+      const sMin=hhmmToMin(s.start),eMin=hhmmToMin(s.end);
+      if(sMin<=nowMin&&nowMin<=eMin){active=s;break;}
+      if(sMin<=nowMin)active=s;
+    }
+    if(!active)active=rec.slots[0];
+    return {...active,isCurrent:true,isMeetingLive:false};
+  };
+  const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>{
+    const rec=getOrInitSurveillance(p,c,localDateStr());
+    const nowHHMM=fmtHHMM(Date.now())||'12:00';
+    const nowMin=hhmmToMin(nowHHMM);
+    const endHHMM=minToHHMM(Math.min(1439,nowMin+60));
+    const idx=rec.slots.findIndex(s=>hhmmToMin(s.start)<=nowMin&&nowMin<=hhmmToMin(s.end));
+    const meetSlot={
+      id:`slot_meet_${meetingId||uid()}`,
+      start:nowHHMM,
+      end:endHHMM,
+      location:loc,
+      status:`与 ${p.name} 当面见面中`,
+      activity:`在「${loc}」与 ${p.name} 面对面互动`,
+      scene:`${c.name}暂时放下了原本手头的安排，来到「${loc}」与 ${p.name} 当面相见。`,
+      source:'meeting',
+      meeting_id:meetingId||''
+    };
+    if(idx>=0){
+      const cur=rec.slots[idx];
+      if(cur.source==='meeting'&&cur.meeting_id===meetingId){
+        Object.assign(cur,meetSlot);
+      }else{
+        if(hhmmToMin(cur.start)<nowMin){
+          cur.end=nowHHMM;
+          rec.slots.splice(idx+1,0,meetSlot);
+        }else{
+          rec.slots[idx]=meetSlot;
+        }
+      }
+    }else{
+      rec.slots.push(meetSlot);
+    }
+    rec.updated_at=stamp();
+    return rec;
+  };
+  const syncSurveillanceOnMeetingEnd=(p,c,meetingRecord)=>{
+    if(!meetingRecord)return null;
+    const rec=getOrInitSurveillance(p,c,localDateStr());
+    const startHHMM=fmtHHMM(meetingRecord.started_at)||fmtHHMM(Date.now());
+    const endHHMM=fmtHHMM(meetingRecord.ended_at)||fmtHHMM(Date.now());
+    const endMin=hhmmToMin(endHHMM);
+    const loc=meetingRecord.location||'约定的街角咖啡馆';
+    let mIdx=rec.slots.findIndex(s=>s.meeting_id===meetingRecord.id||s.source==='meeting');
+    const finalizedSlot={
+      id:`slot_meet_${meetingRecord.id}`,
+      start:startHHMM,
+      end:endHHMM>startHHMM?endHHMM:minToHHMM(Math.min(1439,hhmmToMin(startHHMM)+25)),
+      location:loc,
+      status:'线下见面足迹',
+      activity:`与 ${p.name} 在「${loc}」当面见面`,
+      scene:`${meetingRecord.summary||`与 ${p.name} 在「${loc}」度过了面对面相处的时光。`}`,
+      source:'meeting',
+      meeting_id:meetingRecord.id
+    };
+    if(mIdx>=0){
+      rec.slots[mIdx]=finalizedSlot;
+    }else{
+      const hitIdx=rec.slots.findIndex(s=>hhmmToMin(s.start)<=endMin&&endMin<=hhmmToMin(s.end));
+      if(hitIdx>=0){
+        rec.slots.splice(hitIdx,1,finalizedSlot);
+        mIdx=hitIdx;
+      }else{
+        rec.slots.push(finalizedSlot);
+        mIdx=rec.slots.length-1;
+      }
+    }
+    const nextSlot=rec.slots[mIdx+1];
+    if(nextSlot&&nextSlot.source==='schedule'){
+      const fEndMin=hhmmToMin(finalizedSlot.end);
+      if(hhmmToMin(nextSlot.start)<fEndMin){
+        nextSlot.start=finalizedSlot.end;
+      }
+      if(hhmmToMin(nextSlot.end)<=hhmmToMin(nextSlot.start)){
+        nextSlot.end=minToHHMM(Math.min(1439,hhmmToMin(nextSlot.start)+45));
+      }
+      if(!nextSlot.scene.includes(loc)){
+        nextSlot.activity=`从「${loc}」离开后 · ${nextSlot.activity}`;
+        nextSlot.scene=`刚结束在「${loc}」与 ${p.name} 的见面，${c.name}带着见面后的余温回到日常节奏：${nextSlot.scene}`;
+        nextSlot.source='meeting_shift';
+      }
+    }
+    rec.updated_at=stamp();
+    return rec;
+  };
+  const syncSurveillanceFromChat=(p,c,userRows,aiText)=>{
+    const txt=String(aiText||'').trim();
+    if(!txt)return;
+    const moveMatch=txt.match(/(?:我现在(?:去|在|到)|刚到|已经到|正坐在|正在|先去|准备去)([\u4e00-\u9fa5A-Za-z0-9]{1,8}(?:咖啡店|咖啡馆|咖啡厅|酒吧|酒馆|餐厅|书店|唱片行|公园|海边|江边|车站|天台|公寓|靶场|电影院|便利店|图书馆|安全屋|超市|健身房))/);
+    if(!moveMatch||!moveMatch[1])return;
+    const newLoc=moveMatch[1].trim();
+    const rec=getOrInitSurveillance(p,c,localDateStr());
+    const nowHHMM=fmtHHMM(Date.now())||'12:00';
+    const nowMin=hhmmToMin(nowHHMM);
+    const idx=rec.slots.findIndex(s=>hhmmToMin(s.start)<=nowMin&&nowMin<=hhmmToMin(s.end));
+    if(idx>=0&&rec.slots[idx].source!=='meeting'){
+      rec.slots[idx].location=newLoc;
+      rec.slots[idx].status='聊天动态同步';
+      rec.slots[idx].activity=`在「${newLoc}」活动（与你聊天提及）`;
+      rec.slots[idx].scene=`${c.name}刚刚在消息里与 ${p.name} 提到自己身处「${newLoc}」：「${txt.slice(0,55)}」`;
+      rec.slots[idx].source='chat_update';
+      rec.updated_at=stamp();
+    }
+  };
+  async function ensureLiveSurveillance(p,c,forceRefresh=false,targetDate=''){
+    const today=localDateStr();
+    const dStr=(targetDate&&/^\d{4}-\d{2}-\d{2}$/.test(targetDate))?targetDate:today;
+    const rec=getOrInitSurveillance(p,c,dStr);
+    if(pub().mode!=='live')return rec;
+    if(rec.engine==='live'&&!forceRefresh)return rec;
+    try{
+      const relSummary=relationshipBaselineSummary(p.id,c.id,p.name);
+      const sys=`你是日程与世界线生成引擎。请为角色 ${c.name}（来源：${c.source} · ${c.version}，背景：${c.canon}）生成 ${dStr} 从 00:00 到 23:59 的完整一日生活足迹监控表（共 8 到 9 个连续时间段，无缝覆盖全天）。
+要求：
+1. 严密贴合 ${c.name} 的原作职业、性格与独立生活习惯，角色有自己的工作、同伴与日常，不要整天围着 ${p.name} 转（当前关系：${relSummary}）。
+2. 每个时间段包含：start ("HH:MM"), end ("HH:MM"), location (具体地点，不超过14字), status (简短状态标签，4-6字), activity (正在做的事，不超过16字), scene (极具画面感的第三人称现场微描写，35-70字，描写环境光影、小动作或神态，严禁使用任何 emoji)。
+3. 只输出 JSON 对象，格式严格为：{"slots":[{"start":"00:00","end":"07:00","location":"...","status":"...","activity":"...","scene":"..."}]}`;
+      const out=await llm([{role:'system',content:sys},{role:'user',content:`请生成 ${c.name} 在 ${dStr} 的全天足迹 JSON。`}],{json_mode:true,max_tokens:1200});
+      const parsed=JSON.parse(out);
+      if(Array.isArray(parsed?.slots)&&parsed.slots.length>=5){
+        const preserved=rec.slots.filter(s=>s.source==='meeting'||s.source==='chat_update');
+        const aiSlots=parsed.slots.slice(0,12).map((s,i)=>({
+          id:`slot_ai_${i+1}`,
+          start:/^\d{2}:\d{2}$/.test(String(s.start||''))?String(s.start):'08:00',
+          end:/^\d{2}:\d{2}$/.test(String(s.end||''))?String(s.end):'10:00',
+          location:String(s.location||'日常地点').trim().slice(0,24),
+          status:String(s.status||'日常动态').trim().slice(0,12),
+          activity:String(s.activity||'日常活动').trim().slice(0,28),
+          scene:String(s.scene||'').trim().slice(0,160),
+          source:'schedule'
+        }));
+        for(const pSlot of preserved){
+          const pMin=hhmmToMin(pSlot.start);
+          const hit=aiSlots.findIndex(x=>hhmmToMin(x.start)<=pMin&&pMin<=hhmmToMin(x.end));
+          if(hit>=0)aiSlots.splice(hit,1,pSlot);
+          else aiSlots.push(pSlot);
+        }
+        aiSlots.sort((a,b)=>hhmmToMin(a.start)-hhmmToMin(b.start));
+        rec.slots=aiSlots;
+        rec.engine='live';
+        rec.updated_at=stamp();
+        save();
+      }
+    }catch(e){}
+    return rec;
+  }
+  const buildSurveillancePayload=(p,c,requestedDate='')=>{
+    const store=getSurveillanceStore(p,c);
+    const today=localDateStr();
+    const selDate=(requestedDate&&/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)&&requestedDate<=today)?requestedDate:today;
+    const isToday=(selDate===today);
+    const rec=getOrInitSurveillance(p,c,selDate);
+    const availableDates=Object.keys(store.byDate).filter(d=>d<=today).sort((a,b)=>b.localeCompare(a));
+    const nowHHMM=fmtHHMM(Date.now())||'12:00';
+    const nowMin=hhmmToMin(nowHHMM);
+    const current=isToday?getCurrentSurveillanceSlot(p,c):null;
+    const unlocked=[];
+    let lockedCount=0;
+    for(const s of rec.slots){
+      if(!isToday||hhmmToMin(s.start)<=nowMin){
+        unlocked.push({
+          ...s,
+          isCurrent:Boolean(isToday&&current&&!current.isMeetingLive&&(s.id===current.id||(s.start===current.start&&s.location===current.location)))
+        });
+      }else{
+        lockedCount++;
+      }
+    }
+    if(isToday&&current?.isMeetingLive&&!unlocked.some(u=>u.source==='meeting'&&u.location===current.location)){
+      unlocked.push({...current,isCurrent:true});
+    }
+    return {
+      date:rec.date,
+      today,
+      isToday,
+      availableDates,
+      nowTime:nowHHMM,
+      engine:rec.engine,
+      characterId:c.id,
+      characterName:c.name,
+      current,
+      unlockedSlots:unlocked.slice().reverse(),
+      totalSlots:rec.slots.length,
+      totalSlotsCount:rec.slots.length,
+      lockedCount
+    };
+  };
+  const computeIntimacyInfo=(p,c)=>{
+    const rel=relation(p.id,c.id);
+    const allMsgs=messagesOf(p.id,c.id).filter(m=>m.engine!=='recalled');
+    const meetings=(db.meetings||[]).filter(x=>x.profile_id===p.id&&x.character_id===c.id);
+    const boost=Number(rel?.affection_boost||0);
+    const score=Math.min(100,Math.round(meetings.length*22+allMsgs.length*1.5+boost));
+    if(score>=75){
+      return {score,stage:'deep_love',label:'深陷偏爱 · 满心是你',desc:'角色已对你产生极深的情感依恋，日常行踪与思绪都会不自觉牵挂着你'};
+    }
+    if(score>=30){
+      return {score,stage:'warming',label:'渐生熟稔 · 心有牵挂',desc:'角色保持着自己独立的工作与生活，但闲暇时会自然记起与你的对话'};
+    }
+    return {score,stage:'independent',label:'独立生活 · 自有天地',desc:'角色拥有独立完整的生活重心与日常，日记主要记录自身经历，不以你为生活核心'};
+  };
+  const buildDefaultDiary=(p,c,dateStr,survRec)=>{
+    const slots=survRec?.slots||buildDefaultSurveillanceSlots(p,c,dateStr);
+    const intimacy=computeIntimacyInfo(p,c);
+    const dayMsgs=messagesOf(p.id,c.id).filter(m=>String(m.created_at||'').slice(0,10)===dateStr&&m.engine!=='recalled');
+    const dayMeetings=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&String(m.started_at||'').slice(0,10)===dateStr);
+    const slotMeet=slots.find(s=>s.source==='meeting');
+    const sMorning=slots[2]||slots[1]||slots[0];
+    const sAfternoon=slots[4]||slots[3]||slots[1];
+    const sEvening=slots[6]||slots[5]||slots[slots.length-1];
+    let h=0;for(const ch of (c.id+dateStr))h=(Math.imul(31,h)+ch.charCodeAt(0))|0;
+    const weathers=['晴朗微风','多云转晴','微凉阴天','夜风清朗','浅雾转晴'];
+    const moods=intimacy.stage==='deep_love'?['心绪温柔','满怀牵挂','平静而笃定']:['专注沉稳','平静松弛','略感倦意但踏实','波澜不惊'];
+    const weather=weathers[(h>>>0)%weathers.length];
+    const mood=moods[((h>>>2)>>>0)%moods.length];
+
+    let title=`《${sMorning?.location?.split('·')[0]?.trim()||'日常勤务'}与${sEvening?.location?.split('·')[0]?.trim()||'夜色'}》`;
+    const paras=[];
+    // Paragraph 1: Always grounded in the character's morning & daytime surveillance life (their own world!)
+    paras.push(`上午在${sMorning?.location||'常去的地方'}处理完「${sMorning?.activity||'例行事务'}」，花了不少精力把积压的细节逐一核对清楚。作为${c.source.split('·')[0].trim()}世界里习惯了随时应对突发状况的人，这种按部就班的节奏反而让我觉得踏实。中午简单解决了午饭，没有多作停留。`);
+
+    // Paragraph 2: Afternoon & evening footprints from surveillance
+    paras.push(`下午去了${sAfternoon?.location||'城区'}继续「${sAfternoon?.activity||'手头的安排'}」，一直忙到傍晚才去${sEvening?.location||'河岸附近'}透了口气。晚风吹过来的时候，白天的紧绷感才算真正散去了一些。对我来说，能拥有这样一段不被打扰的独处时间已经足够难得。`);
+
+    // Paragraph 3: Proportional reflection depending on intimacy stage and whether they interacted on dateStr
+    if(intimacy.stage==='deep_love'){
+      if(dayMeetings.length||slotMeet){
+        const mLoc=dayMeetings[0]?.location||slotMeet?.location||'约定的地方';
+        title=`《在${mLoc}与${p.name}相见的这一天》`;
+        paras.push(`不过今天最让我反复回味的，还是在「${mLoc}」和 ${p.name} 见面的那段时光。以前我总觉得自己的生活只需要冷静与秩序就够了，可现在哪怕只是处理完日常事务走回住处的路上，脑海里也全都是 ${p.name} 说话时的神情。大概是真的栽在这段关系里了——只要想到明天还能听见这个人的声音，连原本枯燥的日常都变得让人期待起来。`);
+      }else{
+        title=`《忙完日常之后，格外想念${p.name}的夜晚》`;
+        paras.push(`回到住处整理好装备后，房间里安静下来，思绪却不受控制地飘向了 ${p.name}。明明白天在${sMorning?.location||'外勤'}和${sAfternoon?.location||'办事'}时还能保持一贯的冷静，可一到空闲下来的时候，满脑子都会想 ${p.name} 今天过得怎么样、有没有按时休息。原来不知不觉间，这个人已经成了我生活里最放不下的重心。`);
+      }
+    }else if(dayMeetings.length||slotMeet){
+      const mLoc=dayMeetings[0]?.location||slotMeet?.location||'街角咖啡馆';
+      paras.push(`值得一提的是，今天抽空在「${mLoc}」和 ${p.name} 见了一面。能在各自忙碌的生活间隙里坐下来面对面聊聊天，感觉还不坏。回去之后继续处理完了手头剩下的收尾工作，明天还有早起的正事，先记到这里。`);
+    }else if(dayMsgs.length>0){
+      const userSnippet=dayMsgs.filter(m=>m.sender==='user').slice(-1)[0]?.text?.slice(0,28)||'日常近况';
+      paras.push(`今天办事的间隙里，手机上收到了 ${p.name} 发来的消息，聊了几句关于「${userSnippet}」的话题。我的生活依然沿着原本的轨道运转，不过偶尔有这样一个能聊得来的朋友穿插在日常里，倒也不讨厌。夜深了，早点休息。`);
+    }else{
+      paras.push(`今天一整天都扑在自己的事情上，没有太多额外的社交。回到住处后把随身装备重新保养了一遍，翻了几页还没读完的旧书。明天上午在${sMorning?.location||'老地方'}还有安排，关灯睡觉。`);
+    }
+
+    const footprints=slots.filter(s=>hhmmToMin(s.start)>=420&&hhmmToMin(s.start)<=1300).slice(0,4).map(s=>`${s.start} ${s.location}（${s.activity}）`);
+    const sourceLocations=slots.filter(s=>hhmmToMin(s.start)>=420&&hhmmToMin(s.start)<=1300).slice(0,4).map(s=>s.location);
+    return {
+      id:`diary_${c.id}_${dateStr}`,
+      date:dateStr,
+      profile_id:p.id,
+      character_id:c.id,
+      title,
+      weather,
+      mood,
+      intimacy_stage:intimacy.stage,
+      intimacyStage:intimacy.stage,
+      intimacy_label:intimacy.label,
+      intimacy_score:intimacy.score,
+      content:paras.join('\n\n'),
+      footprints,
+      sourceLocations,
+      engine:'demo',
+      created_at:stamp()
+    };
+  };
+  const ensureDiariesUpToDate=(p,c)=>{
+    db.diaries ||= {};
+    const key=pairKey(p.id,c.id);
+    if(!db.diaries[key]||typeof db.diaries[key].byDate!=='object'){
+      db.diaries[key]={byDate:{}};
+    }
+    const diaryStore=db.diaries[key];
+    const survStore=getSurveillanceStore(p,c);
+    const today=localDateStr();
+    let newlyGenerated=[];
+    const pastDates=Object.keys(survStore.byDate).filter(d=>d<today).sort((a,b)=>a.localeCompare(b));
+    for(const dStr of pastDates){
+      if(!diaryStore.byDate[dStr]){
+        diaryStore.byDate[dStr]=buildDefaultDiary(p,c,dStr,survStore.byDate[dStr]);
+        newlyGenerated.push(dStr);
+      }
+    }
+    return {diaryStore,newlyGenerated};
+  };
+  async function ensureLiveDiary(p,c,targetDate='',forceRefresh=false){
+    const {diaryStore}=ensureDiariesUpToDate(p,c);
+    const today=localDateStr();
+    const yesterday=offsetDateStr(today,-1);
+    const avail=Object.keys(diaryStore.byDate).sort((a,b)=>b.localeCompare(a));
+    const dStr=(targetDate&&/^\d{4}-\d{2}-\d{2}$/.test(targetDate)&&targetDate<today)?targetDate:(avail[0]||yesterday);
+    const survRec=getOrInitSurveillance(p,c,dStr);
+    if(!diaryStore.byDate[dStr]||(forceRefresh&&pub().mode!=='live')){
+      diaryStore.byDate[dStr]=buildDefaultDiary(p,c,dStr,survRec);
+    }
+    const entry=diaryStore.byDate[dStr];
+    if(pub().mode!=='live')return entry;
+    if(entry.engine==='live'&&!forceRefresh)return entry;
+    try{
+      const intimacy=computeIntimacyInfo(p,c);
+      const slotsTxt=(survRec.slots||[]).map(s=>`${s.start}-${s.end} 在【${s.location}】${s.activity}（${s.scene}）`).join('\n');
+      const dayMsgs=messagesOf(p.id,c.id).filter(m=>String(m.created_at||'').slice(0,10)===dStr&&m.engine!=='recalled');
+      const chatTxt=dayMsgs.length?dayMsgs.slice(-8).map(m=>`${m.sender==='user'?p.name:c.name}：${m.text.slice(0,80)}`).join('\n'):'当日无手机聊天';
+      const sys=`你是 ${c.name}（来自《${c.source}》· ${c.version}，设定：${c.canon}）。现在是午夜 00:00 之后，请根据你【${dStr} 全天的监控行踪记录】写一篇你自己的第一人称私密日记。
+核心铁律（必须严格遵守）：
+1. 日记主要来源于你这一天的监控行踪（必须自然写到你在监控中的具体地点、做的事、工作细节与个人思考）。
+2. 记住：你有自己独立完整的生活、事业与世界，并不是以用户（${p.name}）为生活核心！
+   - 当前你对 ${p.name} 的感情阶段为：${intimacy.label}（阶段代码：${intimacy.stage}，好感分：${intimacy.score}/100）。
+   - 如果阶段不是 deep_love（深陷偏爱）：日记 80%–90% 必须写你自己的工作、日常经历与独处感想；如果当天和 ${p.name} 聊过天或见过面，只在日记中自然、克制地顺带提一两句；如果当天没有互动，就完全不提或仅一笔带过，绝不围着用户转！
+   - 只有当阶段为 deep_love（爱到不行了）时，才会在记录日常之余流露出对 ${p.name} 浓烈的爱意与反复回味。
+3. 严禁使用任何 emoji 表情符号！文风必须符合 ${c.name} 的性格（第一人称“我”，分 3 个自然段，段与段之间用 \\n\\n 分隔）。
+4. 只输出 JSON 对象，格式为：{"title":"《...》","weather":"纯文字天气（如：夜风微凉）","mood":"纯文字心情（如：平静专注）","content":"第一人称日记正文（3段）"}`;
+      const out=await llm([{role:'system',content:sys},{role:'user',content:`【${dStr} 你的全天监控行踪】：\n${slotsTxt}\n\n【${dStr} 与 ${p.name} 的互动记录】：\n${chatTxt}\n\n请生成该日日记 JSON。`}],{json_mode:true,max_tokens:900});
+      const parsed=JSON.parse(out);
+      if(parsed&&parsed.content&&String(parsed.content).trim().length>=30){
+        entry.title=String(parsed.title||entry.title).trim().slice(0,40);
+        entry.weather=String(parsed.weather||entry.weather).trim().slice(0,16);
+        entry.mood=String(parsed.mood||entry.mood).trim().slice(0,16);
+        entry.content=String(parsed.content).trim().slice(0,2400);
+        entry.intimacy_stage=intimacy.stage;
+        entry.intimacyStage=intimacy.stage;
+        entry.intimacy_label=intimacy.label;
+        entry.intimacy_score=intimacy.score;
+        entry.engine='live';
+        entry.updated_at=stamp();
+        save();
+      }
+    }catch(e){}
+    return entry;
+  }
+  const buildDiaryPayload=(p,c,requestedDate='')=>{
+    const {diaryStore,newlyGenerated}=ensureDiariesUpToDate(p,c);
+    const today=localDateStr();
+    const latestDate=Object.keys(diaryStore.byDate).sort((a,b)=>b.localeCompare(a))[0]||offsetDateStr(today,-1);
+    const selectedDate=(requestedDate&&/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)&&requestedDate<today)?requestedDate:latestDate;
+    if(!diaryStore.byDate[selectedDate]){
+      diaryStore.byDate[selectedDate]=buildDefaultDiary(p,c,selectedDate,getOrInitSurveillance(p,c,selectedDate));
+    }
+    const availableDates=Object.keys(diaryStore.byDate).sort((a,b)=>b.localeCompare(a));
+    const diary=diaryStore.byDate[selectedDate];
+    const intimacy=computeIntimacyInfo(p,c);
+    return {
+      characterId:c.id,
+      characterName:c.name,
+      date:selectedDate,
+      latestDate,
+      selectedDate,
+      availableDates,
+      newlyGenerated,
+      intimacy,
+      diary
+    };
+  };
   const inferMeetingLocation=(pid,cid,customLoc='')=>{
     const cleanCustom=String(customLoc||'').trim();
     if(cleanCustom)return cleanCustom.slice(0,40);
@@ -335,6 +903,11 @@
         const loc=m[1].replace(/^(?:我已经到了|我已经到|已经到了|已经到|我到了|我到|到了|约在|来到|站在|坐在|在|到|去)+/,'').trim();
         if(loc.length>=2)return loc.slice(0,32);
       }
+    }
+    const p=db.profiles.find(x=>x.id===pid),c=byId.get(cid);
+    if(p&&c){
+      const curSlot=getCurrentSurveillanceSlot(p,c);
+      if(curSlot?.location)return curSlot.location.slice(0,32);
     }
     return '约定的街角咖啡馆';
   };
@@ -663,7 +1236,9 @@
         batchHint=`\n【打包消息时间线】你在未看手机的这段时间里，对方陆续给你发来了 ${bundledRows.length} 条消息（按发送时间先后：${timelineStr}）。你现在刚拿起手机把这些消息一次性读完，请结合这些消息各自的时间戳跨度与内容，像真人一样自然连贯地统一回复。`;
       }
     }
-    chat.push({role:'system',content:'【第四层 · 当前状态 (Current State)】'+(mode==='meeting'?'当前必须以面对面小说式 RP 写下一条回复。不要控制玩家角色。':'当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+batchHint)});
+    const curSurv=getCurrentSurveillanceSlot(p,c);
+    const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】当前时间 ${fmtHHMM(Date.now())||'12:00'}，你此刻身处「${curSurv.location}」，状态：「${curSurv.activity}」（现场细节：${curSurv.scene}）。若对方问起你在哪、在做什么或提出现在见面，请严格以此真实位置与状态为准，保持世界观与地点一致。`:'';
+    chat.push({role:'system',content:'【第四层 · 当前状态 (Current State)】'+(mode==='meeting'?`当前必须以面对面小说式 RP 写下一条回复（当前见面地点：${relation(p.id,c.id)?.meeting_location||curSurv?.location||'约定的街角咖啡馆'}）。不要控制玩家角色。`:'当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint)});
     return chat;
   };
   function getApiUrl(suffix){const b=db.connection.base_url.trim().replace(/\/+$/,'');if(!/^https?:\/\//.test(b))bodyErr('API Base URL 需要以 http:// 或 https:// 开头');if(/^http:\/\//.test(b)&&!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/.test(b))bodyErr('远程 API 必须使用 HTTPS');return b+suffix}
@@ -740,6 +1315,7 @@
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180));
       const uList=userMsg?[userMsg]:messagesOf(p.id,c.id).filter(m=>m.sender==='user').slice(-1);
       recordDialogueEpisode(p,c,uList,{...reply,text:combinedTxt},mode);
+      if(mode==='chat')syncSurveillanceFromChat(p,c,uList,combinedTxt);
     }
     return {reply,replies,warning};
   }
@@ -961,14 +1537,42 @@
         return {delivered:sent,sent,matchedCount:matchedRels.length};
       }
       case '/threads':{
-        const p=getP(params.get('profileId'));return {threads:Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&byId.has(r.character_id)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(r=>({character:char(getC(r.character_id)),relation:r,last:messagesOf(p.id,r.character_id).at(-1)||null,queue:queueInfo(p.id,r.character_id)}))};
+        const p=getP(params.get('profileId'));return {threads:Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&byId.has(r.character_id)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(r=>({character:char(getC(r.character_id),p.id),relation:r,last:messagesOf(p.id,r.character_id).at(-1)||null,queue:queueInfo(p.id,r.character_id)}))};
       }
       case '/thread':{
         const p=getP(params.get('profileId')),c=getC(params.get('characterId')),r=requireMatch(p.id,c.id);
         ensureMeetingRecords(p,c);
+        getOrInitSurveillance(p,c);
+        const diaryPayload=buildDiaryPayload(p,c);
         const meetings=(db.meetings||[]).filter(x=>x.profile_id===p.id&&x.character_id===c.id);
         save();
-        return {character:char(c),profile:p,relation:r,messages:messagesOf(p.id,c.id),meetings,queue:queueInfo(p.id,c.id)};
+        return {character:char(c,p.id),profile:p,relation:r,messages:messagesOf(p.id,c.id),meetings,queue:queueInfo(p.id,c.id),surveillance:buildSurveillancePayload(p,c),diarySummary:{latestDate:diaryPayload.latestDate,availableDates:diaryPayload.availableDates,latestTitle:diaryPayload.diary?.title||''}};
+      }
+      case '/surveillance':{
+        const p=getP(params.get('profileId')||data.profileId),c=getC(params.get('characterId')||data.characterId);
+        const reqDate=String(params.get('date')||data.date||'').trim();
+        requireMatch(p.id,c.id);
+        await ensureLiveSurveillance(p,c,Boolean(data.refresh),reqDate);
+        save();
+        return buildSurveillancePayload(p,c,reqDate);
+      }
+      case '/diary':{
+        const p=getP(params.get('profileId')||data.profileId),c=getC(params.get('characterId')||data.characterId);
+        const reqDate=String(params.get('date')||data.date||'').trim();
+        requireMatch(p.id,c.id);
+        ensureDiariesUpToDate(p,c);
+        await ensureLiveDiary(p,c,reqDate,Boolean(data.refresh||data.forceRefresh));
+        save();
+        return buildDiaryPayload(p,c,reqDate);
+      }
+      case '/nickname':{
+        const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id);
+        const nick=String(data.nickname||'').trim().slice(0,36);
+        r.nickname=nick;
+        if(data.affectionBoost!==undefined)r.affection_boost=Number(data.affectionBoost)||0;
+        r.updated_at=stamp();
+        save();
+        return {ok:true,nickname:nick,character:char(c,p.id),relation:r};
       }
       case '/memories':{
         const p=getP(params.get('profileId')||data.profileId),c=getC(params.get('characterId')||data.characterId),qText=String(params.get('query')||data.query||'').trim();
@@ -1006,6 +1610,13 @@
       }
       case '/memory-action':{
         const p=getP(data.profileId),c=getC(data.characterId),act=String(data.action||'');
+        if(act==='affinity'){
+          const r=requireMatch(p.id,c.id);
+          r.affection_boost=(Number(r.affection_boost)||0)+(Number(data.delta)||0);
+          r.updated_at=stamp();
+          save();
+          return {ok:true,affection_boost:r.affection_boost,intimacy:computeIntimacyInfo(p,c)};
+        }
         if(act==='delete'){
           const mid=String(data.memoryId||data.id||'');if(!mid)bodyErr('缺少记忆 ID');
           db.episodicMemories=(db.episodicMemories||[]).filter(m=>!(m.id===mid&&m.owner_id===c.id&&m.profile_id===p.id));
@@ -1049,11 +1660,13 @@
         if(r.mode!==m){
           clearQueue(p.id,c.id);
           if(m==='meeting'){
+            const inferredLoc=inferMeetingLocation(p.id,c.id,locInput);
             r.mode='meeting';
             r.active_meeting_id='meet_'+uid();
-            r.meeting_location=inferMeetingLocation(p.id,c.id,locInput);
+            r.meeting_location=inferredLoc;
             r.meeting_started_at=stamp();
             r.updated_at=stamp();
+            syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
             event(p.id,c.id,'meeting','与 '+p.name+' 开始面对面见面');
             if(data.triggerOpening===true&&pub().mode!=='normal'){
               const res=await produceReply(p,c,'meeting',null);
@@ -1088,6 +1701,7 @@
                 }catch(e){}
               }
               meetingRecord=upsertMeetingRecord(p,c,mid,mMsgs,aiLoc,aiSum);
+              if(meetingRecord)syncSurveillanceOnMeetingEnd(p,c,meetingRecord);
             }
             r.mode='chat';
             r.active_meeting_id='';
@@ -1095,11 +1709,12 @@
             event(p.id,c.id,'return','与 '+p.name+' 返回手机聊天');
           }
         }else if(m==='meeting'&&r.active_meeting_id){
+          if(locInput)syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
           const mMsgs=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===r.active_meeting_id);
           if(mMsgs.length)meetingRecord=upsertMeetingRecord(p,c,r.active_meeting_id,mMsgs,r.meeting_location||'');
         }
         save();
-        return {mode:m,meetingId:r.active_meeting_id||'',active_meeting_id:r.active_meeting_id||'',location:r.meeting_location||'',meeting_location:r.meeting_location||'',meetingRecord,openingReply,warning};
+        return {mode:m,meetingId:r.active_meeting_id||'',active_meeting_id:r.active_meeting_id||'',location:r.meeting_location||'',meeting_location:r.meeting_location||'',meetingRecord,openingReply,warning,surveillance:buildSurveillancePayload(p,c)};
       }
       case '/chat-flush':{
         const p=getP(data.profileId);

@@ -3,7 +3,7 @@
 Run: python3 server.py. Binds ONLY to 127.0.0.1.
 """
 import base64, hashlib, json, os, random, re, secrets, sqlite3, sys, threading, time, traceback, urllib.error, urllib.parse, urllib.request, uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from catalog import CATALOG, BY_ID, SOURCES
@@ -317,6 +317,7 @@ def queue_flush(db,p,c,force=False):
                 if ur:user_rows.append(dict(ur))
             if reply:
                 record_dialogue_episode(db,p,c,user_rows,dict(reply,text=combined_txt),'chat')
+                sync_surveillance_from_chat(db,p,c,combined_txt)
             db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),pid,cid))
             db.execute("UPDATE chat_queue SET status='idle',inflight='',inflight_sources='[]',blocked=0 WHERE profile_id=? AND character_id=?",(pid,cid))
         db.commit()
@@ -469,6 +470,391 @@ def append_episodic_memory(db,*,owner_id,profile_id,source_type,source_key,knowl
 PROMISE_KEYWORDS=('约定','答应','下次','周末','明天见','约好','等你','不见不散','一起去','什么时候见','最喜欢','最讨厌','过敏','生日','秘密','记住','别忘')
 MEETING_STATE={}
 PROACTIVE_LOG={}
+SURVEILLANCE_STATE={}
+
+def local_date_str():
+    return datetime.now().astimezone().strftime('%Y-%m-%d')
+
+def hhmm_to_min(hhmm=''):
+    m=re.match(r'^(\d{1,2}):(\d{2})$',str(hhmm).strip())
+    if not m:return 0
+    return int(m.group(1))*60+int(m.group(2))
+
+def min_to_hhmm(mins):
+    clamped=max(0,min(1439,int(mins)))
+    return f"{clamped//60:02d}:{clamped%60:02d}"
+
+def build_default_surveillance_slots(c,p):
+    src=(c.get('source','')+' '+c.get('version','')+' '+c.get('canon','')).lower()
+    name=c['name']
+    p_name=(p.get('name') if p else None) or '你'
+    if '生化危机' in src or 'resident' in src:
+        return [
+            {'start':'00:00','end':'06:30','location':f"{name}的安全屋公寓",'status':'浅眠休整','activity':'在安静的房间里浅眠休息，通讯器放在枕边保持待机','scene':f"百叶窗漏进一点夜色微光，{name}的外套搭在椅背上，呼吸平稳而警觉。",'source':'schedule'},
+            {'start':'06:30','end':'09:00','location':'街角黑咖啡店与晨间街区','status':'晨间巡视','activity':'买了一杯黑咖啡，沿着街区慢跑并确认周边环境','scene':f"清晨的雾气还没散尽，{name}端着热咖啡站在街角，低头看了一眼手机上和{p_name}的对话框。",'source':'schedule'},
+            {'start':'09:00','end':'12:00','location':'战术简报室与体能训练场','status':'外勤整备','activity':'核对今日简报与装备清单，完成上午的射击与体能训练','scene':f"室内灯光冷白，{name}刚摘下护目镜擦了擦汗，手机放在战术长桌边缘。",'source':'schedule'},
+            {'start':'12:00','end':'14:00','location':'安静的街边简餐厅','status':'午休用餐','activity':'独自吃一份热三明治，趁午休空档翻看手机消息','scene':f"靠窗的位置能看见街道人流，{name}一边慢条斯理地喝水，一边留意手机震动。",'source':'schedule'},
+            {'start':'14:00','end':'18:00','location':'旧城区外勤巡查路线','status':'执行外勤','activity':'在旧城区处理日常联络与巡查工作，偶尔停下脚步回消息','scene':f"午后的阳光斜照在石砖墙面上，{name}靠在车门旁核对路线记录。",'source':'schedule'},
+            {'start':'18:00','end':'21:00','location':'暖光街角咖啡馆','status':'傍晚闲暇','activity':'结束了白天的紧绷任务，在常去的街角店里喝热饮放松','scene':f"店内放着轻柔的爵士乐，{name}坐在靠里侧的沙发座，似乎正等着和{p_name}聊会儿天。",'source':'schedule'},
+            {'start':'21:00','end':'23:59','location':f"{name}的私人公寓窗边",'status':'夜间独处','activity':'洗漱后在窗边整理随身物品，随时准备回复手机消息','scene':f"台灯发出柔和的暖黄色光线，{name}靠在沙发上看着窗外夜景，手机就握在手里。",'source':'schedule'}
+        ]
+    if '巫师' in src or 'witcher' in src:
+        return [
+            {'start':'00:00','end':'06:30','location':'旅店二楼靠窗客房','status':'夜间休整','activity':'在壁炉余温旁闭目养神，长剑与随身行囊放在触手可及处','scene':f"木柴偶尔发出轻微的噼啪声，{name}在安静的客房里浅眠休息。",'source':'schedule'},
+            {'start':'06:30','end':'09:00','location':'旅店庭院与马厩旁','status':'晨间整备','activity':'检查随身银剑、皮甲与药剂包，顺便吃简单的早餐','scene':f"晨风吹过庭院，{name}正在擦拭护具，神情专注而平静。",'source':'schedule'},
+            {'start':'09:00','end':'12:30','location':'城外林间大道与告示板前','status':'外出委托','activity':'查看附近的委托动向并采集草药材料','scene':f"林间阳光斑驳，{name}停下脚步查看地图与随身传讯器。",'source':'schedule'},
+            {'start':'12:30','end':'14:30','location':'老城区树荫下的露天座位','status':'午间小憩','activity':'点了一份热汤和烤面包，在树荫下稍作休整','scene':f"市集的喧嚣隔着一条街，{name}难得放松地靠着椅背休息。",'source':'schedule'},
+            {'start':'14:30','end':'18:30','location':'炼金工坊与旧书铺','status':'采购与调配','activity':'补充炼金材料与手札记录，处理下午的琐事','scene':f"工坊里弥漫着淡淡的草木香气，{name}正仔细核对手中的清单。",'source':'schedule'},
+            {'start':'18:30','end':'21:30','location':'暖炉酒馆靠角落的木桌','status':'傍晚小酌','activity':'坐在安静的角落听吟游诗人的琴声，等着熟人联络','scene':f"酒馆壁炉火光温暖，{name}面前的木杯冒着热气，目光不时投向门口与传讯器。",'source':'schedule'},
+            {'start':'21:30','end':'23:59','location':'旅店露台与客房','status':'夜色独处','activity':'在露台吹了一会儿晚风后回到房间整理今日见闻','scene':f"月色落在窗沿上，{name}坐在桌前翻看与{p_name}的对话记录。",'source':'schedule'}
+        ]
+    return [
+        {'start':'00:00','end':'07:00','location':f"{name}的私人卧室",'status':'夜间安睡','activity':'在安静的卧室里休息，手机开启了重点联系人提醒','scene':f"窗帘遮住了城市的霓虹，{name}的手机放在床头柜上安静待机。",'source':'schedule'},
+        {'start':'07:00','end':'09:30','location':'公寓厨房与街角烘焙店','status':'晨间时光','activity':'冲泡晨间咖啡、准备早点，顺便浏览早间消息','scene':f"阳光透过玻璃窗洒在桌面上，{name}端着马克杯正在看手机。",'source':'schedule'},
+        {'start':'09:30','end':'12:30','location':'个人工作室与书房','status':'专注忙碌','activity':'处理上午的核心事务与个人日程，期间偶尔抬头看一眼手机','scene':f"{name}坐在书桌前专注处理手头的事，手边放着写了一半的笔记。",'source':'schedule'},
+        {'start':'12:30','end':'14:30','location':'常去的阳光简餐厅','status':'午间休息','activity':'享用午餐并散步消食，趁空闲回复手机消息','scene':f"午后的微风很舒服，{name}坐在靠窗的位置，神情比上午松弛了不少。",'source':'schedule'},
+        {'start':'14:30','end':'18:00','location':'城市艺术街区与独立书店','status':'午后外出','activity':'在街区处理下午的行程，顺路逛了常去的书店与唱片行','scene':f"{name}站在书架旁翻看一本画册，手机揣在触手可及的外套口袋里。",'source':'schedule'},
+        {'start':'18:00','end':'21:00','location':'街角暖光咖啡馆','status':'傍晚放松','activity':'点了一杯热饮坐在窗边看街景，随时有空和在意的人聊天或见面','scene':f"暮色渐沉，咖啡馆暖黄的灯光映在玻璃上，{name}正低头看着和{p_name}的聊天界面。",'source':'schedule'},
+        {'start':'21:00','end':'23:59','location':f"{name}的家中客厅",'status':'夜间闲暇','activity':'结束一天的外出回到家里，听着轻音乐回复消息','scene':f"落地灯亮着温和的光，{name}靠在沙发上，心情放松地等待{p_name}的消息。",'source':'schedule'}
+    ]
+
+DIARY_STATE={}
+
+def offset_date_str(base_date='',delta_days=0):
+    try:
+        dt=datetime.strptime(base_date or local_date_str(),'%Y-%m-%d')+timedelta(days=delta_days)
+        return dt.strftime('%Y-%m-%d')
+    except Exception:
+        return (datetime.now()+timedelta(days=delta_days)).strftime('%Y-%m-%d')
+
+def get_surveillance_store(db,p,c):
+    key=(p['id'],c['id'])
+    store=SURVEILLANCE_STATE.get(key)
+    if store and 'date' in store and 'slots' in store:
+        store={'by_date':{store['date']:store}}
+        SURVEILLANCE_STATE[key]=store
+    if not store or not isinstance(store.get('by_date'),dict):
+        store={'by_date':{}}
+        SURVEILLANCE_STATE[key]=store
+    today=local_date_str()
+    for d_str in (offset_date_str(today,-2),offset_date_str(today,-1),today):
+        if d_str not in store['by_date'] or not store['by_date'][d_str].get('slots'):
+            store['by_date'][d_str]={
+                'profile_id':p['id'],
+                'character_id':c['id'],
+                'date':d_str,
+                'engine':'curated',
+                'updated_at':utc(),
+                'slots':[dict(x) for x in build_default_surveillance_slots(c,p)],
+                'live_override':None
+            }
+    return store
+
+def get_or_init_surveillance(db,p,c,target_date=''):
+    store=get_surveillance_store(db,p,c)
+    today=local_date_str()
+    d_str=target_date if (target_date and re.match(r'^\d{4}-\d{2}-\d{2}$',str(target_date))) else today
+    if d_str not in store['by_date'] or not store['by_date'][d_str].get('slots'):
+        store['by_date'][d_str]={
+            'profile_id':p['id'],
+            'character_id':c['id'],
+            'date':d_str,
+            'engine':'curated',
+            'updated_at':utc(),
+            'slots':[dict(x) for x in build_default_surveillance_slots(c,p)],
+            'live_override':None
+        }
+    return store['by_date'][d_str]
+
+def get_current_surveillance_slot(db,p,c):
+    rec=get_or_init_surveillance(db,p,c,local_date_str())
+    now_hhmm=fmt_hhmm()
+    now_m=hhmm_to_min(now_hhmm)
+    rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
+    m_state=MEETING_STATE.get((p['id'],c['id']),{})
+    if rel and rel['mode']=='meeting':
+        loc=m_state.get('meeting_location') or '约定的街角咖啡馆'
+        return {
+            'start':rec.get('live_override',{}).get('start') if isinstance(rec.get('live_override'),dict) else now_hhmm,
+            'end':min_to_hhmm(min(1439,now_m+90)),
+            'location':loc,
+            'status':f"正在与 {p['name']} 线下见面",
+            'activity':f"与 {p['name']} 在「{loc}」面对面相处互动",
+            'scene':f"实时画面：{c['name']}正与 {p['name']} 在「{loc}」面对面交谈，注意力完全放在对方身上。",
+            'source':'meeting',
+            'isCurrent':True
+        }
+    slots=rec.get('slots') or []
+    active=slots[-1] if slots else None
+    for s in slots:
+        if hhmm_to_min(s['start'])<=now_m<=hhmm_to_min(s['end']):
+            active=s
+            break
+    return dict(active,isCurrent=True) if active else {
+        'start':'00:00','end':'23:59','location':f"{c['name']}的常去街角",'status':'日常活动','activity':'正在处理日常事务','scene':f"{c['name']}正在日常活动中。",'source':'schedule','isCurrent':True
+    }
+
+def sync_surveillance_on_meeting_start(db,p,c,loc,meeting_id=''):
+    rec=get_or_init_surveillance(db,p,c)
+    now_hhmm=fmt_hhmm()
+    now_m=hhmm_to_min(now_hhmm)
+    clean_loc=loc or '约定的街角咖啡馆'
+    rec['live_override']={
+        'start':now_hhmm,
+        'location':clean_loc,
+        'meeting_id':meeting_id or ''
+    }
+    slots=rec.get('slots') or []
+    idx=next((i for i,s in enumerate(slots) if hhmm_to_min(s['start'])<=now_m<=hhmm_to_min(s['end'])),-1)
+    if idx>=0:
+        slots[idx]=dict(slots[idx],
+            location=clean_loc,
+            status=f"与 {p['name']} 见面中",
+            activity=f"与 {p['name']} 在「{clean_loc}」面对面见面互动",
+            scene=f"{c['name']}已抵达「{clean_loc}」，正在与 {p['name']} 面对面相处。",
+            source='meeting'
+        )
+        if idx+1<len(slots):
+            nxt=slots[idx+1]
+            slots[idx+1]=dict(nxt,
+                activity=f"从「{clean_loc}」与 {p['name']} 分别后，{re.sub(r'^从「.*?」.*?(?:，|后)','',nxt['activity'])}",
+                scene=f"结束在「{clean_loc}」的见面后，{c['name']}一边回味刚才的对话一边继续接下来的安排。",
+                source='meeting_shift'
+            )
+    rec['updated_at']=utc()
+
+def sync_surveillance_on_meeting_end(db,p,c,meeting_rec):
+    if not meeting_rec:return
+    rec=get_or_init_surveillance(db,p,c)
+    loc=meeting_rec.get('location') or '约定的街角咖啡馆'
+    start_hhmm=fmt_hhmm(meeting_rec.get('started_at')) or (rec.get('live_override') or {}).get('start') or fmt_hhmm()
+    end_hhmm=fmt_hhmm(meeting_rec.get('ended_at')) or fmt_hhmm()
+    now_m=hhmm_to_min(end_hhmm)
+    rec['live_override']=None
+    slots=rec.get('slots') or []
+    idx=next((i for i,s in enumerate(slots) if hhmm_to_min(s['start'])<=now_m<=hhmm_to_min(s['end'])),-1)
+    if idx>=0:
+        slots[idx]=dict(slots[idx],
+            location=loc,
+            status='线下见面足迹',
+            activity=f"与 {p['name']} 在「{loc}」见面（{start_hhmm}–{end_hhmm}）：{str(meeting_rec.get('summary') or '')[:80]}",
+            scene=f"在「{loc}」与 {p['name']} 度过了面对面的时光，刚刚结束见面准备离开。",
+            source='meeting',
+            meeting_id=meeting_rec.get('id','')
+        )
+        if idx+1<len(slots):
+            nxt=slots[idx+1]
+            cleaned_act=re.sub(r'^从「.*?」.*?(?:·|，|后)\s*','',nxt['activity'])
+            slots[idx+1]=dict(nxt,
+                status='见面后返程',
+                activity=f"从「{loc}」离开后 · {cleaned_act}",
+                scene=f"{c['name']}刚从「{loc}」离开，还在回想刚才和 {p['name']} 见面的细节。",
+                source='meeting_shift'
+            )
+    rec['updated_at']=utc()
+
+def sync_surveillance_from_chat(db,p,c,ai_text=''):
+    txt=str(ai_text or '').strip()
+    if not txt:return
+    pat=re.compile(r'(?:我在|我现在在|我刚到|我已经到|正坐在|正站在|刚走进|现在去|我先去|刚回到)([\u4e00-\u9fa5A-Za-z0-9]{2,14}?(?:咖啡馆|咖啡店|咖啡厅|酒吧|酒馆|书店|餐厅|公园|海边|江边|车站|天台|公寓|家里|安全屋|训练场|靶场|办公室|工作室|便利店|图书馆|街角))')
+    m=pat.search(txt)
+    if not m or not m.group(1):return
+    new_loc=m.group(1).strip()
+    rec=get_or_init_surveillance(db,p,c)
+    now_m=hhmm_to_min(fmt_hhmm())
+    slots=rec.get('slots') or []
+    idx=next((i for i,s in enumerate(slots) if hhmm_to_min(s['start'])<=now_m<=hhmm_to_min(s['end'])),-1)
+    if idx>=0 and slots[idx].get('source')!='meeting':
+        snippet=re.sub(r'\s*\|\|\|\s*','，',txt)[:64]
+        slots[idx]=dict(slots[idx],
+            location=new_loc,
+            status='聊天动态同步',
+            activity=f"在「{new_loc}」与 {p['name']} 手机聊天（“{snippet}”）",
+            scene=f"{c['name']}此刻就在「{new_loc}」，手里拿着手机和 {p['name']} 发消息。",
+            source='chat_update'
+        )
+        rec['updated_at']=utc()
+
+def ensure_live_surveillance(db,p,c,force=False,target_date=''):
+    today=local_date_str()
+    d_str=target_date if (target_date and re.match(r'^\d{4}-\d{2}-\d{2}$',str(target_date))) else today
+    rec=get_or_init_surveillance(db,p,c,d_str)
+    if public_connection()['mode']!='live':return rec
+    if rec.get('engine')=='live' and not force:return rec
+    try:
+        recent_rows=db.execute('SELECT sender,text,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 6',(p['id'],c['id'])).fetchall()
+        recent_chat='\n'.join(f"[{'我方' if x['sender']=='user' else c['name']}] {str(x['text'] or '')[:70]}" for x in reversed(recent_rows))
+        meet_rows=db.execute('SELECT location,time,summary FROM meetings WHERE profile_id=? AND character_id=? ORDER BY started_at DESC LIMIT 2',(p['id'],c['id'])).fetchall()
+        recent_meet='；'.join(f"{m['time']}在{m['location']}：{str(m['summary'] or '')[:50]}" for m in meet_rows)
+        sys_prompt=f"你是 {c['name']}（来自《{c['source']}》· {c['version']}，背景：{c['canon']}）。请生成你在 {d_str} 从 00:00 到 23:59 的 7 个连续时间段作息与行踪表（用于角色专属空间的实时生活监控）。必须严格贴合你的原作身份、独立职业习惯以及与 {p['name']} 的近期互动（近期聊天：{recent_chat or '刚建立匹配'}；近期见面：{recent_meet or '暂无'}）。禁止使用任何 emoji 表情符号。只输出 JSON 对象，格式为：{{\"slots\":[{{\"start\":\"00:00\",\"end\":\"06:30\",\"location\":\"具体地点（15字内）\",\"status\":\"四字状态\",\"activity\":\"正在做的事（38字内）\",\"scene\":\"监控镜头下的细腻画面感描写（55字内）\"}}]}}，7个时间段首尾相连覆盖全天。"
+        out=completion([{'role':'system','content':sys_prompt},{'role':'user','content':f'请生成 {d_str} 全天 7 个时段的作息与实时监控画面 JSON。'}],json_mode=True,max_tokens=900)
+        parsed=parse_json(out,{})
+        if isinstance(parsed.get('slots'),list) and len(parsed['slots'])>=5:
+            cleaned=[]
+            for s in parsed['slots'][:8]:
+                if not isinstance(s,dict) or not s.get('start') or not s.get('end') or not s.get('location'):continue
+                cleaned.append({
+                    'start':str(s.get('start','00:00')).strip()[:5],
+                    'end':str(s.get('end','23:59')).strip()[:5],
+                    'location':str(s.get('location','')).strip()[:28],
+                    'status':str(s.get('status','日常活动')).strip()[:12],
+                    'activity':str(s.get('activity','')).strip()[:90],
+                    'scene':str(s.get('scene','')).strip()[:140],
+                    'source':'schedule'
+                })
+            if len(cleaned)>=5:
+                rec['slots']=cleaned
+                rec['engine']='live'
+                rec['updated_at']=utc()
+    except Exception:
+        pass
+    return rec
+
+def build_surveillance_payload(db,p,c,requested_date=''):
+    store=get_surveillance_store(db,p,c)
+    today=local_date_str()
+    sel_date=requested_date if (requested_date and re.match(r'^\d{4}-\d{2}-\d{2}$',str(requested_date)) and str(requested_date)<=today) else today
+    is_today=(sel_date==today)
+    rec=get_or_init_surveillance(db,p,c,sel_date)
+    avail=sorted([d for d in store['by_date'].keys() if d<=today],reverse=True)
+    now_hhmm=fmt_hhmm()
+    now_m=hhmm_to_min(now_hhmm)
+    current=get_current_surveillance_slot(db,p,c) if is_today else None
+    unlocked=[]
+    slots=rec.get('slots') or []
+    for s in slots:
+        start_m=hhmm_to_min(s['start'])
+        end_m=hhmm_to_min(s['end'])
+        if (not is_today) or start_m<=now_m:
+            is_cur=bool(is_today and start_m<=now_m<=end_m)
+            unlocked.append(dict(s,
+                isCurrent=is_cur,
+                state='current' if is_cur else 'past'
+            ))
+    if is_today and not unlocked and slots:
+        unlocked.append(dict(slots[0],isCurrent=True,state='current'))
+    return {
+        'date':rec['date'],
+        'today':today,
+        'isToday':is_today,
+        'availableDates':avail,
+        'nowTime':now_hhmm,
+        'engine':rec['engine'],
+        'updatedAt':rec['updated_at'],
+        'current':current,
+        'unlockedSlots':list(reversed(unlocked)),
+        'totalSlotsCount':len(slots),
+        'lockedCount':max(0,len(slots)-len(unlocked)) if is_today else 0
+    }
+
+def compute_intimacy_info(db,p,c):
+    m_state=MEETING_STATE.get((p['id'],c['id']),{})
+    msg_cnt=db.execute("SELECT COUNT(*) AS cnt FROM messages WHERE profile_id=? AND character_id=? AND engine!='recalled'",(p['id'],c['id'])).fetchone()['cnt']
+    meet_cnt=db.execute("SELECT COUNT(*) AS cnt FROM meetings WHERE profile_id=? AND character_id=?",(p['id'],c['id'])).fetchone()['cnt']
+    boost=int(m_state.get('affection_boost',0) or 0)
+    score=min(100,int(round(meet_cnt*22+msg_cnt*1.5+boost)))
+    if score>=75:
+        return {'score':score,'stage':'deep_love','label':'深陷偏爱 · 满心是你','desc':'角色已对你产生极深的情感依恋，日常行踪与思绪都会不自觉牵挂着你'}
+    if score>=30:
+        return {'score':score,'stage':'warming','label':'渐生熟稔 · 心有牵挂','desc':'角色保持着自己独立的工作与生活，但闲暇时会自然记起与你的对话'}
+    return {'score':score,'stage':'independent','label':'独立生活 · 自有天地','desc':'角色拥有独立完整的生活重心与日常，日记主要记录自身经历，不以你为生活核心'}
+
+def build_default_diary(db,p,c,date_str,surv_rec):
+    slots=(surv_rec or {}).get('slots') or build_default_surveillance_slots(c,p,date_str)
+    intimacy=compute_intimacy_info(db,p,c)
+    day_msgs=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND substr(created_at,1,10)=? AND engine!='recalled'",(p['id'],c['id'],date_str)).fetchall()
+    day_meets=db.execute("SELECT * FROM meetings WHERE profile_id=? AND character_id=? AND substr(started_at,1,10)=?",(p['id'],c['id'],date_str)).fetchall()
+    s_morning=slots[1] if len(slots)>1 else slots[0]
+    s_afternoon=slots[3] if len(slots)>3 else slots[-1]
+    s_evening=slots[4] if len(slots)>4 else slots[-1]
+    title=f"《{s_morning['location']}与{s_evening['location']}》"
+    p1=f"上午在{s_morning['location']}完成了「{s_morning['activity']}」，花了不少精力把积压的细节逐一核对清楚。作为习惯了按自己节奏行事的人，这种井然有序的日常让我觉得踏实。"
+    p2=f"下午去了{s_afternoon['location']}处理手头的安排，傍晚才在{s_evening['location']}歇了口气。白天的紧绷感散去之后，难得有一段完全属于自己的独处时间。"
+    if intimacy['stage']=='deep_love':
+        p3=f"不过今天最让我放不下的依然是 {p['name']}。明明白天忙工作的时候还能保持冷静，可一到夜里安静下来，脑海里全都是和 {p['name']} 相处的细节。大概是真的彻底栽在这段关系里了。"
+    elif day_meets:
+        p3=f"值得一提的是，今天抽空在「{day_meets[0]['location']}」和 {p['name']} 见了一面。能在各自忙碌的生活间隙里聊聊天，感觉还不坏。明天还有早起的正事，先记到这里。"
+    elif day_msgs:
+        p3=f"今天办事的间隙收到了 {p['name']} 的消息，简单聊了几句。我的生活依然沿着原本的轨道运转，不过偶尔有这样一个聊得来的朋友穿插在日常里，倒也不赖。"
+    else:
+        p3=f"今天一整天都扑在自己的事情上，回到住处后整理好随身装备，翻了几页旧书。明天还有早起的安排，准备休息。"
+    footprints=[f"{s['start']} {s['location']}（{s['activity'][:20]}）" for s in slots[1:5]]
+    return {
+        'id':f"diary_{c['id']}_{date_str}",
+        'date':date_str,
+        'profile_id':p['id'],
+        'character_id':c['id'],
+        'title':title,
+        'weather':'晴朗微风',
+        'mood':'心绪温柔' if intimacy['stage']=='deep_love' else '专注沉稳',
+        'intimacy_stage':intimacy['stage'],
+        'intimacy_label':intimacy['label'],
+        'intimacy_score':intimacy['score'],
+        'content':'\n\n'.join([p1,p2,p3]),
+        'footprints':footprints,
+        'engine':'curated',
+        'created_at':utc()
+    }
+
+def ensure_diaries_up_to_date(db,p,c):
+    key=(p['id'],c['id'])
+    d_store=DIARY_STATE.setdefault(key,{'by_date':{}})
+    s_store=get_surveillance_store(db,p,c)
+    today=local_date_str()
+    newly=[]
+    for d_str in sorted(k for k in s_store['by_date'].keys() if k<today):
+        if d_str not in d_store['by_date']:
+            d_store['by_date'][d_str]=build_default_diary(db,p,c,d_str,s_store['by_date'][d_str])
+            newly.append(d_str)
+    return d_store,newly
+
+def ensure_live_diary(db,p,c,target_date='',force=False):
+    d_store,_=ensure_diaries_up_to_date(db,p,c)
+    today=local_date_str()
+    avail=sorted(d_store['by_date'].keys(),reverse=True)
+    d_str=target_date if (target_date and re.match(r'^\d{4}-\d{2}-\d{2}$',str(target_date)) and str(target_date)<today) else (avail[0] if avail else offset_date_str(today,-1))
+    surv_rec=get_or_init_surveillance(db,p,c,d_str)
+    if d_str not in d_store['by_date']:
+        d_store['by_date'][d_str]=build_default_diary(db,p,c,d_str,surv_rec)
+    entry=d_store['by_date'][d_str]
+    if public_connection()['mode']!='live':return entry
+    if entry.get('engine')=='live' and not force:return entry
+    try:
+        intimacy=compute_intimacy_info(db,p,c)
+        slots_txt='\n'.join(f"{s['start']}-{s['end']} 在【{s['location']}】{s['activity']}（{s['scene']}）" for s in (surv_rec.get('slots') or []))
+        sys_p=f"你是 {c['name']}（来自《{c['source']}》· {c['version']}，设定：{c['canon']}）。请根据你 {d_str} 全天的监控行踪写一篇第一人称私密日记。记住：角色有自己独立的生活，并不是以用户（{p['name']}）为生活核心（除非当前感情阶段为 deep_love，当前阶段：{intimacy['stage']} · {intimacy['label']}）。严禁使用任何 emoji。只输出 JSON：{{\"title\":\"《...》\",\"weather\":\"纯文字天气\",\"mood\":\"纯文字心情\",\"content\":\"第一人称日记正文（3段，用\\\\n\\\\n分隔）\"}}"
+        out=completion([{'role':'system','content':sys_p},{'role':'user','content':slots_txt}],json_mode=True,max_tokens=900)
+        parsed=parse_json(out,{})
+        if parsed.get('content'):
+            entry['title']=str(parsed.get('title') or entry['title']).strip()[:40]
+            entry['weather']=str(parsed.get('weather') or entry['weather']).strip()[:16]
+            entry['mood']=str(parsed.get('mood') or entry['mood']).strip()[:16]
+            entry['content']=str(parsed.get('content')).strip()[:2400]
+            entry['engine']='live'
+    except Exception:
+        pass
+    return entry
+
+def build_diary_payload(db,p,c,requested_date=''):
+    d_store,newly=ensure_diaries_up_to_date(db,p,c)
+    today=local_date_str()
+    avail=sorted(d_store['by_date'].keys(),reverse=True)
+    latest=avail[0] if avail else offset_date_str(today,-1)
+    sel=requested_date if (requested_date and re.match(r'^\d{4}-\d{2}-\d{2}$',str(requested_date)) and str(requested_date)<today) else latest
+    if sel not in d_store['by_date']:
+        d_store['by_date'][sel]=build_default_diary(db,p,c,sel,get_or_init_surveillance(db,p,c,sel))
+    avail=sorted(d_store['by_date'].keys(),reverse=True)
+    diary=d_store['by_date'][sel]
+    return {
+        'characterId':c['id'],
+        'characterName':c['name'],
+        'latestDate':latest,
+        'selectedDate':sel,
+        'availableDates':avail,
+        'newlyGenerated':newly,
+        'intimacy':compute_intimacy_info(db,p,c),
+        'diary':diary
+    }
 
 def record_dialogue_episode(db,p,c,user_msgs,ai_msg,mode):
     if not ai_msg or mode=='meeting':return None
@@ -510,6 +896,15 @@ def infer_meeting_location(db,pid,cid,custom_loc=''):
         if m and m.group(1):
             loc=re.sub(r'^(?:我已经到了|我已经到|已经到了|已经到|我到了|我到|到了|约在|来到|站在|坐在|在|到|去)+','',m.group(1)).strip()
             if len(loc)>=2:return loc[:32]
+    try:
+        p=profile_get(db,pid)
+        c=BY_ID.get(cid)
+        if p and c:
+            cur_slot=get_current_surveillance_slot(db,p,c)
+            if cur_slot and cur_slot.get('location'):
+                return str(cur_slot['location'])[:32]
+    except Exception:
+        pass
     return '约定的街角咖啡馆'
 
 def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary=''):
@@ -826,6 +1221,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     query_seed=latest or ' '.join(m['text'] for m in working_history[-3:] if m['sender']=='user') or (' '.join(m['text'] for m in working_history[-2:]))
     recalled=retrieve_relevant_memories(db,p['id'],c['id'],query_text=query_seed,exclude_msg_ids=working_ids,limit=4,max_chars=1200)
     rel_summary=relationship_baseline_summary(db,p['id'],c['id'],p['name'])
+    cur_surv=get_current_surveillance_slot(db,p,c)
     interests_str='、'.join(p.get('interests') or []) or '未填写'
     intent_str=p.get('intent') or '未填写'
     system='''你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n'''
@@ -836,6 +1232,8 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         system+=f"\n对方扮演的原作人物：{role['name']}，{role['version']}，{role['canon']}。"
     elif p['role_hint']:system+=f"\n对方提供的扮演身份说明（未经自动验证）：{p['role_hint'][:240]}。"
     system+=f"\n\n【第二层 · 关系记忆基线 (Relationship Memory)】\n{rel_summary}"
+    if cur_surv:
+        system+=f"\n\n【此刻你的真实位置与状态（实时监控同步）】\n当前时段：{cur_surv['start']}–{cur_surv['end']}｜你所在地点：{cur_surv['location']}｜状态：{cur_surv['status']}｜正在做的事：{cur_surv['activity']}。当对方问你在哪、在干什么或提出见面时，请自然地与你此刻的真实位置和状态保持一致。"
     if recalled:
         system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n"+"\n".join(format_episodic_entry(e) for e in recalled)
     else:
@@ -974,7 +1372,9 @@ class Handler(BaseHTTPRequestHandler):
                         if not c:continue
                         last=db.execute('SELECT text,sender,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 1',(p['id'],c['id'])).fetchone()
                         m_state=MEETING_STATE.get((p['id'],c['id']),{})
-                        threads.append({'character':char_view(db,c),'relation':dict(r)|{'hot_chat':bool(m_state.get('hot_chat',False))},'last':dict(last) if last else None,'queue':queue_view(db,p['id'],c['id'])})
+                        nick=str(m_state.get('nickname','')).strip()
+                        cv=char_view(db,c)|{'nickname':nick,'display_name':nick or c['name']}
+                        threads.append({'character':cv,'relation':dict(r)|{'hot_chat':bool(m_state.get('hot_chat',False)),'nickname':nick},'last':dict(last) if last else None,'queue':queue_view(db,p['id'],c['id'])})
                     return self.respond({'threads':threads})
                 if route=='/api/thread':
                     p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid)
@@ -984,8 +1384,21 @@ class Handler(BaseHTTPRequestHandler):
                     msgs,meetings=ensure_meeting_records(db,p,c)
                     db.commit()
                     m_state=MEETING_STATE.get((p['id'],cid),{})
-                    rel_dict=dict(rel)|{'active_meeting_id':m_state.get('active_meeting_id',''),'meeting_location':m_state.get('meeting_location',''),'hot_chat':bool(m_state.get('hot_chat',False))}
-                    return self.respond({'character':char_view(db,c),'profile':p,'relation':rel_dict,'messages':msgs,'meetings':meetings,'queue':queue_view(db,p['id'],cid)})
+                    nick=str(m_state.get('nickname','')).strip()
+                    cv=char_view(db,c)|{'nickname':nick,'display_name':nick or c['name']}
+                    diary_p=build_diary_payload(db,p,c)
+                    rel_dict=dict(rel)|{'active_meeting_id':m_state.get('active_meeting_id',''),'meeting_location':m_state.get('meeting_location',''),'hot_chat':bool(m_state.get('hot_chat',False)),'nickname':nick}
+                    return self.respond({'character':cv,'profile':p,'relation':rel_dict,'messages':msgs,'meetings':meetings,'surveillance':build_surveillance_payload(db,p,c),'diarySummary':{'latestDate':diary_p['latestDate'],'availableDates':diary_p['availableDates'],'latestTitle':diary_p['diary'].get('title','')},'queue':queue_view(db,p['id'],cid)})
+                if route=='/api/surveillance':
+                    p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid);req_date=arg('date').strip()
+                    if not c:raise ValueError('角色不存在')
+                    ensure_live_surveillance(db,p,c,force=(arg('refresh')=='1'),target_date=req_date)
+                    return self.respond(build_surveillance_payload(db,p,c,req_date))
+                if route=='/api/diary':
+                    p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid);req_date=arg('date').strip()
+                    if not c:raise ValueError('角色不存在')
+                    ensure_live_diary(db,p,c,target_date=req_date,force=(arg('refresh')=='1'))
+                    return self.respond(build_diary_payload(db,p,c,req_date))
                 if route=='/api/memories':
                     p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid)
                     if not c:raise ValueError('角色不存在')
@@ -1069,6 +1482,28 @@ class Handler(BaseHTTPRequestHandler):
             data=json.loads(self.rfile.read(ln) or b'{}');route=self.path.split('?')[0]
             if not isinstance(data,dict):raise ValueError('请求格式错误')
             with connect() as db:
+                if route=='/api/surveillance':
+                    p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId',''));c=BY_ID.get(cid);req_date=str(data.get('date','')).strip()
+                    if not c:raise ValueError('角色不存在')
+                    ensure_live_surveillance(db,p,c,force=bool(data.get('refresh')),target_date=req_date)
+                    return self.respond(build_surveillance_payload(db,p,c,req_date))
+                if route=='/api/diary':
+                    p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId',''));c=BY_ID.get(cid);req_date=str(data.get('date','')).strip()
+                    if not c:raise ValueError('角色不存在')
+                    ensure_live_diary(db,p,c,target_date=req_date,force=bool(data.get('refresh')))
+                    return self.respond(build_diary_payload(db,p,c,req_date))
+                if route=='/api/nickname':
+                    p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId',''));c=BY_ID.get(cid)
+                    if not c:raise ValueError('角色不存在')
+                    r=db.execute('SELECT * FROM relations WHERE profile_id=? AND character_id=? AND status=?',(p['id'],cid,'matched')).fetchone()
+                    if not r:raise ValueError('尚未匹配')
+                    m_state=MEETING_STATE.setdefault((p['id'],cid),{})
+                    nick=str(data.get('nickname','')).strip()[:36]
+                    m_state['nickname']=nick
+                    if 'affectionBoost' in data:
+                        m_state['affection_boost']=int(data.get('affectionBoost') or 0)
+                    cv=char_view(db,c)|{'nickname':nick,'display_name':nick or c['name']}
+                    return self.respond({'ok':True,'nickname':nick,'character':cv,'relation':dict(r)|{'nickname':nick}})
                 if route=='/api/discover':
                     p=profile_get(db,data.get('profileId'));choices=possible_candidates(db,p)
                     random.SystemRandom().shuffle(choices)
@@ -1235,6 +1670,7 @@ class Handler(BaseHTTPRequestHandler):
                             db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
                             m_state['active_meeting_id']='meet_'+uid()
                             m_state['meeting_location']=infer_meeting_location(db,p['id'],cid,loc_input)
+                            sync_surveillance_on_meeting_start(db,p,c,m_state['meeting_location'],m_state['active_meeting_id'])
                             log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 在线下见面')
                             if data.get('triggerOpening') is True and public_connection()['mode']!='normal':
                                 engine='demo';settings=load_connection()
@@ -1268,14 +1704,18 @@ class Handler(BaseHTTPRequestHandler):
                                         if parsed.get('summary'):ai_sum=str(parsed['summary']).strip()[:150]
                                     except Exception:pass
                                 meeting_record=upsert_meeting_record(db,p,c,mid,m_msgs,ai_loc,ai_sum)
+                                if meeting_record:
+                                    sync_surveillance_on_meeting_end(db,p,c,meeting_record)
                             db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
                             m_state['active_meeting_id']=''
                             log_event(db,p['id'],cid,'return','与 '+p['name']+' 返回手机消息')
                     elif mode=='meeting':
+                        if loc_input:
+                            sync_surveillance_on_meeting_start(db,p,c,loc_input,m_state.get('active_meeting_id',''))
                         _,meetings=ensure_meeting_records(db,p,c)
                         if meetings:meeting_record=meetings[-1]
                     db.commit()
-                    return self.respond({'mode':mode,'meetingId':m_state.get('active_meeting_id',''),'active_meeting_id':m_state.get('active_meeting_id',''),'location':m_state.get('meeting_location',''),'meeting_location':m_state.get('meeting_location',''),'meetingRecord':meeting_record,'openingReply':opening_reply,'warning':warning})
+                    return self.respond({'mode':mode,'meetingId':m_state.get('active_meeting_id',''),'active_meeting_id':m_state.get('active_meeting_id',''),'location':m_state.get('meeting_location',''),'meeting_location':m_state.get('meeting_location',''),'meetingRecord':meeting_record,'openingReply':opening_reply,'surveillance':build_surveillance_payload(db,p,c),'warning':warning})
                 if route=='/api/chat-flush':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId')
                     if not cid:
@@ -1351,6 +1791,8 @@ class Handler(BaseHTTPRequestHandler):
                         log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+combined_txt[:180])
                         last_u=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND sender='user' ORDER BY created_at DESC,id DESC LIMIT 1",(p['id'],cid)).fetchone()
                         record_dialogue_episode(db,p,c,[dict(last_u)] if last_u else [],dict(ai_msg,text=combined_txt),mode)
+                        if mode=='chat':
+                            sync_surveillance_from_chat(db,p,c,combined_txt)
                     db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),p['id'],cid))
                     db.commit();return self.respond({'reply':ai_msg,'replies':replies,'mode':mode,'warning':warning})
                 if route=='/api/message':

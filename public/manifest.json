@@ -4,8 +4,8 @@
   "description": "Parallel — 同人角色平行世界约会模拟器",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#FAF5ED",
-  "theme_color": "#FAF5ED",
+  "background_color": "#FFFBF4",
+  "theme_color": "#FFFBF4",
   "icons": [
     {
       "src": "./apple-touch-icon.png",

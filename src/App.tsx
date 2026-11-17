@@ -34,8 +34,8 @@ export default function App() {
         // ignore storage errors
       }
 
-      await loadScript(`${import.meta.env.BASE_URL}parallel/offline.js`);
-      await loadScript(`${import.meta.env.BASE_URL}parallel/app.js`);
+      await loadScript(`${import.meta.env.BASE_URL}parallel/offline.js?v=20261116f`);
+      await loadScript(`${import.meta.env.BASE_URL}parallel/app.js?v=20261116f`);
     })();
   }, []);
 

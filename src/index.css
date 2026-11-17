@@ -34,10 +34,10 @@
     padding: calc(16px + max(env(safe-area-inset-top, 0px), 12px)) 18px 12px;
   }
   .main-view {
-    padding: 14px 16px 92px;
+    padding: 14px 16px calc(76px + env(safe-area-inset-bottom, 0px));
   }
   .messages-layout {
-    height: calc(100dvh - 210px);
+    height: calc(100dvh - 178px);
     min-height: 360px;
   }
 }
@@ -46,12 +46,15 @@
   .topbar {
     padding: calc(14px + max(env(safe-area-inset-top, 0px), 14px)) 16px 12px;
   }
+  .main-view {
+    padding: 12px 14px calc(72px + env(safe-area-inset-bottom, 0px));
+  }
   .deck-container {
     height: auto;
     min-height: 390px;
   }
   .messages-layout {
-    height: calc(100dvh - 205px);
+    height: calc(100dvh - 168px);
     min-height: 340px;
   }
 }
@@ -69,5 +72,6 @@
     }
   }
 }
+
 
 

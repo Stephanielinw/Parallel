@@ -545,3 +545,175 @@ test('Parallel v0.5 Daily Mode message bundling (preserving scheduled dueAt & ti
   assert.ok(flushed.reply && flushed.replies.length >= 1, 'Flushes bundled messages and replies');
 });
 
+test('9. Surveillance (实时监控) silently generates full-day schedule, unlocks slots up to current time, syncs into prompt & meeting location, and rewrites timeline after meeting', async () => {
+  const engine = createPortableEngine();
+  const p = (
+    await engine.request('/profile', {
+      name: '奈恩',
+      age: 22,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 65,
+      intent: '认真寻找恋人',
+      sources: ['生化危机 · 游戏'],
+      bio: '测试实时监控与见面同步',
+      interests: ['电影'],
+    })
+  ).profile;
+  const cid = 're-game:leon:re2';
+  for (let i = 0; i < 15; i++) {
+    if ((await engine.request('/swipe', { profileId: p.id, characterId: cid, direction: 'right' })).matched) break;
+  }
+
+  // 1. Thread response already includes silent surveillance payload with current slot & unlocked slots
+  const thread = await engine.request(`/thread?profileId=${p.id}&characterId=${encodeURIComponent(cid)}`);
+  assert.ok(thread.surveillance, 'Thread includes initial surveillance payload');
+  assert.ok(thread.surveillance.current && thread.surveillance.current.location, 'Has active current surveillance slot');
+  assert.ok(Array.isArray(thread.surveillance.unlockedSlots) && thread.surveillance.unlockedSlots.length >= 1, 'Unlocked slots up to current time exist');
+
+  const initialLocation = thread.surveillance.current.location;
+
+  // 2. Prompt preview includes live surveillance location & status synchronization
+  const promptPreview = JSON.stringify(engine.buildPromptPreview(p.id, cid, 'chat'));
+  assert.match(promptPreview, /【此刻你的真实位置与状态（实时监控同步）】/, 'Prompt includes live surveillance sync block');
+  assert.ok(promptPreview.includes(initialLocation), 'Prompt includes current surveillance slot location');
+
+  // 3. Entering meeting mode without an explicit location in chat defaults to current surveillance location
+  const enterMeeting = await engine.request('/mode', {
+    profileId: p.id,
+    characterId: cid,
+    mode: 'meeting',
+    triggerOpening: true,
+  });
+  assert.equal(enterMeeting.mode, 'meeting');
+  assert.equal(enterMeeting.meeting_location, initialLocation, 'Meeting location defaults to current surveillance slot location');
+  assert.ok(
+    enterMeeting.surveillance.current.status.includes('见面中'),
+    'Live surveillance status immediately reflects active meeting with user'
+  );
+
+  // 4. Ending meeting mode rewrites today's surveillance footprint and shifts the next slot
+  const endMeeting = await engine.request('/mode', {
+    profileId: p.id,
+    characterId: cid,
+    mode: 'chat',
+    finalizeMeeting: true,
+  });
+  assert.equal(endMeeting.mode, 'chat');
+  assert.ok(endMeeting.meetingRecord, 'Meeting card archived');
+  const slotsAfter = endMeeting.surveillance.unlockedSlots;
+  assert.ok(
+    slotsAfter.some((s: any) => s.source === 'meeting' && s.location === initialLocation),
+    'Completed meeting is written into today surveillance footprint'
+  );
+});
+
+test('10. Character Diary (角色日记) auto-generates past-day diaries from surveillance, supports date selection & intimacy stages, Surveillance supports past dates, and Character Hub supports custom nickname remarks', async () => {
+  const engine = createPortableEngine();
+  const p = (
+    await engine.request('/profile', {
+      name: '奈恩',
+      age: 22,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 65,
+      intent: '认真寻找恋人',
+      sources: ['生化危机 · 游戏'],
+      bio: '测试角色日记、监控历史日期与专属空间备注修改',
+      interests: ['电影'],
+    })
+  ).profile;
+  const cid = 're-game:leon:re2';
+  for (let i = 0; i < 15; i++) {
+    if ((await engine.request('/swipe', { profileId: p.id, characterId: cid, direction: 'right' })).matched) break;
+  }
+
+  // 1. Surveillance supports selecting past dates (yesterday & two days ago) with full-day unlocked slots
+  const survToday = await engine.request(`/surveillance?profileId=${p.id}&characterId=${encodeURIComponent(cid)}`);
+  assert.equal(survToday.isToday, true, 'Default surveillance view is today');
+  assert.ok(Array.isArray(survToday.availableDates) && survToday.availableDates.length >= 3, 'Seeds today + past dates in availableDates');
+
+  const yesterdayDate = survToday.availableDates[1];
+  const survYesterday = await engine.request(
+    `/surveillance?profileId=${p.id}&characterId=${encodeURIComponent(cid)}&date=${encodeURIComponent(yesterdayDate)}`
+  );
+  assert.equal(survYesterday.date, yesterdayDate);
+  assert.equal(survYesterday.isToday, false, 'Past date surveillance has isToday: false');
+  assert.equal(survYesterday.lockedCount, 0, 'Past date surveillance unlocks all full-day slots');
+  assert.equal(survYesterday.unlockedSlots.length, survYesterday.totalSlots, 'All slots unlocked on past date');
+
+  // 2. Diary endpoint automatically generates past-day diaries from surveillance (without revolving around user in initial intimacy stage)
+  const diaryLatest = await engine.request(`/diary?profileId=${p.id}&characterId=${encodeURIComponent(cid)}`);
+  assert.ok(diaryLatest.diary, 'Returns latest diary entry');
+  assert.equal(diaryLatest.date, yesterdayDate, 'Latest completed diary defaults to yesterday');
+  assert.ok(Array.isArray(diaryLatest.availableDates) && diaryLatest.availableDates.length >= 2, 'Provides selectable past diary dates');
+  assert.notEqual(diaryLatest.intimacy.stage, 'deep_love', 'Initial stage is independent life focus');
+  assert.ok(
+    Array.isArray(diaryLatest.diary.sourceLocations) && diaryLatest.diary.sourceLocations.length >= 2,
+    'Diary is grounded in previous day surveillance locations'
+  );
+  assert.ok(diaryLatest.diary.content.length >= 40, 'Diary contains multi-paragraph prose');
+
+  // Selecting an earlier diary date or any calendar past date (e.g., 2026-11-01) returns that specific day's surveillance & diary
+  const twoDaysAgoDate = diaryLatest.availableDates[1];
+  const diaryOlder = await engine.request(
+    `/diary?profileId=${p.id}&characterId=${encodeURIComponent(cid)}&date=${encodeURIComponent(twoDaysAgoDate)}`
+  );
+  assert.equal(diaryOlder.date, twoDaysAgoDate, 'Can switch to an earlier date diary');
+  assert.equal(diaryOlder.diary.date, twoDaysAgoDate);
+
+  const arbitraryCalendarDate = '2026-11-01';
+  const survCalendarPick = await engine.request(
+    `/surveillance?profileId=${p.id}&characterId=${encodeURIComponent(cid)}&date=${arbitraryCalendarDate}`
+  );
+  assert.equal(survCalendarPick.date, arbitraryCalendarDate, 'Calendar input can pick any past date for surveillance');
+  assert.equal(survCalendarPick.isToday, false);
+  assert.equal(survCalendarPick.unlockedSlots.length, survCalendarPick.totalSlots);
+
+  const diaryCalendarPick = await engine.request(
+    `/diary?profileId=${p.id}&characterId=${encodeURIComponent(cid)}&date=${arbitraryCalendarDate}`
+  );
+  assert.equal(diaryCalendarPick.diary.date, arbitraryCalendarDate, 'Calendar input can pick any past date for diary');
+
+  // 3. When intimacy reaches deep_love (affectionBoost >= 75), refreshing diary reflects deep affection for user
+  await engine.request('/memory-action', {
+    profileId: p.id,
+    characterId: cid,
+    action: 'affinity',
+    delta: 80,
+  });
+  const deepLoveDiary = await engine.request('/diary', {
+    profileId: p.id,
+    characterId: cid,
+    date: yesterdayDate,
+    forceRefresh: true,
+  });
+  assert.equal(deepLoveDiary.intimacy.stage, 'deep_love');
+  assert.equal(deepLoveDiary.diary.intimacyStage, 'deep_love');
+  assert.ok(
+    deepLoveDiary.diary.content.includes('奈恩'),
+    'In deep_love stage, character diary openly pours out thoughts about user'
+  );
+
+  // 4. Custom nickname remark in Character Hub preserves true canon name while updating display_name
+  const nickRes = await engine.request('/nickname', {
+    profileId: p.id,
+    characterId: cid,
+    nickname: '里昂小队长',
+  });
+  assert.equal(nickRes.ok, true);
+  assert.equal(nickRes.nickname, '里昂小队长');
+  assert.equal(nickRes.character.display_name, '里昂小队长', 'display_name reflects custom remark');
+  assert.equal(nickRes.character.name, 'Leon S. Kennedy', 'character.name preserves true canon name');
+
+  // Clearing nickname reverts display_name back to canon name
+  const clearNick = await engine.request('/nickname', {
+    profileId: p.id,
+    characterId: cid,
+    nickname: '',
+  });
+  assert.equal(clearNick.nickname, '');
+  assert.equal(clearNick.character.display_name, 'Leon S. Kennedy');
+});
