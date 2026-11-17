@@ -12,11 +12,11 @@ const appJs = fs.readFileSync(path.join(staticDir, 'app.js'), 'utf8');
 let portableHtml = indexHtml
   .replace(
     '<title>Parallel — 跨世界心动</title><link rel="stylesheet" href="/style.css">',
-    `<title>Parallel — 跨世界心动 (单文件直开版)</title><style>${styleCss}</style>`
+    () => `<title>Parallel — 跨世界心动 (单文件直开版)</title><style>${styleCss}</style>`
   )
   .replace(
     '<script src="/app.js" defer></script>',
-    `<script>${offlineJs}</script><script>${appJs}</script>`
+    () => `<script>${offlineJs}</script><script>${appJs}</script>`
   );
 
 const outPaths = [

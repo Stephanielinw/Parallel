@@ -66,6 +66,12 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'
 const $=id=>document.getElementById(id);
 const localDateStr=ts=>{try{const d=new Date(ts||Date.now());return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}catch{return new Date().toISOString().slice(0,10)}};
 const displayName=c=>String(c?.nickname||c?.display_name||c?.name||'').trim()||c?.name||'';
+const cleanBodyText=(txt,sender='ai',preserveParagraphs=false)=>{
+  const s=String(txt??'');
+  if(sender==='user')return s;
+  if(globalThis.ParallelOffline?.stripProtocolTags)return globalThis.ParallelOffline.stripProtocolTags(s,{preserveParagraphs});
+  return s.replace(/^(?:[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)[ \t]*)+/gm,'');
+};
 const api=async(path,data)=>{if(globalThis.ParallelOffline)return globalThis.ParallelOffline.request(path,data);const o=await fetch('/api'+path,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});let body;try{body=await o.json()}catch{throw Error('服务端没有返回 JSON')}if(!o.ok)throw Error(body.error||'请求失败');return body};
 const state={tab:'discover',profiles:[],sources:[],settings:{},activeId:(()=>{try{return localStorage.getItem('parallel-active-profile')||''}catch{return ''}})(),candidates:[],deckIndex:0,threads:[],threadId:'',messages:[],meetings:[],surveillanceMap:{},diaryMap:{},diarySummaryMap:{},lastKnownDate:localDateStr(),activeMeetingId:'',meetingLocation:'',hotChat:false,chatPlusOpen:false,profileMenuOpen:false,memoryCategory:'all',lastMemoriesData:null,chatMode:'chat',chatBusy:false,queue:{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paceMode:'daily',hotChat:false,delayMinutes:0,targetTimeLabel:'',scheduleReason:''},flushBusy:false,revealingBubbles:false,hiddenReplyIds:new Set(),lastSendAt:0,lastUserActiveAt:Date.now(),proactiveBusy:false,idleTickCount:0,terminalTab:'api',presetMode:'chat',presets:[],profileDraft:null,identResults:[],editPresetId:null,presetImportDraft:null,loading:false,draftInputs:{},renderedThreadId:'',bgTickCount:0,apiCheckPrompted:false};
 const tabs=[{id:'profile',label:'我的',detail:'我的 Profile',icon:'user'},{id:'discover',label:'发现',detail:'发现心动',icon:'sparkleheart'},{id:'messages',label:'消息',detail:'你的消息',icon:'message'},{id:'terminal',label:'终端',detail:'终端设置',icon:'terminal'}];
@@ -244,15 +250,17 @@ async function loadThread(cid,render=true){
 }
 function renderMessagesListItems(){
   return `<div class="threads-header">CONNECTIONS · ${state.threads.length}</div>${state.threads.map(x=>{
-    const lastTxt=(x.last?.engine==='recalled'||x.last?.recalled)?'撤回了一条消息':(x.last?.text||'刚刚匹配');
+    const rawLast=(x.last?.engine==='recalled'||x.last?.recalled)?'撤回了一条消息':(x.last?.text||'刚刚匹配');
+    const lastTxt=cleanBodyText(rawLast,x.last?.sender||'ai');
     const dName=displayName(x.character);
     const hasNick=Boolean(x.character.nickname&&x.character.nickname!==x.character.name);
     return `<button class="thread-card ${x.character.id===state.threadId?'active':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(dName)}${hasNick?`<span class="thread-truename-hint">（${esc(x.character.name)}）</span>`:''}${x.queue?.count?`<span class="thread-queue-badge" title="${x.queue.count} 条已发出消息"></span>`:''}</b><p>${esc(lastTxt)}</p></span></button>`;
   }).join('')}`;
 }
-function formatNovelParagraphs(text){
-  const parts=String(text||'').split(/\n+/).map(s=>s.trim()).filter(Boolean);
-  if(!parts.length)return `<p>${esc(text||'')}</p>`;
+function formatNovelParagraphs(text,sender='ai'){
+  const cleaned=cleanBodyText(text||'',sender,true);
+  const parts=String(cleaned||'').split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  if(!parts.length)return `<p>${esc(cleaned||'')}</p>`;
   return parts.map(p=>`<p>${esc(p)}</p>`).join('');
 }
 function findOrBuildMeetingRecord(block,c){
@@ -271,14 +279,14 @@ function findOrBuildMeetingRecord(block,c){
   if(uTurns.length){
     summary=`和 ${pName} 在${loc}见面，${pName}「${uTurns[0].text.slice(0,36)}」，与 ${c.name} 面对面互动了 ${block.length} 段。`;
   }else if(aTurns.length){
-    summary=`和 ${pName} 在${loc}碰面：${aTurns[0].text.slice(0,46)}…`;
+    summary=`和 ${pName} 在${loc}碰面：${cleanBodyText(aTurns[0].text,'ai').slice(0,46)}…`;
   }
   return {
     id:explicitMid,
     location:loc,
     time:timeStr,
     summary,
-    entries:block.map(m=>({id:m.id,sender:m.sender,speaker:m.sender==='user'?pName:c.name,text:m.text,created_at:m.created_at}))
+    entries:block.map(m=>({id:m.id,sender:m.sender,speaker:m.sender==='user'?pName:c.name,text:cleanBodyText(m.text,m.sender,true),created_at:m.created_at}))
   };
 }
 function renderChatMessagesHtml(c){
@@ -305,7 +313,7 @@ function renderChatMessagesHtml(c){
           <span class="novel-speaker">${isUser?`${esc(pName)} · 你的行动与台词`:`${esc(c.name)} · 现场描写`}</span>
           <span class="novel-turn-meta">#${idx+1} · ${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示':''}</span>
         </header>
-        <div class="novel-prose">${formatNovelParagraphs(m.text)}</div>
+        <div class="novel-prose">${formatNovelParagraphs(m.text,m.sender)}</div>
       </article>`;
     }).join('');
     const emptyNovelHtml=(!turnsHtml&&!charTyping)?`<div class="novel-empty-card">
@@ -388,7 +396,7 @@ function renderChatMessagesHtml(c){
         :`<span class="msg-receipt is-read" title="对方已读">${I('read','receipt-ic')}<em>已读</em></span>`;
     }
     const time=`<span>${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示回复':''}${m.engine==='error'?' · 接口错误':''}</span>${receiptHtml}${recallBtn}`;
-    return `<div class="bubble-row ${m.sender==='user'?'mine':''}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble">${esc(m.text)}</div><div class="chat-time">${time}</div></div></div>`;
+    return `<div class="bubble-row ${m.sender==='user'?'mine':''}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble">${esc(cleanBodyText(m.text,m.sender))}</div><div class="chat-time">${time}</div></div></div>`;
   }).join('');
 
   const typingHtml=charTyping?`<div class="typing-inline" role="status" aria-live="polite"><span class="typing-label">对方正在输入中</span><span class="typing-ellipsis"><i>.</i><i>.</i><i>.</i></span></div>`:'';
@@ -728,7 +736,7 @@ function openMeetingRecordModal(meetingId){
           <span class="novel-speaker">${esc(e.speaker||(e.sender==='user'?'你':c.name))}</span>
           <span class="novel-turn-meta">#${idx+1} · ${fmtTime(e.created_at)}</span>
         </header>
-        <div class="novel-prose">${formatNovelParagraphs(e.text)}</div>
+        <div class="novel-prose">${formatNovelParagraphs(e.text,e.sender)}</div>
       </article>`).join(''):'<p class="caption">暂无详细段落记录。</p>'}
     </div>`;
   modal(html,`<button class="btn soft" data-action="close-modal">关闭见面记录</button>`);
@@ -741,11 +749,11 @@ function openDailyMessagesModal(memId){
   const msgs=mem.day_messages||[];
   const html=`<div class="kicker">DAILY ARCHIVE · 每日聊天记录详情</div>
     <h2>${esc(mem.summary.split(' ')[0]||'当日')} 聊天明细</h2>
-    <p class="caption">${esc(mem.summary)}</p>
+    <p class="caption">${esc(cleanBodyText(mem.summary,mem.source_type==='correction'||mem.source_type==='manual'?'user':'ai'))}</p>
     <div class="daily-modal-messages">
       ${msgs.length?msgs.map(m=>`<div class="daily-msg-row ${m.sender==='user'?'is-user':'is-ai'}">
         <div class="daily-msg-meta"><b>${esc(m.speaker)}</b><span>${fmtTime(m.created_at)}</span></div>
-        <div class="daily-msg-text">${esc(m.text)}</div>
+        <div class="daily-msg-text">${esc(cleanBodyText(m.text,m.sender))}</div>
       </div>`).join(''):'<p class="caption">暂无当日明细消息。</p>'}
     </div>`;
   modal(html,`<button class="btn soft" data-action="open-memories">返回记忆档案</button><button class="btn primary" data-action="close-modal">关闭</button>`);

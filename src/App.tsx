@@ -23,19 +23,9 @@ export default function App() {
       });
 
     (async () => {
-      try {
-        if (!localStorage.getItem('parallel_clean_init_v3')) {
-          localStorage.removeItem('parallel-portable-v2');
-          localStorage.removeItem('parallel_portable_v1');
-          localStorage.removeItem('parallel-active-profile');
-          localStorage.setItem('parallel_clean_init_v3', '1');
-        }
-      } catch {
-        // ignore storage errors
-      }
-
-      await loadScript(`${import.meta.env.BASE_URL}parallel/offline.js?v=20261116f`);
-      await loadScript(`${import.meta.env.BASE_URL}parallel/app.js?v=20261116f`);
+      // Never clear the current or legacy save on startup. The offline engine handles migration.
+      await loadScript(`${import.meta.env.BASE_URL}parallel/offline.js?v=20261117b`);
+      await loadScript(`${import.meta.env.BASE_URL}parallel/app.js?v=20261117b`);
     })();
   }, []);
 

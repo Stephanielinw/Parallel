@@ -290,5 +290,29 @@ class ParallelAPITest(unittest.TestCase):
         self.assertEqual(hokkaido_orig['disputed'],1)
         self.assertTrue(any(m['source_type']=='correction' for m in after_corr['memories']))
 
+    def test_09_protocol_pollution_safety_and_user_protection(self):
+        # 1. Leading protocol headers are stripped while preserving normal prose, quoted tags, and mid-sentence references
+        self.assertEqual(server.clean_chat_bubble_text('[短信 18:37][短信 18:40] 刚忙完，久等了。'), '刚忙完，久等了。')
+        self.assertEqual(server.clean_meeting_novel_text('[见面 19:47] 他推门走了进来。\n\n“久等了。”'), '他推门走了进来。\n\n“久等了。”')
+        case1 = '他说：“请打开[短信 18:37]那条记录。”'
+        case2 = '请查看 [短信 18:37] 那条记录。'
+        self.assertEqual(server.clean_chat_bubble_text(case1), case1)
+        self.assertEqual(server.clean_chat_bubble_text(case2), case2)
+        self.assertEqual(server.split_chat_bubbles(case1), [case1])
+        self.assertEqual(server.split_chat_bubbles(case2), [case2])
+        self.assertEqual(server.split_chat_bubbles('[短信 18:37] 我到地铁站了 [短信 18:38] A出口见'), ['我到地铁站了', 'A出口见'])
+
+        for normal in ('她指着屏幕说：“对方：[短信 18:37] 那条记录。”', '对方：[短信 18:37] 那条记录。', '她说：「聊天：[见面 19:47] 是那条记录的标题。」'):
+            self.assertEqual(server.clean_meeting_novel_text(normal), normal)
+            self.assertEqual(server.clean_chat_bubble_text(normal), normal)
+        # 2. User messages are never protocol-cleaned when re-injected into compile_messages
+        pid=self.__class__.steph['id'];cid='re-game:leon:re2'
+        self.call('/message',{'profileId':pid,'characterId':cid,'text':'[短信 18:37] 这是用户自己发的原始文字'})
+        with server.connect() as db:
+            compiled=server.compile_messages(db,server.profile_get(db,pid),server.BY_ID[cid],'chat')
+        user_turns=[m['content'] for m in compiled if m['role']=='user']
+        self.assertIn('[短信 18:37] 这是用户自己发的原始文字', user_turns)
+
 if __name__=='__main__':unittest.main()
+
 

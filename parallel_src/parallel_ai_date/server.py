@@ -95,6 +95,8 @@ def init_db():
         if db.execute('SELECT COUNT(*) FROM presets').fetchone()[0]==0:
             for i,p in enumerate(DEFAULT_PRESETS):
                 db.execute('INSERT INTO presets VALUES (?,?,?,?,?,?,?)',(p['id'],p['mode'],p['name'],int(p['enabled']),p['role'],p['content'],i))
+        sanitize_stored_db(db)
+        db.commit()
     if not SECRETFILE.exists():
         save_connection({'base_url':'','api_key':'','model':'','image_base_url':'','image_api_key':'','image_model':'','temperature':0.85,'top_p':1,'max_tokens':3000,'auto_portraits':False})
 
@@ -132,12 +134,102 @@ def public_connection():
         'image_mode':'live' if has_img else 'text'
     }
 
+PROTOCOL_LEADING_TAG_RE = re.compile(r'^(?:[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)[ \t]*)+', re.MULTILINE)
+INLINE_TIMED_TAG_SEQ_RE = re.compile(r'(?:(?:\[|【)\s*(?:短信|见面)[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?\s*(?:\]|】)[ \t]*)+')
+PROSE_CONTINUATION_AFTER_TAG_RE = re.compile(r'^(?:[”"』」）》】\]，,。！？!?；;、：:]|那条|这条|该条|一条|哪条|每条|那段|这段|那个|这个|那封|这封|的|里|中|上|后|前|内|外|记录|消息|内容|截图|气泡|通知|提醒|历史|存档|文本|字样|标记|标签)')
+PROSE_PREFIX_BEFORE_TAG_RE = re.compile(r'(?:打开|查看|翻看|找到|看到|收到|发来|引用|提到|显示|写着|带有|出现|删除|撤回|转发|复制|截图|翻到|停在|指着|关于|在|把|将|从|向|对|按|照|用|拿|看|读|查|找|发|回)[ \t]*$')
+
+def _has_unclosed_quote_before(prefix):
+    if prefix.count('“') > prefix.count('”'):
+        return True
+    if prefix.count('「') > prefix.count('」'):
+        return True
+    if prefix.count('『') > prefix.count('』'):
+        return True
+    if prefix.count('"') % 2 == 1:
+        return True
+    return False
+
+def _split_inline_protocol_line(line):
+    has_leading_tag = bool(re.match(r'^[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)', line))
+    body = PROTOCOL_LEADING_TAG_RE.sub('', line)
+    if not body:
+        return ''
+    def _repl(m):
+        before = body[:m.start()]
+        after = body[m.end():].strip()
+        if not before.strip() or not after:
+            return m.group(0)
+        if _has_unclosed_quote_before(before):
+            return m.group(0)
+        if PROSE_CONTINUATION_AFTER_TAG_RE.search(after):
+            return m.group(0)
+        ended_sentence = bool(re.search(r'[。！？!?；;…~～][ \t]*$', before))
+        valid_inline_split = ended_sentence or (has_leading_tag and bool(re.search(r'[ \t]$', before)) and not PROSE_PREFIX_BEFORE_TAG_RE.search(before))
+        return '|||' if valid_inline_split else m.group(0)
+    return INLINE_TIMED_TAG_SEQ_RE.sub(_repl, body)
+
+def strip_protocol_tags(raw, preserve_paragraphs=False):
+    text = re.sub(r'\r\n?', '\n', str(raw or ''))
+    if not text:
+        return ''
+    for _ in range(6):
+        prev = text
+        text = PROTOCOL_LEADING_TAG_RE.sub('', text)
+        if text == prev:
+            break
+    if preserve_paragraphs:
+        lines = [re.sub(r'^[ \t]+|[ \t]+$', '', ln) for ln in text.split('\n')]
+        return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
+    return re.sub(r'[ \t]{2,}', ' ', text).strip()
+
+def clean_chat_bubble_text(raw):
+    return strip_protocol_tags(raw, preserve_paragraphs=False)
+
+def clean_meeting_novel_text(raw):
+    s = str(raw or '').strip()
+    if not s:
+        return '…'
+    return strip_protocol_tags(s, preserve_paragraphs=True) or '…'
+
+def sanitize_stored_db(db):
+    msg_rows = db.execute("SELECT id,mode,text,engine FROM messages WHERE sender='ai' AND engine<>'recalled'").fetchall()
+    for r in msg_rows:
+        cleaned = clean_meeting_novel_text(r['text']) if r['mode'] == 'meeting' else (clean_chat_bubble_text(r['text']) or '…')
+        if cleaned != r['text']:
+            db.execute('UPDATE messages SET text=? WHERE id=?', (cleaned, r['id']))
+    mem_rows = db.execute("SELECT id,source_type,summary FROM episodic_memories WHERE source_type NOT IN ('correction','manual')").fetchall()
+    for r in mem_rows:
+        cs = strip_protocol_tags(r['summary'], preserve_paragraphs=False)
+        if cs and cs != r['summary']:
+            db.execute('UPDATE episodic_memories SET summary=? WHERE id=?', (cs, r['id']))
+    ev_rows = db.execute("SELECT id,type,summary FROM events WHERE type<>'user_message'").fetchall()
+    for r in ev_rows:
+        ce = strip_protocol_tags(r['summary'], preserve_paragraphs=False)
+        if ce and ce != r['summary']:
+            db.execute('UPDATE events SET summary=? WHERE id=?', (ce, r['id']))
+    meet_rows = db.execute('SELECT id,summary,ai_summary,entries FROM meetings').fetchall()
+    for r in meet_rows:
+        cs = strip_protocol_tags(r['summary'], preserve_paragraphs=False) or r['summary']
+        cas = strip_protocol_tags(r['ai_summary'], preserve_paragraphs=False) if r['ai_summary'] else r['ai_summary']
+        entries = parse_json(r['entries'], [])
+        ent_changed = False
+        for e in entries:
+            if isinstance(e, dict) and e.get('sender') != 'user' and isinstance(e.get('text'), str):
+                ce = clean_meeting_novel_text(e['text'])
+                if ce != e['text']:
+                    e['text'] = ce
+                    ent_changed = True
+        if cs != r['summary'] or cas != r['ai_summary'] or ent_changed:
+            db.execute('UPDATE meetings SET summary=?,ai_summary=?,entries=? WHERE id=?', (cs, cas, js(entries), r['id']))
+
 def split_chat_bubbles(raw):
-    cleaned=str(raw or '').strip()
-    if not cleaned:return ['…']
-    parts=[re.sub(r'^\[(?:短信|见面)\]\s*','',s).strip() for s in re.split(r'\s*\|\|\|\s*|\r?\n+',cleaned) if s.strip()]
+    raw_str=str(raw or '').strip()
+    if not raw_str:return ['…']
+    pre_split='\n'.join(_split_inline_protocol_line(ln) for ln in re.sub(r'\r\n?','\n',raw_str).split('\n'))
+    parts=[clean_chat_bubble_text(s) for s in re.split(r'\s*\|\|\|\s*|\r?\n+',pre_split) if clean_chat_bubble_text(s)]
     if len(parts)==1 and len(parts[0])>=32:
-        sentences=[s.strip() for s in re.findall(r'[^。！？!?]+[。！？!?]+|[^。！？!?]+$',parts[0]) if s.strip()]
+        sentences=[clean_chat_bubble_text(s) for s in re.findall(r'[^。！？!?]+[。！？!?]+|[^。！？!?]+$',parts[0]) if clean_chat_bubble_text(s)]
         if len(sentences)>=2:
             parts=[];buf=''
             for s in sentences:
@@ -147,7 +239,7 @@ def split_chat_bubbles(raw):
             if buf:parts.append(buf)
     if len(parts)>4:
         parts=parts[:3]+[' '.join(parts[3:])]
-    return parts if parts else [cleaned]
+    return parts if parts else ['…']
 
 def validate_base_url(v):
     if not v:return ''
@@ -450,7 +542,7 @@ def extract_memory_tags(text,limit=6):
 
 def append_episodic_memory(db,*,owner_id,profile_id,source_type,source_key,knowledge_mode='stated',summary='',tags=None,importance=2,emotional_weight=2,unresolved=0,clarifies_id='',disputed=0,raw_msg_ids=None,event_at=None):
     if not owner_id or not profile_id or not summary:return None
-    summary_clean=str(summary).strip()[:280]
+    summary_clean=(str(summary).strip() if source_type in ('correction','manual') else strip_protocol_tags(str(summary),preserve_paragraphs=False))[:280]
     tags_clean=[str(t)[:24] for t in (tags if tags is not None else extract_memory_tags(summary_clean)) if t][:8]
     imp=max(1,min(5,int(importance or 2)))
     emo=max(1,min(5,int(emotional_weight or 2)))
@@ -858,9 +950,9 @@ def build_diary_payload(db,p,c,requested_date=''):
 
 def record_dialogue_episode(db,p,c,user_msgs,ai_msg,mode):
     if not ai_msg or mode=='meeting':return None
-    u_texts=[m['text'].strip() for m in (user_msgs or []) if m and m.get('text')]
+    u_texts=[str(m.get('text','')).strip() for m in (user_msgs or []) if m and m.get('text')]
     u_joined=' / '.join(u_texts)[:110]
-    a_text=str(ai_msg.get('text','')).strip()[:110]
+    a_text=clean_chat_bubble_text(str(ai_msg.get('text','')))[:110]
     combined=(u_joined+' '+a_text)
     if not any(w in combined for w in PROMISE_KEYWORDS):
         return None
@@ -909,15 +1001,15 @@ def infer_meeting_location(db,pid,cid,custom_loc=''):
 
 def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary=''):
     if ai_summary and len(str(ai_summary).strip())>=6:
-        return str(ai_summary).strip()[:160]
+        return strip_protocol_tags(str(ai_summary),preserve_paragraphs=False)[:160]
     u_turns=[m for m in m_msgs if m['sender']=='user' and m.get('engine')!='recalled']
     a_turns=[m for m in m_msgs if m['sender']=='ai' and m.get('engine')!='recalled']
     if u_turns:
-        first_u=re.sub(r'\s+',' ',u_turns[0]['text'])[:38]
-        last_u=re.sub(r'\s+',' ',u_turns[-1]['text'])[:34] if len(u_turns)>1 else ''
+        first_u=re.sub(r'\s+',' ',str(u_turns[0].get('text',''))).strip()[:38]
+        last_u=re.sub(r'\s+',' ',str(u_turns[-1].get('text',''))).strip()[:34] if len(u_turns)>1 else ''
         return f"{p['name']}「{first_u}」{('、再到「'+last_u+'」') if last_u else ''}，与 {c['name']} 面对面互动了 {len(m_msgs)} 个回合。"
     if a_turns:
-        snippet=re.sub(r'\s+',' ',a_turns[0]['text'])[:48]
+        snippet=re.sub(r'\s+',' ',clean_meeting_novel_text(a_turns[0]['text']))[:48]
         return f"{snippet}…（共 {len(m_msgs)} 段面对面互动）"
     return f"在「{loc}」见了一面。"
 
@@ -930,7 +1022,7 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
     time_str=str(started_at)[:16].replace('T',' ')
     ai_sum=ai_summary or (existed['ai_summary'] if existed else '')
     summary=build_meeting_summary_text(p,c,loc,m_msgs,ai_sum)
-    entries=[{'id':m['id'],'sender':m['sender'],'speaker':p['name'] if m['sender']=='user' else c['name'],'text':m['text'],'created_at':m['created_at']} for m in m_msgs]
+    entries=[{'id':m['id'],'sender':m['sender'],'speaker':p['name'] if m['sender']=='user' else c['name'],'text':str(m.get('text','')) if m['sender']=='user' else clean_meeting_novel_text(m['text']),'created_at':m['created_at']} for m in m_msgs]
     msg_ids=[m['id'] for m in m_msgs]
     db.execute('''INSERT OR REPLACE INTO meetings (id,profile_id,character_id,location,time,started_at,ended_at,summary,ai_summary,message_ids,entries)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)''',(meeting_id,p['id'],c['id'],loc,time_str,started_at,ended_at,summary,ai_sum,js(msg_ids),js(entries)))
@@ -1110,7 +1202,7 @@ def retrieve_relevant_memories(db,pid,cid,query_text='',exclude_msg_ids=None,lim
             placeholders=','.join('?' for _ in item['raw_msg_ids'][:2])
             raw_rows=db.execute(f"SELECT sender,text FROM messages WHERE id IN ({placeholders}) ORDER BY created_at LIMIT 2",tuple(item['raw_msg_ids'][:2])).fetchall()
             if raw_rows:
-                entry['raw_excerpt']=' | '.join(('对方：' if r['sender']=='user' else '你：')+r['text'][:70] for r in raw_rows)
+                entry['raw_excerpt']=' | '.join(('对方：' if r['sender']=='user' else '你：')+(str(r['text'] or '').strip() if r['sender']=='user' else clean_chat_bubble_text(r['text']))[:70] for r in raw_rows)
         est_len=len(entry['summary'])+len(entry.get('correction_note',''))+len(entry.get('raw_excerpt',''))+30
         if char_Count+est_len>max_chars and selected:
             continue
@@ -1170,13 +1262,15 @@ def select_working_history(db,pid,cid,mode='chat',through_rowid=None):
     return chron[-min(6,win_limit):]
 
 def write_message(db,pid,cid,sender,mode,txt,engine='human'):
-    item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=txt,engine=engine,created_at=utc())
+    clean_txt = (clean_meeting_novel_text(txt) if mode=='meeting' else (clean_chat_bubble_text(txt) or '…')) if (sender=='ai' and engine not in ('error','recalled')) else str(txt or '')
+    item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=utc())
     db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)',tuple(item.values()))
     return item
 
 def log_event(db,pid,cid,kind,summary):
     now_str=utc()
-    db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',(uid(),pid,cid,kind,summary[:500],now_str))
+    clean_sum=str(summary or '').strip() if kind=='user_message' else strip_protocol_tags(summary,preserve_paragraphs=False)
+    db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',(uid(),pid,cid,kind,clean_sum[:500],now_str))
 
 def latest_memory(db,cid,pid):
     # Preserve relationship milestones (matched, unmatched, meeting, return) so chat volume never erases them.
@@ -1218,7 +1312,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     working_history=select_working_history(db,p['id'],c['id'],mode=mode,through_rowid=through_rowid)
     working_ids={m['id'] for m in working_history}
     ensure_daily_summaries(db,p,c,working_ids)
-    query_seed=latest or ' '.join(m['text'] for m in working_history[-3:] if m['sender']=='user') or (' '.join(m['text'] for m in working_history[-2:]))
+    query_seed=latest or ' '.join(str(m['text'] or '').strip() for m in working_history[-3:] if m['sender']=='user') or (' '.join((str(m['text'] or '').strip() if m['sender']=='user' else clean_chat_bubble_text(m['text'])) for m in working_history[-2:]))
     recalled=retrieve_relevant_memories(db,p['id'],c['id'],query_text=query_seed,exclude_msg_ids=working_ids,limit=4,max_chars=1200)
     rel_summary=relationship_baseline_summary(db,p['id'],c['id'],p['name'])
     cur_surv=get_current_surveillance_slot(db,p,c)
@@ -1238,27 +1332,36 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n"+"\n".join(format_episodic_entry(e) for e in recalled)
     else:
         system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n（当前话题未触发额外远期档案，仅依靠下方今日活跃上下文连贯交流）"
+    timeline_lines=[]
+    history_turns=[]
+    for idx,msg in enumerate(working_history):
+        role='assistant' if msg['sender']=='ai' else 'user'
+        if msg.get('engine')=='recalled':
+            history_turns.append({'role':role,'content':'[系统提示：对方刚刚撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'})
+        else:
+            t_tag=fmt_hhmm(msg.get('created_at')) or '--:--'
+            m_label='线下见面' if msg['mode']=='meeting' else '线上短信'
+            who=c['name'] if msg['sender']=='ai' else p['name']
+            timeline_lines.append(f"#{idx+1} {t_tag}（{m_label}·{who}）")
+            clean_body=str(msg.get('text','')) if msg['sender']=='user' else (clean_meeting_novel_text(msg['text']) if msg['mode']=='meeting' else (clean_chat_bubble_text(msg['text']) or '…'))
+            history_turns.append({'role':role,'content':clean_body})
+    if timeline_lines:
+        system+="\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n"+" ｜ ".join(timeline_lines)
     if sys_parts:system+='\n\n'+'\n\n'.join(sys_parts)
     messages=[{'role':'system','content':system}]
     for x in ordered:
         if x['role']!='system':messages.append({'role':x['role'],'content':macros(x['content'])})
-    for msg in working_history:
-        t_tag=fmt_hhmm(msg.get('created_at'))
-        prefix=(f"[见面 {t_tag}]" if t_tag else "[见面]") if msg['mode']=='meeting' else (f"[短信 {t_tag}]" if t_tag else "[短信]")
-        if msg.get('engine')=='recalled':
-            messages.append({'role':'assistant' if msg['sender']=='ai' else 'user','content':'[系统提示：对方刚刚撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'})
-        else:
-            messages.append({'role':'assistant' if msg['sender']=='ai' else 'user','content':prefix+msg['text']})
+    messages.extend(history_turns)
     batch_hint=''
     if mode=='chat' and pending_ids and len(pending_ids)>1:
         bundled_rows=[]
         for mid in pending_ids:
-            row=db.execute('SELECT id,text,created_at FROM messages WHERE id=?',(mid,)).fetchone()
+            row=db.execute('SELECT id,sender,text,created_at FROM messages WHERE id=?',(mid,)).fetchone()
             if row:bundled_rows.append(dict(row))
         if len(bundled_rows)>1:
-            tl=' -> '.join(f"[{fmt_hhmm(x['created_at'])}]「{x['text'][:60]}」" for x in bundled_rows)
+            tl=' -> '.join(f"{fmt_hhmm(x['created_at'])}「{(str(x['text'] or '').strip() if x.get('sender')=='user' else clean_chat_bubble_text(x['text']))[:60]}」" for x in bundled_rows)
             batch_hint=f"\n【打包消息时间线】你在未看手机的这段时间里，对方陆续给你发来了 {len(bundled_rows)} 条消息（按发送时间先后：{tl}）。你现在刚拿起手机把这些消息一次性读完，请结合这些消息各自的时间戳跨度与内容，像真人一样自然连贯地统一回复。"
-    messages.append({'role':'system','content':'【第四层 · 当前状态 (Current State)】当前输出模式：'+('线下小说式 RP（不要替玩家行动）' if mode=='meeting' else '约会 App 手机聊天；仅发聊天气泡，不写小说旁白。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）'+batch_hint)+'。'})
+    messages.append({'role':'system','content':'【第四层 · 当前状态 (Current State)】当前输出模式：'+('线下小说式 RP（不要替玩家行动，不要在正文开头添加任何时间或模式标签）' if mode=='meeting' else '约会 App 手机聊天；仅发聊天气泡，不写小说旁白，不要在正文开头添加任何时间或模式标签。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）'+batch_hint)+'。'})
     return messages
 
 def demo_text(db,p,c,mode):
@@ -1675,9 +1778,9 @@ class Handler(BaseHTTPRequestHandler):
                             if data.get('triggerOpening') is True and public_connection()['mode']!='normal':
                                 engine='demo';settings=load_connection()
                                 if all(settings.get(k) for k in ('base_url','api_key','model')):
-                                    try:reply_txt=completion(compile_messages(db,p,c,'meeting'));engine='live'
+                                    try:reply_txt=clean_meeting_novel_text(completion(compile_messages(db,p,c,'meeting')));engine='live'
                                     except Exception as e:warning=str(e);reply_txt='（模型连接失败，请检查终端设置后重试。）';engine='error'
-                                else:reply_txt=demo_text(db,p,c,'meeting')
+                                else:reply_txt=clean_meeting_novel_text(demo_text(db,p,c,'meeting'))
                                 opening_reply=write_message(db,p['id'],cid,'ai','meeting',reply_txt,engine)
                                 m_state['active_meeting_id']='meet_'+opening_reply['id']
                                 if engine!='error':
@@ -1783,7 +1886,7 @@ class Handler(BaseHTTPRequestHandler):
                         try:reply=completion(compile_messages(db,p,c,mode));engine='live'
                         except Exception as e:warning=str(e);reply='（模型连接失败，请检查终端设置后重试。）';engine='error'
                     else:reply=demo_text(db,p,c,mode)
-                    bubble_texts=split_chat_bubbles(reply) if (mode=='chat' and engine!='error') else [reply]
+                    bubble_texts=[reply] if engine=='error' else (split_chat_bubbles(reply) if mode=='chat' else [clean_meeting_novel_text(reply)])
                     replies=[write_message(db,p['id'],cid,'ai',mode,b_txt,engine) for b_txt in bubble_texts]
                     ai_msg=replies[-1] if replies else None
                     if engine!='error' and ai_msg:
@@ -1815,9 +1918,9 @@ class Handler(BaseHTTPRequestHandler):
                         db.commit();return self.respond({'user':user_msg,'reply':None,'replies':[],'auto_meeting':auto,'mode':mode,'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。'})
                     engine='demo';warning='';settings=load_connection()
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
-                        try:reply=completion(compile_messages(db,p,c,mode));engine='live'
+                        try:reply=clean_meeting_novel_text(completion(compile_messages(db,p,c,mode)));engine='live'
                         except Exception as e:warning=str(e);reply='（模型连接失败，消息已保存。请检查终端设置后重试发送。）';engine='error'
-                    else:reply=demo_text(db,p,c,mode)
+                    else:reply=clean_meeting_novel_text(demo_text(db,p,c,mode))
                     ai_msg=write_message(db,p['id'],cid,'ai',mode,reply,engine)
                     if engine!='error':
                         log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply[:180])

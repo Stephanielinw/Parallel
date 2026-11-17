@@ -20,6 +20,141 @@
   const pairKey=(p,c)=>p+'|'+c;
   const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:3000,auto_portraits:false,proactive_mode:'daily'}});
   let db;let storageAvailable=true;
+  const PROTOCOL_LEADING_TAG_RE=/^(?:[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)[ \t]*)+/gm;
+  const INLINE_TIMED_TAG_SEQ_RE=/(?:(?:\[|【)\s*(?:短信|见面)[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?\s*(?:\]|】)[ \t]*)+/g;
+  const PROSE_CONTINUATION_AFTER_TAG_RE=/^(?:[”"』」）》】\]，,。！？!?；;、：:]|那条|这条|该条|一条|哪条|每条|那段|这段|那个|这个|那封|这封|的|里|中|上|后|前|内|外|记录|消息|内容|截图|气泡|通知|提醒|历史|存档|文本|字样|标记|标签)/;
+  const PROSE_PREFIX_BEFORE_TAG_RE=/(?:打开|查看|翻看|找到|看到|收到|发来|引用|提到|显示|写着|带有|出现|删除|撤回|转发|复制|截图|翻到|停在|指着|关于|在|把|将|从|向|对|按|照|用|拿|看|读|查|找|发|回)[ \t]*$/;
+  const hasUnclosedQuoteBefore=prefix=>{
+    if(((prefix.match(/“/g)||[]).length)>((prefix.match(/”/g)||[]).length))return true;
+    if(((prefix.match(/「/g)||[]).length)>((prefix.match(/」/g)||[]).length))return true;
+    if(((prefix.match(/『/g)||[]).length)>((prefix.match(/』/g)||[]).length))return true;
+    if(((prefix.match(/"/g)||[]).length)%2===1)return true;
+    return false;
+  };
+  const splitInlineProtocolLine=line=>{
+    const hasLeadingTag=/^[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)/.test(line);
+    const body=line.replace(PROTOCOL_LEADING_TAG_RE,'');
+    if(!body)return '';
+    return body.replace(INLINE_TIMED_TAG_SEQ_RE,(match,offset,fullStr)=>{
+      const before=fullStr.slice(0,offset);
+      const after=fullStr.slice(offset+match.length).trim();
+      if(!before.trim()||!after)return match;
+      if(hasUnclosedQuoteBefore(before))return match;
+      if(PROSE_CONTINUATION_AFTER_TAG_RE.test(after))return match;
+      const endedSentence=/[。！？!?；;…~～][ \t]*$/.test(before);
+      const validInlineSplit=endedSentence||(hasLeadingTag&&/[ \t]$/.test(before)&&!PROSE_PREFIX_BEFORE_TAG_RE.test(before));
+      return validInlineSplit?'|||':match;
+    });
+  };
+  const stripProtocolTags=(raw,opts={})=>{
+    const preserveParagraphs=Boolean(opts&&opts.preserveParagraphs);
+    let text=String(raw??'').replace(/\r\n?/g,'\n');
+    if(!text)return '';
+    for(let i=0;i<6;i++){
+      const prev=text;
+      // Derived summaries can contain quoted user or AI prose: never guess at inline tags.
+      text=text.replace(PROTOCOL_LEADING_TAG_RE,'');
+      if(text===prev)break;
+    }
+    if(preserveParagraphs){
+      return text.split('\n').map(line=>line.replace(/^[ \t]+|[ \t]+$/g,'')).join('\n').replace(/\n{3,}/g,'\n\n').trim();
+    }
+    return text.replace(/[ \t]{2,}/g,' ').trim();
+  };
+  const cleanChatBubbleText=raw=>stripProtocolTags(raw,{preserveParagraphs:false});
+  const cleanMeetingNovelText=raw=>{
+    const s=String(raw??'').trim();
+    if(!s)return '…';
+    return stripProtocolTags(s,{preserveParagraphs:true})||'…';
+  };
+  const sanitizeStoredData=target=>{
+    if(!target||typeof target!=='object')return false;
+    let changed=false;
+    if(Array.isArray(target.messages)){
+      for(const m of target.messages){
+        if(!m||typeof m.text!=='string'||m.sender==='user'||m.engine==='recalled'||m.recalled)continue;
+        const cleaned=m.mode==='meeting'?cleanMeetingNovelText(m.text):(cleanChatBubbleText(m.text)||'…');
+        if(cleaned!==m.text){m.text=cleaned;changed=true;}
+      }
+    }
+    if(Array.isArray(target.meetings)){
+      for(const rec of target.meetings){
+        if(!rec||typeof rec!=='object')continue;
+        if(typeof rec.summary==='string'){
+          const cs=stripProtocolTags(rec.summary,{preserveParagraphs:false});
+          if(cs&&cs!==rec.summary){rec.summary=cs;changed=true;}
+        }
+        if(typeof rec.ai_summary==='string'&&rec.ai_summary){
+          const cas=stripProtocolTags(rec.ai_summary,{preserveParagraphs:false});
+          if(cas!==rec.ai_summary){rec.ai_summary=cas;changed=true;}
+        }
+        if(Array.isArray(rec.entries)){
+          for(const e of rec.entries){
+            if(e&&e.sender!=='user'&&typeof e.text==='string'){
+              const ce=cleanMeetingNovelText(e.text);
+              if(ce!==e.text){e.text=ce;changed=true;}
+            }
+          }
+        }
+      }
+    }
+    if(Array.isArray(target.episodicMemories)){
+      for(const mem of target.episodicMemories){
+        if(!mem||typeof mem!=='object')continue;
+        if(typeof mem.summary==='string'&&mem.source_type!=='correction'&&mem.source_type!=='manual'){
+          const cs=stripProtocolTags(mem.summary,{preserveParagraphs:false});
+          if(cs&&cs!==mem.summary){mem.summary=cs;changed=true;}
+        }
+        if(mem.meeting_data&&typeof mem.meeting_data==='object'){
+          const md=mem.meeting_data;
+          if(typeof md.summary==='string'){
+            const mds=stripProtocolTags(md.summary,{preserveParagraphs:false});
+            if(mds&&mds!==md.summary){md.summary=mds;changed=true;}
+          }
+          if(Array.isArray(md.entries)){
+            for(const e of md.entries){
+              if(e&&e.sender!=='user'&&typeof e.text==='string'){
+                const ce=cleanMeetingNovelText(e.text);
+                if(ce!==e.text){e.text=ce;changed=true;}
+              }
+            }
+          }
+        }
+        if(Array.isArray(mem.day_messages)){
+          for(const dm of mem.day_messages){
+            if(dm&&dm.sender!=='user'&&typeof dm.text==='string'){
+              const cdm=cleanChatBubbleText(dm.text)||'…';
+              if(cdm!==dm.text){dm.text=cdm;changed=true;}
+            }
+          }
+        }
+      }
+    }
+    if(Array.isArray(target.events)){
+      for(const ev of target.events){
+        if(ev&&ev.type!=='user_message'&&typeof ev.summary==='string'){
+          const ce=stripProtocolTags(ev.summary,{preserveParagraphs:false});
+          if(ce&&ce!==ev.summary){ev.summary=ce;changed=true;}
+        }
+      }
+    }
+    if(target.surveillance&&typeof target.surveillance==='object'){
+      for(const store of Object.values(target.surveillance)){
+        const byDate=store?.byDate;
+        if(!byDate||typeof byDate!=='object')continue;
+        for(const dayRec of Object.values(byDate)){
+          if(!Array.isArray(dayRec?.slots))continue;
+          for(const slot of dayRec.slots){
+            if(slot&&typeof slot.scene==='string'){
+              const cs=stripProtocolTags(slot.scene,{preserveParagraphs:false});
+              if(cs&&cs!==slot.scene){slot.scene=cs;changed=true;}
+            }
+          }
+        }
+      }
+    }
+    return changed;
+  };
   const ensureDbFields=target=>{
     target.photoDescriptions ||= {};
     target.queue ||= {};
@@ -43,6 +178,7 @@
         cm.content=DEFAULT_PRESETS[0].content;
       }
     }
+    sanitizeStoredData(target);
   };
   try { const raw=localStorage.getItem(STORE_KEY); db=raw?JSON.parse(raw):empty(); if(!db || !Array.isArray(db.profiles))throw Error('broken'); ensureDbFields(db); localStorage.setItem(STORE_KEY,JSON.stringify(db)); }
   catch(err) { db=empty();storageAvailable=false; }
@@ -77,11 +213,12 @@
   const relation=(pid,cid)=>db.relations[pairKey(pid,cid)];
   const pub=()=>{const {api_key,image_api_key,...s}=db.connection;const hasApi=!!(s.base_url&&s.model&&api_key);const hasImg=!!(s.image_base_url&&s.image_model&&image_api_key);const demoEnabled=s.demo_enabled!==false;return {...s,proactive_mode:s.proactive_mode||'daily',has_key:!!api_key,has_api_config:hasApi,demo_enabled:demoEnabled,has_image_key:!!image_api_key,mode:hasApi?'live':(demoEnabled?'demo':'normal'),image_mode:hasImg?'live':'text',portable:true,storageAvailable}};
   const splitChatBubbles=raw=>{
-    const cleaned=String(raw||'').trim();
-    if(!cleaned)return ['…'];
-    let parts=cleaned.split(/\s*\|\|\|\s*|\r?\n+/).map(s=>s.replace(/^\[(?:短信|见面)\]\s*/,'').trim()).filter(Boolean);
+    const rawStr=String(raw||'').trim();
+    if(!rawStr)return ['…'];
+    const preSplit=rawStr.replace(/\r\n?/g,'\n').split('\n').map(line=>splitInlineProtocolLine(line)).join('\n');
+    let parts=preSplit.split(/\s*\|\|\|\s*|\r?\n+/).map(s=>cleanChatBubbleText(s)).filter(Boolean);
     if(parts.length===1&&parts[0].length>=32){
-      const sentences=parts[0].match(/[^。！？!?]+[。！？!?]+|[^。！？!?]+$/g)?.map(s=>s.trim()).filter(Boolean)||[parts[0]];
+      const sentences=parts[0].match(/[^。！？!?]+[。！？!?]+|[^。！？!?]+$/g)?.map(s=>cleanChatBubbleText(s)).filter(Boolean)||[parts[0]];
       if(sentences.length>=2){
         parts=[];
         let buf='';
@@ -96,7 +233,7 @@
     if(parts.length>4){
       parts=[...parts.slice(0,3),parts.slice(3).join(' ')];
     }
-    return parts.length?parts:[cleaned];
+    return parts.length?parts:['…'];
   };
   const photoText=c=>{
     const scenes=['靠近窗边的浅色日光','傍晚路口的柔和逆光','安静街角的背景','室内略微虚焦的背景'];
@@ -245,7 +382,7 @@
   const extractMemoryTags=(text,limit=6)=>extractQueryTerms(text).filter(t=>t.length>=2).slice(0,limit);
   const appendEpisodicMemory=({owner_id,profile_id,source_type,source_key,knowledge_mode='stated',summary='',tags=null,importance=2,emotional_weight=2,unresolved=0,clarifies_id='',disputed=0,raw_msg_ids=[],meeting_id='',meeting_data=null,event_at=null})=>{
     if(!owner_id||!profile_id||!summary)return null;
-    const summaryClean=String(summary).trim().slice(0,280);
+    const summaryClean=(source_type==='correction'||source_type==='manual'?String(summary).trim():stripProtocolTags(String(summary),{preserveParagraphs:false})).slice(0,280);
     const tagsClean=(tags||extractMemoryTags(summaryClean)).map(t=>String(t).slice(0,24)).filter(Boolean).slice(0,8);
     const imp=Math.max(1,Math.min(5,Number(importance)||2));
     const emo=Math.max(1,Math.min(5,Number(emotional_weight)||2));
@@ -279,9 +416,9 @@
   const PROMISE_KEYWORDS=['约定','答应','下次','周末','明天见','约好','等你','不见不散','一起去','什么时候见','最喜欢','最讨厌','过敏','生日','秘密','记住','别忘'];
   const recordDialogueEpisode=(p,c,userMsgs,aiMsg,mode)=>{
     if(!aiMsg||mode==='meeting')return null;
-    const uTexts=(userMsgs||[]).map(m=>m?.text?.trim()).filter(Boolean);
+    const uTexts=(userMsgs||[]).map(m=>String(m?.text??'').trim()).filter(Boolean);
     const uJoined=uTexts.join(' / ').slice(0,110);
-    const aText=String(aiMsg.text||'').trim().slice(0,110);
+    const aText=cleanChatBubbleText(String(aiMsg.text||'')).slice(0,110);
     const combined=uJoined+' '+aText;
     const hasPromiseOrFact=PROMISE_KEYWORDS.some(w=>combined.includes(w));
     if(!hasPromiseOrFact)return null;
@@ -912,16 +1049,16 @@
     return '约定的街角咖啡馆';
   };
   const buildMeetingSummaryText=(p,c,loc,mMsgs,aiSummary='')=>{
-    if(aiSummary&&String(aiSummary).trim().length>=6)return String(aiSummary).trim().slice(0,160);
+    if(aiSummary&&String(aiSummary).trim().length>=6)return stripProtocolTags(String(aiSummary),{preserveParagraphs:false}).slice(0,160);
     const uTurns=mMsgs.filter(m=>m.sender==='user'&&m.engine!=='recalled');
     const aTurns=mMsgs.filter(m=>m.sender==='ai'&&m.engine!=='recalled');
     if(uTurns.length){
-      const firstU=uTurns[0].text.replace(/\s+/g,' ').slice(0,38);
-      const lastU=uTurns.length>1?uTurns[uTurns.length-1].text.replace(/\s+/g,' ').slice(0,34):'';
+      const firstU=String(uTurns[0].text??'').replace(/\s+/g,' ').trim().slice(0,38);
+      const lastU=uTurns.length>1?String(uTurns[uTurns.length-1].text??'').replace(/\s+/g,' ').trim().slice(0,34):'';
       return `${p.name}「${firstU}」${lastU?`、再到「${lastU}」`:''}，与 ${c.name} 面对面互动了 ${mMsgs.length} 个回合。`;
     }
     if(aTurns.length){
-      const snippet=aTurns[0].text.replace(/\s+/g,' ').slice(0,48);
+      const snippet=cleanMeetingNovelText(aTurns[0].text).replace(/\s+/g,' ').slice(0,48);
       return `${snippet}…（共 ${mMsgs.length} 段面对面互动）`;
     }
     return `在「${loc}」见了一面。`;
@@ -934,7 +1071,7 @@
     const endedAt=mMsgs[mMsgs.length-1].created_at||stamp();
     const timeStr=String(startedAt).slice(0,16).replace('T',' ');
     const summary=buildMeetingSummaryText(p,c,loc,mMsgs,aiSummary||existing?.ai_summary||'');
-    const entries=mMsgs.map(m=>({id:m.id,sender:m.sender,speaker:m.sender==='user'?p.name:c.name,text:m.text,created_at:m.created_at}));
+    const entries=mMsgs.map(m=>({id:m.id,sender:m.sender,speaker:m.sender==='user'?p.name:c.name,text:m.sender==='user'?String(m.text??''):cleanMeetingNovelText(m.text),created_at:m.created_at}));
     const rec={
       id:meetingId,
       profile_id:p.id,
@@ -1089,7 +1226,7 @@
       }
       if(overlapScore>=6&&(item.raw_msg_ids||[]).length){
         const rawRows=(item.raw_msg_ids||[]).slice(0,2).map(id=>db.messages.find(m=>m.id===id)).filter(Boolean);
-        if(rawRows.length)entry.raw_excerpt=rawRows.map(r=>(r.sender==='user'?'对方：':'你：')+r.text.slice(0,70)).join(' | ');
+        if(rawRows.length)entry.raw_excerpt=rawRows.map(r=>(r.sender==='user'?'对方：':'你：')+(r.sender==='user'?String(r.text??'').trim():cleanChatBubbleText(r.text)).slice(0,70)).join(' | ');
       }
       const estLen=entry.summary.length+(entry.correction_note||'').length+(entry.raw_excerpt||'').length+30;
       if(charCount+estLen>maxChars&&selected.length)continue;
@@ -1132,9 +1269,18 @@
   };
   const event=(pid,cid,type,summary)=>{
     const nowStr=stamp();
-    db.events.push({id:uid(),profile_id:pid,character_id:cid,type,summary:summary.slice(0,500),created_at:nowStr});
+    const cleanSum=type==='user_message'?String(summary??'').trim():stripProtocolTags(summary,{preserveParagraphs:false});
+    db.events.push({id:uid(),profile_id:pid,character_id:cid,type,summary:cleanSum.slice(0,500),created_at:nowStr});
   };
-  const write=(pid,cid,sender,mode,text,engine='human')=>{const r=relation(pid,cid);const m={id:uid(),profile_id:pid,character_id:cid,sender,mode,text,engine,meeting_id:mode==='meeting'?(r?.active_meeting_id||''):'',created_at:stamp()};db.messages.push(m);return m};
+  const write=(pid,cid,sender,mode,text,engine='human')=>{
+    const r=relation(pid,cid);
+    const cleanTxt=(sender==='ai'&&engine!=='error'&&engine!=='recalled')
+      ?(mode==='meeting'?cleanMeetingNovelText(text):(cleanChatBubbleText(text)||'…'))
+      :String(text??'');
+    const m={id:uid(),profile_id:pid,character_id:cid,sender,mode,text:cleanTxt,engine,meeting_id:mode==='meeting'?(r?.active_meeting_id||''):'',created_at:stamp()};
+    db.messages.push(m);
+    return m;
+  };
   const messagesOf=(pid,cid)=>db.messages.filter(m=>m.profile_id===pid&&m.character_id===cid);
   const sourceMatches=(tag,c)=>{
     let q=String(tag||'').toLocaleLowerCase().trim().replace(/\s+/g,' ').replace(/^[\s·・\-—]+|[\s·・\-—]+$/g,'');
@@ -1201,7 +1347,7 @@
     const workingHistory=selectWorkingHistory(p.id,c.id,mode);
     const workingIds=new Set(workingHistory.map(m=>m.id));
     ensureDailySummaries(p,c,workingIds);
-    const querySeed=workingHistory.slice(-3).filter(m=>m.sender==='user').map(m=>m.text).join(' ')||workingHistory.slice(-2).map(m=>m.text).join(' ');
+    const querySeed=workingHistory.slice(-3).filter(m=>m.sender==='user').map(m=>String(m.text??'').trim()).join(' ')||workingHistory.slice(-2).map(m=>m.sender==='user'?String(m.text??'').trim():cleanChatBubbleText(m.text)).join(' ');
     const recalled=retrieveRelevantMemories(p.id,c.id,querySeed,workingIds,4,1200);
     const relSummary=relationshipBaselineSummary(p.id,c.id,p.name);
     const interestsStr=(p.interests||[]).join('、')||'未填写';
@@ -1216,29 +1362,38 @@
     }else{
       sys+=`\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n（当前话题未触发额外远期档案，仅依靠下方今日活跃上下文连贯交流）`;
     }
+    const timelineLines=[];
+    const historyTurns=[];
+    workingHistory.forEach((m,idx)=>{
+      const role=m.sender==='ai'?'assistant':'user';
+      if(m.engine==='recalled'||m.recalled){
+        historyTurns.push({role,content:'[系统提示：对方刚刚撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'});
+        return;
+      }
+      const tTag=fmtHHMM(m.created_at)||'--:--';
+      const mLabel=m.mode==='meeting'?'线下见面':'线上短信';
+      const who=m.sender==='ai'?c.name:p.name;
+      timelineLines.push(`#${idx+1} ${tTag}（${mLabel}·${who}）`);
+      const cleanBody=m.sender==='user'?String(m.text??''):(m.mode==='meeting'?cleanMeetingNovelText(m.text):(cleanChatBubbleText(m.text)||'…'));
+      historyTurns.push({role,content:cleanBody});
+    });
+    if(timelineLines.length){
+      sys+=`\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n`+timelineLines.join(' ｜ ');
+    }
     const presets=db.presets.filter(x=>x.mode===mode&&x.enabled).sort((a,b)=>a.sort_order-b.sort_order);
     sys+='\n\n'+presets.filter(x=>x.role==='system').map(x=>macros(x.content)).join('\n\n');
-    const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)}))];
-    for(const m of workingHistory){
-      const tTag=fmtHHMM(m.created_at);
-      const prefix=m.mode==='meeting'?(tTag?`[见面 ${tTag}]`:'[见面]'):(tTag?`[短信 ${tTag}]`:'[短信]');
-      if(m.engine==='recalled'||m.recalled){
-        chat.push({role:m.sender==='ai'?'assistant':'user',content:'[系统提示：对方刚刚撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'});
-      }else{
-        chat.push({role:m.sender==='ai'?'assistant':'user',content:prefix+m.text});
-      }
-    }
+    const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)})),...historyTurns];
     let batchHint='';
     if(mode==='chat'&&Array.isArray(pendingIds)&&pendingIds.length>1){
       const bundledRows=pendingIds.map(id=>db.messages.find(x=>x.id===id)).filter(Boolean);
       if(bundledRows.length>1){
-        const timelineStr=bundledRows.map(x=>`[${fmtHHMM(x.created_at)}]「${x.text.slice(0,60)}」`).join(' -> ');
+        const timelineStr=bundledRows.map(x=>`${fmtHHMM(x.created_at)}「${(x.sender==='user'?String(x.text??'').trim():cleanChatBubbleText(x.text)).slice(0,60)}」`).join(' -> ');
         batchHint=`\n【打包消息时间线】你在未看手机的这段时间里，对方陆续给你发来了 ${bundledRows.length} 条消息（按发送时间先后：${timelineStr}）。你现在刚拿起手机把这些消息一次性读完，请结合这些消息各自的时间戳跨度与内容，像真人一样自然连贯地统一回复。`;
       }
     }
     const curSurv=getCurrentSurveillanceSlot(p,c);
     const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】当前时间 ${fmtHHMM(Date.now())||'12:00'}，你此刻身处「${curSurv.location}」，状态：「${curSurv.activity}」（现场细节：${curSurv.scene}）。若对方问起你在哪、在做什么或提出现在见面，请严格以此真实位置与状态为准，保持世界观与地点一致。`:'';
-    chat.push({role:'system',content:'【第四层 · 当前状态 (Current State)】'+(mode==='meeting'?`当前必须以面对面小说式 RP 写下一条回复（当前见面地点：${relation(p.id,c.id)?.meeting_location||curSurv?.location||'约定的街角咖啡馆'}）。不要控制玩家角色。`:'当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint)});
+    chat.push({role:'system',content:'【第四层 · 当前状态 (Current State)】'+(mode==='meeting'?`当前必须以面对面小说式 RP 写下一条回复（当前见面地点：${relation(p.id,c.id)?.meeting_location||curSurv?.location||'约定的街角咖啡馆'}）。不要控制玩家角色，不要在正文开头添加任何时间或模式标签。`:'当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint)});
     return chat;
   };
   function getApiUrl(suffix){const b=db.connection.base_url.trim().replace(/\/+$/,'');if(!/^https?:\/\//.test(b))bodyErr('API Base URL 需要以 http:// 或 https:// 开头');if(/^http:\/\//.test(b)&&!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/.test(b))bodyErr('远程 API 必须使用 HTTPS');return b+suffix}
@@ -1307,7 +1462,7 @@
     let engine='demo',warning='',txt;
     if(curMode==='live'){try{txt=await llm(prompt(p,c,mode));engine='live'}catch(e){warning=String(e.message||e);txt='（模型连接失败，历史已保存。请检查终端设置，再尝试角色回复。）';engine='error'}}
     else txt=demo(p,c,mode);
-    const bubbleTexts=(mode==='chat'&&engine!=='error')?splitChatBubbles(txt):[txt];
+    const bubbleTexts=engine==='error'?[txt]:(mode==='chat'?splitChatBubbles(txt):[cleanMeetingNovelText(txt)]);
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai',mode,bTxt,engine));
     const reply=replies[replies.length-1]||null;
     if(engine!=='error'&&reply){
@@ -1806,6 +1961,11 @@
   }
   window.ParallelOffline={
     request,
+    stripProtocolTags,
+    cleanChatBubbleText,
+    cleanMeetingNovelText,
+    splitChatBubbles,
+    sanitizeStoredData,
     buildPromptPreview:(pid,cid,mode='chat')=>prompt(getP(pid),getC(cid),mode),
     get storageAvailable(){return storageAvailable},
     exportData:()=>{const copy=JSON.parse(JSON.stringify(db));copy.connection.api_key='';copy.connection.image_api_key='';return JSON.stringify({format:'parallel-portable-backup',schemaVersion:1,createdAt:stamp(),data:copy},null,2)},

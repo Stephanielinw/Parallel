@@ -523,9 +523,44 @@ test('Parallel v0.5 Daily Mode message bundling (preserving scheduled dueAt & ti
   assert.equal(msg2.queue.count, 2);
   assert.equal(msg2.queue.dueAt, firstDueAt, 'Subsequent messages in Daily Mode bundle without resetting dueAt');
 
-  // 3. Prompt preview includes per-message [短信 HH:MM] timestamps
-  const preview = JSON.stringify(engine.buildPromptPreview(p.id, cid, 'chat'));
-  assert.match(preview, /\[短信 \d{2}:\d{2}\]/, 'Each message in working history carries its own [短信 HH:MM] timestamp');
+  // 3. Prompt preview puts real time & mode into independent system metadata, does NOT prefix user/assistant turns with protocol headers, and preserves legitimate user-quoted protocol-style text
+  const msgQuoted = await engine.request('/message', {
+    profileId: p.id,
+    characterId: cid,
+    text: '他说：“请打开[短信 18:37]那条记录。”',
+  });
+  assert.equal(msgQuoted.queue.count, 3);
+  const promptMessages = engine.buildPromptPreview(p.id, cid, 'chat') as Array<{
+    role: string;
+    content: string;
+  }>;
+  const sysPrompt = promptMessages[0]?.content || '';
+  assert.match(
+    sysPrompt,
+    /【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】/,
+    'System metadata section carries per-message time and mode index'
+  );
+  assert.match(
+    sysPrompt,
+    /#1 \d{2}:\d{2}（线上短信·Leon S\. Kennedy）/,
+    'Each message in working history has its real timestamp and mode recorded in system metadata'
+  );
+  const nonSystemTurns = promptMessages.filter(
+    (m) => m.role === 'user' || m.role === 'assistant'
+  );
+  assert.ok(nonSystemTurns.length >= 3);
+  for (const turn of nonSystemTurns) {
+    assert.ok(
+      !/^\s*(?:\[|【)\s*(?:短信|见面)/.test(turn.content),
+      `Normal user/assistant turn must not be prefixed with protocol header: ${turn.content}`
+    );
+  }
+  assert.ok(
+    nonSystemTurns.some(
+      (t) => t.role === 'user' && t.content === '他说：“请打开[短信 18:37]那条记录。”'
+    ),
+    'Legitimate user-quoted protocol-style text must not be deleted during prompt serialization'
+  );
 
   // 4. Toggle Hot Chat Mode on -> updates queue to paceMode: 'hot' with 60s dueAt
   const hotOn = await engine.request('/hot-chat', {
