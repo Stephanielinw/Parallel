@@ -474,3 +474,18 @@ html,body,#root{width:100%;height:100%;min-height:0;margin:0;overflow:hidden;ove
 @media(pointer:coarse){
   input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),textarea,select,[contenteditable="true"]{font-size:16px!important}
 }
+
+/* Compact mobile header. Apply the top safe area once (viewport-fit=cover),
+   without a second standalone-mode offset or a safe-area-based min-height. */
+@media (max-width:870px){
+  #app .topbar{
+    min-height:0;
+    padding:calc(env(safe-area-inset-top,0px) + 6px) 18px 10px;
+    gap:8px;
+  }
+}
+@media (max-width:580px){
+  #app .topbar{
+    padding:calc(env(safe-area-inset-top,0px) + 5px) 16px 9px;
+  }
+}
