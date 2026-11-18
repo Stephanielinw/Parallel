@@ -5,12 +5,15 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { webcrypto } from 'node:crypto';
 
-function createPortableEngine() {
+function createPortableEngine(options?: {
+  store?: Map<string, string>;
+  fetchImpl?: (url: string, init?: any) => Promise<any>;
+}) {
   const src = fs.readFileSync(
     path.resolve(process.cwd(), 'public/parallel/offline.js'),
     'utf8'
   );
-  const store = new Map<string, string>();
+  const store = options?.store ?? new Map<string, string>();
   const localStorage = {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => {
@@ -28,22 +31,35 @@ function createPortableEngine() {
     Math,
     TextEncoder,
     console,
-    fetch: async () => {
-      throw new Error('network disabled in unit tests');
-    },
+    fetch:
+      options?.fetchImpl ??
+      (async () => {
+        throw new Error('network disabled in unit tests');
+      }),
   };
   vm.createContext(context);
   vm.runInContext(src, context);
-  return win.ParallelOffline as {
-    request: (p: string, b?: Record<string, unknown>) => Promise<any>;
-    buildPromptPreview: (pid: string, cid: string, mode?: string) => Array<{ role: string; content: string }>;
-    exportData: () => string;
-    importData: (raw: string) => { profiles: number; messages: number };
+  return {
+    engine: win.ParallelOffline as {
+      request: (p: string, b?: Record<string, unknown>) => Promise<any>;
+      buildPromptPreview: (
+        pid: string,
+        cid: string,
+        mode?: string,
+        options?: Record<string, unknown>
+      ) => Array<{ role: string; content: string }>;
+      diagnosePresets: (mode?: string) => any;
+      getSystemLogs: () => any[];
+      clearSystemLogs: () => any[];
+      exportData: () => string;
+      importData: (raw: string) => { profiles: number; messages: number };
+    },
+    store,
   };
 }
 
 test('Parallel v0.5 four-layer memory isolation, on-demand retrieval, and conversational correction', async () => {
-  const engine = createPortableEngine();
+  const { engine } = createPortableEngine();
   const steph = (
     await engine.request('/profile', {
       name: 'Stephanie',
@@ -133,7 +149,7 @@ test('Parallel v0.5 four-layer memory isolation, on-demand retrieval, and conver
 });
 
 test('Parallel v0.5 source tag aliases and installment filtering (巫师3, 生化2)', async () => {
-  const engine = createPortableEngine();
+  const { engine } = createPortableEngine();
   const witcher = (
     await engine.request('/profile', {
       name: 'WitcherPlayer',
@@ -183,7 +199,7 @@ test('Parallel v0.5 source tag aliases and installment filtering (巫师3, 生�
 });
 
 test('Parallel v0.5 Chinese character full-name identify (艾达王, 冬日战士)', async () => {
-  const engine = createPortableEngine();
+  const { engine } = createPortableEngine();
   const ada = await engine.request('/identify?name=' + encodeURIComponent('艾达王'));
   assert.ok(ada.matches.some((m: any) => m.name === 'Ada Wong'));
 
@@ -192,7 +208,7 @@ test('Parallel v0.5 Chinese character full-name identify (艾达王, 冬日战�
 });
 
 test('Parallel v0.5 matched candidate exclusion, message deletion, and legacy backup restore', async () => {
-  const engine = createPortableEngine();
+  const { engine } = createPortableEngine();
   const p = (
     await engine.request('/profile', {
       name: 'Stephanie',
@@ -265,7 +281,7 @@ test('Parallel v0.5 matched candidate exclusion, message deletion, and legacy ba
 });
 
 test('Parallel v0.5 Image AI connection settings and text/live mode toggle', async () => {
-  const engine = createPortableEngine();
+  const { engine } = createPortableEngine();
   const initial = await engine.request('/settings');
   assert.equal(initial.image_mode, 'text');
   assert.equal(initial.has_image_key, false);
@@ -294,7 +310,7 @@ test('Parallel v0.5 Image AI connection settings and text/live mode toggle', asy
 });
 
 test('Parallel v0.5 API detection, normal mode vs demo mode, message recall prompt notice, and multi-bubble replies', async () => {
-  const engine = createPortableEngine();
+  const { engine } = createPortableEngine();
   const initial = await engine.request('/settings');
   assert.equal(initial.has_api_config, false, 'Fresh store has no API config filled');
 
@@ -397,7 +413,7 @@ test('Parallel v0.5 API detection, normal mode vs demo mode, message recall prom
 });
 
 test('Parallel v0.5 dedicated meeting novel flow, meeting summary card, and clean grouped memory archive', async () => {
-  const engine = createPortableEngine();
+  const { engine } = createPortableEngine();
   const p = (
     await engine.request('/profile', {
       name: '奈恩',
@@ -482,7 +498,7 @@ test('Parallel v0.5 dedicated meeting novel flow, meeting summary card, and clea
 });
 
 test('Parallel v0.5 Daily Mode message bundling (preserving scheduled dueAt & timestamps), Hot Chat Mode toggle, and staggered proactive messages', async () => {
-  const engine = createPortableEngine();
+  const { engine } = createPortableEngine();
   const p = (
     await engine.request('/profile', {
       name: '奈恩',
@@ -581,7 +597,7 @@ test('Parallel v0.5 Daily Mode message bundling (preserving scheduled dueAt & ti
 });
 
 test('9. Surveillance (实时监控) silently generates full-day schedule, unlocks slots up to current time, syncs into prompt & meeting location, and rewrites timeline after meeting', async () => {
-  const engine = createPortableEngine();
+  const { engine } = createPortableEngine();
   const p = (
     await engine.request('/profile', {
       name: '奈恩',
@@ -645,7 +661,7 @@ test('9. Surveillance (实时监控) silently generates full-day schedule, unloc
 });
 
 test('10. Character Diary (角色日记) auto-generates past-day diaries from surveillance, supports date selection & intimacy stages, Surveillance supports past dates, and Character Hub supports custom nickname remarks', async () => {
-  const engine = createPortableEngine();
+  const { engine } = createPortableEngine();
   const p = (
     await engine.request('/profile', {
       name: '奈恩',
@@ -752,3 +768,527 @@ test('10. Character Diary (角色日记) auto-generates past-day diaries from su
   assert.equal(clearNick.nickname, '');
   assert.equal(clearNick.character.display_name, 'Leon S. Kennedy');
 });
+
+function load26EntryPresetFixture() {
+  const localPath = path.resolve(process.cwd(), 'public/assets/aistudio/_____685745cf.json');
+  if (fs.existsSync(localPath)) {
+    return JSON.parse(fs.readFileSync(localPath, 'utf8'));
+  }
+  const entries = [];
+  for (let i = 0; i < 26; i++) {
+    const isDisabledStyle = i === 16 || i === 17;
+    const isEnabledStyle = i === 18;
+    const isCot = i === 24;
+    const isBottom = i === 25;
+    entries.push({
+      id: `entry-${i + 1}`,
+      name: isDisabledStyle
+        ? i === 16
+          ? '毛姆式冷眼世故'
+          : '白水烹鲜温润白描'
+        : isEnabledStyle
+          ? '高饱和度感官电影流'
+          : isCot
+            ? '动笔前连续性检查'
+            : isBottom
+              ? '底部誓约与状态确认'
+              : `专项模块-${i + 1}`,
+      role: isBottom ? 'assistant' : 'system',
+      enabled: !isDisabledStyle,
+      group:
+        isDisabledStyle || isEnabledStyle
+          ? '文风（单选）'
+          : isCot
+            ? 'COT'
+            : isBottom
+              ? '收尾'
+              : '专项（多选）',
+      content: isBottom
+        ? '【已完整读取并锁定所有前置档案与创作法则】\n我已完全进入 **{{char}}** 的灵魂与躯壳，并将 **{{user}}** 视为真实可触的唯一交互对手。'
+        : isCot
+          ? '动笔前快速过一遍：1. 先接住{{user}}刚落下的动作或话头；2. 检查{{char}}当前的认知边界。'
+          : `规则条目 #${i + 1}：要求围绕 {{char}} 与 {{user}} 展开 600～1000 字细腻现实互动。`,
+    });
+  }
+  return {
+    id: 'preset-elsewhere-26',
+    name: '26条目测试预设',
+    description: '24启用、2禁用测试预设',
+    schemaVersion: 1,
+    format: 'elsewhere-preset',
+    entries,
+  };
+}
+
+test('ROUND-02: Complete 26-entry Elsewhere preset lifecycle, compilation order, 6 meeting entry points, diagnostics, long novel preservation, and System Logs', async () => {
+  const capturedCalls: Array<{ url: string; body: any; headers: Record<string, string> }> = [];
+  let mockResponseMode: 'long_novel' | 'truncated_length' | 'http_error' | 'chat_bubbles' = 'long_novel';
+
+  const longNovelParagraphs = [
+    '雨水顺着街角咖啡馆的玻璃窗蜿蜒滑落，将室外的霓虹灯影揉碎成一片温暖而模糊的琥珀色光斑。店内的烘焙香气混合着潮湿的夜气，在两人之间静静流淌。他没有急着开口，只是先把搭在椅背上的深色风衣往里收了收，免得沾湿的水汽碰到她手边的桌面，随后才抬起眼，目光沉静而专注地落在她身上。',
+    '刚才她递过来的那页菜单还停留在指尖，纸页边缘带着一点室内的微温。他垂眸扫过上面用铅笔勾选的那行热可可，唇角极其自然地浮起一点克制而温和的弧度，既没有刻意凑近的轻佻，也没有刚见面时的生疏客套，完全是久经生死与风浪后难得卸下防备的松弛感。',
+    '“外面的雨比气象台报的还要大一点，你过来的时候袖口是不是淋湿了？”他一边说着，一边用指节轻轻敲了敲桌面右侧的空位，顺手把侍应生刚放下的温水往她手边推近了半寸，掌心在玻璃杯壁外侧短暂停留了一秒确认温度，才自然地收回手搭在自己膝上。',
+    '“既然今天好不容易把备勤的空档腾出来，我们就不用赶时间。你刚才在路上说的那家老唱片店，等这阵雨稍微小一点，我陪你过去看看还开没开门。现在先喝口热水暖一暖——你想先点单，还是先跟我说说今天下午到底遇到了什么好玩的事？”',
+  ].join('\n\n');
+  assert.ok(longNovelParagraphs.length >= 420, 'Mock novel response has substantial multi-paragraph length');
+
+  const sharedStore = new Map<string, string>();
+  const makeFetch = () => async (url: string, init?: any) => {
+    const reqBody = init?.body ? JSON.parse(String(init.body)) : {};
+    const reqHeaders = init?.headers || {};
+    capturedCalls.push({ url: String(url), body: reqBody, headers: reqHeaders });
+    if (mockResponseMode === 'http_error') {
+      return {
+        ok: false,
+        status: 502,
+        json: async () => ({ error: { message: 'Upstream gateway timeout' } }),
+      };
+    }
+    if (mockResponseMode === 'truncated_length') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'chatcmpl-trunc-1',
+          choices: [
+            {
+              index: 0,
+              finish_reason: 'length',
+              message: {
+                role: 'assistant',
+                reasoning_content: '先构思场景连续性与动作承接……',
+                content: longNovelParagraphs.slice(0, 180),
+              },
+            },
+          ],
+          usage: {
+            prompt_tokens: 2800,
+            completion_tokens: 1024,
+            total_tokens: 3824,
+            completion_tokens_details: { reasoning_tokens: 820 },
+          },
+        }),
+      };
+    }
+    if (mockResponseMode === 'chat_bubbles') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'chatcmpl-chat-1',
+          choices: [
+            {
+              index: 0,
+              finish_reason: 'stop',
+              message: {
+                role: 'assistant',
+                content: '我刚把摩托车停好。|||你在店里等我两分钟，马上进来。',
+              },
+            },
+          ],
+          usage: { prompt_tokens: 950, completion_tokens: 36, total_tokens: 986 },
+        }),
+      };
+    }
+    const repeatedLong = longNovelParagraphs + '\n\n' + longNovelParagraphs;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: 'chatcmpl-novel-1',
+        choices: [
+          {
+            index: 0,
+            finish_reason: 'stop',
+            message: {
+              role: 'assistant',
+              content: repeatedLong,
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 3120,
+          completion_tokens: 890,
+          total_tokens: 4010,
+          completion_tokens_details: { reasoning_tokens: 180 },
+        },
+      }),
+    };
+  };
+
+  let { engine } = createPortableEngine({ store: sharedStore, fetchImpl: makeFetch() });
+
+  // Scenario 1 & 2: Import 26-entry Elsewhere preset (24 enabled, 2 disabled)
+  const presetPack = load26EntryPresetFixture();
+  assert.equal(presetPack.entries.length, 26, 'Fixture has 26 entries');
+  assert.equal(presetPack.entries.filter((x: any) => x.enabled).length, 24, '24 entries enabled');
+  assert.equal(presetPack.entries.filter((x: any) => !x.enabled).length, 2, '2 entries disabled');
+
+  const importRes = await engine.request('/preset-import', {
+    import_mode: 'replace',
+    preset: presetPack,
+  });
+  assert.equal(importRes.ok, true);
+  assert.equal(importRes.imported, 26);
+
+  const presetsResp = await engine.request('/presets');
+  const meetingEntries = presetsResp.entries.filter((x: any) => x.mode === 'meeting');
+  const chatEntries = presetsResp.entries.filter((x: any) => x.mode === 'chat');
+  assert.equal(meetingEntries.length, 26, 'All 26 entries imported into meeting mode');
+  assert.equal(meetingEntries.filter((x: any) => x.enabled).length, 24, '24 meeting entries enabled');
+  assert.equal(meetingEntries.filter((x: any) => !x.enabled).length, 2, '2 meeting entries disabled');
+  assert.equal(chatEntries.length, 3, 'Chat presets remain untouched (3 default chat entries)');
+
+  // Check diagnostics on clean replace import
+  const meetDiag = presetsResp.diagnostics.meeting;
+  assert.equal(meetDiag.totalCount, 26);
+  assert.equal(meetDiag.enabledCount, 24);
+  assert.equal(meetDiag.disabledCount, 2);
+  assert.equal(meetDiag.defaultAndCustomCoexist, false);
+  assert.equal(meetDiag.duplicateCount, 0);
+  assert.equal(meetDiag.styleGroupTotal, 3);
+  assert.equal(meetDiag.enabledStyleCount, 1);
+  assert.equal(meetDiag.hasCotCheck, true);
+  assert.equal(meetDiag.hasBottomPledge, true);
+  assert.equal(meetDiag.rolesBreakdown.system, 23);
+  assert.equal(meetDiag.rolesBreakdown.assistant, 1);
+
+  // Scenario 3: Page reload (recreating engine over same localStorage) and mode switch preserve all 26 entries & states
+  ({ engine } = createPortableEngine({ store: sharedStore, fetchImpl: makeFetch() }));
+  const afterReloadPresets = await engine.request('/presets');
+  const reloadedMeeting = afterReloadPresets.entries.filter((x: any) => x.mode === 'meeting');
+  assert.equal(reloadedMeeting.length, 26, '26 meeting entries survive page reload');
+  assert.equal(reloadedMeeting.filter((x: any) => x.enabled).length, 24, '24 enabled states survive reload');
+  assert.equal(reloadedMeeting.filter((x: any) => !x.enabled).length, 2, '2 disabled states survive reload');
+
+  // Configure live API settings with high max_tokens (e.g. 8192)
+  const savedSettings = (
+    await engine.request('/settings', {
+      base_url: 'https://api.example.org/v1',
+      api_key: 'sk-live-secret-key-987654321',
+      model: 'claude-3-7-sonnet',
+      temperature: 0.85,
+      top_p: 0.95,
+      max_tokens: 8192,
+    })
+  ).settings;
+  assert.equal(savedSettings.mode, 'live');
+  assert.equal(savedSettings.max_tokens, 8192, 'Supports max_tokens > 4096 up to 32768');
+
+  // Create two Profiles and match two Characters to test dynamic macro rebinding & all 6 entry points
+  const profileA = (
+    await engine.request('/profile', {
+      name: '奈恩',
+      age: 23,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 65,
+      intent: '认真寻找恋人',
+      sources: ['生化危机 · 游戏', '巫师 · 游戏'],
+      bio: '喜欢雨天和热可可',
+      interests: ['摄影', '黑胶'],
+    })
+  ).profile;
+
+  const profileB = (
+    await engine.request('/profile', {
+      name: '陆离',
+      age: 25,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 65,
+      intent: '认识新朋友',
+      sources: ['生化危机 · 游戏', '巫师 · 游戏'],
+      bio: '喜欢安静的酒馆',
+      interests: ['剑术'],
+    })
+  ).profile;
+
+  const charLeon = 're-game:leon:re2';
+  const charChris = 're-game:chris:re5';
+
+  mockResponseMode = 'chat_bubbles';
+  for (const [pid, cid] of [
+    [profileA.id, charLeon],
+    [profileA.id, charChris],
+    [profileB.id, charLeon],
+  ]) {
+    for (let i = 0; i < 15; i++) {
+      const sw = await engine.request('/swipe', { profileId: pid, characterId: cid, direction: 'right' });
+      if (sw.matched) break;
+    }
+  }
+
+  // Send a short SMS in chat mode first to verify Scenario 4, 5, and SMS length isolation
+  await engine.request('/message', {
+    profileId: profileA.id,
+    characterId: charLeon,
+    text: '我在街角咖啡馆靠窗的位置等你。',
+  });
+  const chatFlush = await engine.request('/chat-flush', {
+    profileId: profileA.id,
+    characterId: charLeon,
+    force: true,
+  });
+  assert.equal(chatFlush.reply.mode, 'chat');
+
+  // Scenario 5: Verify chat mode request ONLY used chat presets and NEVER leaked meeting presets
+  const lastChatCall = capturedCalls[capturedCalls.length - 1];
+  const chatPayloadStr = JSON.stringify(lastChatCall.body.messages);
+  assert.ok(chatPayloadStr.includes('只输出角色实际发出的消息正文'), 'Chat mode uses chat-main preset');
+  assert.ok(!chatPayloadStr.includes('底部誓约'), 'Chat mode never includes meeting assistant pledge');
+  assert.ok(!chatPayloadStr.includes('高饱和度感官电影流'), 'Chat mode never includes meeting style cards');
+
+  // Now switch mock to long_novel for face-to-face meeting tests
+  mockResponseMode = 'long_novel';
+
+  // Helper to verify Scenarios 2, 4, 6, 7 on any captured meeting payload
+  const assertValidMeetingPayload = (
+    messages: Array<{ role: string; content: string }>,
+    expectedUserName: string,
+    expectedCharName: string
+  ) => {
+    const fullStr = JSON.stringify(messages);
+    // Scenario 4: No chat presets leaked into meeting mode
+    assert.ok(
+      !fullStr.includes('只输出角色实际发出的消息正文'),
+      'Meeting payload must never include chat-main SMS bubble preset'
+    );
+    // Scenario 2: Disabled entries (毛姆式冷眼世故, 白水烹鲜温润白描) must NEVER enter payload
+    assert.ok(!fullStr.includes('毛姆式冷眼世故'), 'Disabled style 1 must not enter payload');
+    assert.ok(!fullStr.includes('白水烹鲜温润白描'), 'Disabled style 2 must not enter payload');
+    assert.ok(!fullStr.includes('克制冷感的第三方观察者'), 'Disabled style 1 body must not enter payload');
+    assert.ok(!fullStr.includes('像温水煮鲜汤'), 'Disabled style 2 body must not enter payload');
+    // Enabled style card IS present
+    const enabledStyle = meetingEntries.find((x: any) => x.enabled && String(x.group || x.name).includes('文风（单选）'));
+    if (enabledStyle) {
+      const snippet = enabledStyle.content.slice(0, 18).replace(/\{\{user\}\}/g, expectedUserName).replace(/\{\{char\}\}/g, expectedCharName);
+      assert.ok(fullStr.includes(snippet), 'Enabled style card content is present in meeting payload');
+    }
+    // Scenario 6: Macro replacement ({{user}} and {{char}} completely replaced)
+    assert.ok(!fullStr.includes('{{user}}'), '{{user}} macro must be replaced everywhere');
+    assert.ok(!fullStr.includes('{{char}}'), '{{char}} macro must be replaced everywhere');
+    assert.ok(fullStr.includes(expectedUserName), `Expected user name ${expectedUserName} present`);
+    assert.ok(fullStr.includes(expectedCharName), `Expected char name ${expectedCharName} present`);
+
+    // Scenario 7: Structural order check
+    // First message is foundational system prompt + core system presets (with expanded {{char}} and {{user}})
+    assert.equal(messages[0].role, 'system', 'First message is foundational system message');
+    assert.ok(
+      messages[0].content.includes(expectedCharName) && messages[0].content.includes(expectedUserName),
+      'Core system prompt has expanded {{char}} and {{user}} macros'
+    );
+    // Last message is ALWAYS role: 'user'
+    const lastMsg = messages[messages.length - 1];
+    assert.equal(lastMsg.role, 'user', 'Final message in meeting mode must always be role: user');
+    // Second-to-last message is the assistant bottom pledge (底部誓约与状态确认)
+    const secondLastMsg = messages[messages.length - 2];
+    assert.equal(secondLastMsg.role, 'assistant', 'Second-to-last message is assistant bottom pledge');
+    assert.ok(
+      secondLastMsg.content.includes(expectedUserName) && !secondLastMsg.content.includes('{{user}}'),
+      'Assistant bottom pledge has expanded {{user}} macro'
+    );
+    // Third-to-last message is the post-history system block (COT + Layer 4 Current State)
+    const thirdLastMsg = messages[messages.length - 3];
+    assert.equal(thirdLastMsg.role, 'system', 'Third-to-last message is post-history COT + Current State system block');
+    assert.ok(thirdLastMsg.content.includes('【第四层 · 当前状态'), 'Contains Layer 4 Current State');
+  };
+
+  // Scenario 8.1: Entry Point 1 — First time entering meeting mode (/mode with triggerOpening: true)
+  const enter1 = await engine.request('/mode', {
+    profileId: profileA.id,
+    characterId: charLeon,
+    mode: 'meeting',
+    triggerOpening: true,
+    location: '街角咖啡馆',
+  });
+  assert.equal(enter1.mode, 'meeting');
+  assert.ok(enter1.openingReply, 'Generates opening reply');
+  assert.ok(enter1.openingReply.text.length >= 800, 'Scenario 10: Long novel reply (800+ chars) is preserved without truncation');
+  assertValidMeetingPayload(capturedCalls[capturedCalls.length - 1].body.messages, '奈恩', 'Leon S. Kennedy');
+  // Also verify pre-meeting SMS is in system prompt as reference, NOT in dialogue turns
+  const openMsgs = capturedCalls[capturedCalls.length - 1].body.messages;
+  assert.ok(
+    openMsgs[0].content.includes('【见面前的近期手机联系脉络'),
+    'Pre-meeting SMS is summarized in system context'
+  );
+  assert.equal(
+    openMsgs.filter((m: any) => m.content === '我在街角咖啡馆靠窗的位置等你。').length,
+    0,
+    'Short SMS message is not injected as a dialogue turn in meeting mode'
+  );
+
+  // Scenario 8.2: Entry Point 2 — User sends a meeting message (/message in meeting mode)
+  const meetTurn1 = await engine.request('/message', {
+    profileId: profileA.id,
+    characterId: charLeon,
+    text: '我笑着接过那杯温水，问他最近是不是都没怎么睡好。',
+  });
+  assert.equal(meetTurn1.mode, 'meeting');
+  assert.ok(meetTurn1.reply.text.length >= 800, 'Long novel reply preserved on /message');
+  const turn1Msgs = capturedCalls[capturedCalls.length - 1].body.messages;
+  assertValidMeetingPayload(turn1Msgs, '奈恩', 'Leon S. Kennedy');
+  assert.equal(
+    turn1Msgs[turn1Msgs.length - 1].content,
+    '我笑着接过那杯温水，问他最近是不是都没怎么睡好。',
+    'User latest meeting message sits at the very end after assistant bottom pledge'
+  );
+
+  // Scenario 8.3: Entry Point 3 — User clicks Continue (/reply in meeting mode)
+  const meetContinue = await engine.request('/reply', {
+    profileId: profileA.id,
+    characterId: charLeon,
+  });
+  assert.equal(meetContinue.mode, 'meeting');
+  assert.ok(meetContinue.reply.text.length >= 800, 'Long novel reply preserved on /reply continue');
+  const contMsgs = capturedCalls[capturedCalls.length - 1].body.messages;
+  assertValidMeetingPayload(contMsgs, '奈恩', 'Leon S. Kennedy');
+  assert.ok(
+    contMsgs[contMsgs.length - 1].content.includes('【继续推进】'),
+    'Continue generation ends with explicit user-role continuation trigger'
+  );
+
+  // Scenario 8.4: Entry Point 4 — Multi-round meeting generation maintains prior meeting turns in order
+  const meetTurn2 = await engine.request('/message', {
+    profileId: profileA.id,
+    characterId: charLeon,
+    text: '我伸手替他理了理微湿的风衣领口。',
+  });
+  assert.ok(meetTurn2.reply.text.length >= 800);
+  const turn2Msgs = capturedCalls[capturedCalls.length - 1].body.messages;
+  assertValidMeetingPayload(turn2Msgs, '奈恩', 'Leon S. Kennedy');
+  // Prior meeting turns sit between messages[0] and messages[messages.length - 3]
+  const middleHistory = turn2Msgs.slice(1, turn2Msgs.length - 3);
+  assert.ok(middleHistory.length >= 3, 'Multi-round meeting history is preserved before COT and bottom pledge');
+
+  // Scenario 8.5: Entry Point 5 — End meeting -> return to chat -> start a 2nd meeting later
+  await engine.request('/mode', {
+    profileId: profileA.id,
+    characterId: charLeon,
+    mode: 'chat',
+    finalizeMeeting: false,
+  });
+  const enter2 = await engine.request('/mode', {
+    profileId: profileA.id,
+    characterId: charLeon,
+    mode: 'meeting',
+    triggerOpening: true,
+    location: '老城区唱片行',
+  });
+  assert.equal(enter2.mode, 'meeting');
+  assert.ok(enter2.openingReply.text.length >= 800);
+  assertValidMeetingPayload(capturedCalls[capturedCalls.length - 1].body.messages, '奈恩', 'Leon S. Kennedy');
+
+  // Scenario 8.6: Entry Point 6 — Switch to another Character (Chris Redfield) and another Profile (陆离)
+  const enterChris = await engine.request('/mode', {
+    profileId: profileA.id,
+    characterId: charChris,
+    mode: 'meeting',
+    triggerOpening: true,
+    location: '暖炉酒馆',
+  });
+  assert.equal(enterChris.mode, 'meeting');
+  assertValidMeetingPayload(capturedCalls[capturedCalls.length - 1].body.messages, '奈恩', 'Chris Redfield');
+  assert.ok(
+    !JSON.stringify(capturedCalls[capturedCalls.length - 1].body.messages).includes('Leon S. Kennedy'),
+    'Switching character dynamically rebinds {{char}} to Chris Redfield without Leon residue'
+  );
+
+  const enterProfileB = await engine.request('/mode', {
+    profileId: profileB.id,
+    characterId: charLeon,
+    mode: 'meeting',
+    triggerOpening: true,
+    location: '中心靶场',
+  });
+  assert.equal(enterProfileB.mode, 'meeting');
+  assertValidMeetingPayload(capturedCalls[capturedCalls.length - 1].body.messages, '陆离', 'Leon S. Kennedy');
+  assert.ok(
+    !JSON.stringify(capturedCalls[capturedCalls.length - 1].body.messages).includes('奈恩'),
+    'Switching Profile dynamically rebinds {{user}} to 陆离 without 奈恩 residue'
+  );
+
+  // Scenario 9: System Log verification (records payload, active presets, sampling, usage, finish_reason, masks API key)
+  const logsResp = await engine.request('/system-logs');
+  assert.ok(Array.isArray(logsResp.logs) && logsResp.logs.length >= 6, 'System logs recorded for all LLM calls');
+  const latestLog = logsResp.logs[0];
+  assert.equal(latestLog.mode, 'meeting');
+  assert.match(latestLog.entry_point, /^meeting[_-]opening$/);
+  assert.equal(latestLog.profile_name, '陆离');
+  assert.equal(latestLog.character_name, 'Leon S. Kennedy');
+  assert.equal(latestLog.model, 'claude-3-7-sonnet');
+  assert.equal(latestLog.sampling.max_tokens, 8192);
+  assert.equal(latestLog.active_preset_count, 24);
+  assert.equal(latestLog.disabled_preset_count, 2);
+  assert.equal(latestLog.active_presets.length, 24);
+  assert.equal(latestLog.disabled_presets.length, 2);
+  assert.equal(latestLog.finish_reason, 'stop');
+  assert.equal(latestLog.usage.prompt_tokens, 3120);
+  assert.equal(latestLog.usage.completion_tokens, 890);
+  assert.equal(latestLog.usage.reasoning_tokens, 180);
+  assert.ok(latestLog.char_count_raw >= 800 && latestLog.char_count_parsed >= 800);
+  assert.ok(
+    !JSON.stringify(latestLog).includes('sk-live-secret-key-987654321'),
+    'Full API key is strictly masked in system logs'
+  );
+  assert.match(latestLog.headers_masked.Authorization, /^Bearer sk-l.*21$/);
+
+  // Backup export must never include systemLogs or api_key
+  const backupJson = JSON.parse(engine.exportData());
+  assert.equal(backupJson.data.connection.api_key, '');
+  assert.equal('systemLogs' in backupJson.data, false, 'System logs are excluded from backup exports');
+
+  // Scenario 11: Truncation (finish_reason="length") and HTTP Error handling in System Logs
+  mockResponseMode = 'truncated_length';
+  const truncReply = await engine.request('/message', {
+    profileId: profileB.id,
+    characterId: charLeon,
+    text: '我看着他继续往下说。',
+  });
+  assert.ok(truncReply.reply.text.length > 0);
+  const truncLog = (await engine.request('/system-logs')).logs[0];
+  assert.equal(truncLog.finish_reason, 'length');
+  assert.ok(truncLog.truncation_warning.includes('max_tokens'), 'Records clear truncation warning on finish_reason=length');
+  assert.ok(truncLog.reasoning_content.includes('构思场景连续性'), 'Captures reasoning_content when returned by model');
+
+  mockResponseMode = 'http_error';
+  const beforeErrCount = (await engine.request(`/thread?profileId=${profileB.id}&characterId=${charLeon}`)).messages.length;
+  const errReply = await engine.request('/message', {
+    profileId: profileB.id,
+    characterId: charLeon,
+    text: '测试接口异常时的降级保护。',
+  });
+  assert.ok(errReply.warning.includes('HTTP 502'), 'Returns HTTP error warning cleanly');
+  const afterErrCount = (await engine.request(`/thread?profileId=${profileB.id}&characterId=${charLeon}`)).messages.length;
+  assert.ok(afterErrCount > beforeErrCount, 'Preserves user message and history when API errors');
+  const errLog = (await engine.request('/system-logs')).logs[0];
+  assert.equal(errLog.http_status, 502);
+  assert.ok(errLog.error.includes('HTTP 502'), 'System log records HTTP failure details');
+
+  // Test append conflict diagnostics and user-triggered cleanup actions (disable_defaults & deduplicate)
+  await engine.request('/preset', {
+    id: 'meeting-main',
+    mode: 'meeting',
+    name: '线下见面 · 小说模式',
+    role: 'system',
+    enabled: true,
+    content: '默认保底说明',
+  });
+  await engine.request('/preset-import', {
+    import_mode: 'append',
+    preset: presetPack,
+  });
+  const conflictDiag = (await engine.request('/presets')).diagnostics.meeting;
+  assert.equal(conflictDiag.defaultAndCustomCoexist, true, 'Detects default + custom preset coexistence after append');
+  assert.ok(conflictDiag.duplicateCount >= 26, 'Detects duplicate entries after repeated append');
+
+  await engine.request('/preset', { action: 'disable_defaults', mode: 'meeting' });
+  const afterDisableDef = await engine.request('/preset', { action: 'deduplicate', mode: 'meeting' });
+  const finalMeetDiag = afterDisableDef.diagnostics.meeting || afterDisableDef.diagnostics;
+  assert.equal(finalMeetDiag.defaultAndCustomCoexist, false);
+  assert.equal(finalMeetDiag.duplicateCount, 0);
+  assert.equal(finalMeetDiag.enabledCount, 24);
+});
+

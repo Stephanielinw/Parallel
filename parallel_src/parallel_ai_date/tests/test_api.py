@@ -313,6 +313,53 @@ class ParallelAPITest(unittest.TestCase):
         user_turns=[m['content'] for m in compiled if m['role']=='user']
         self.assertIn('[短信 18:37] 这是用户自己发的原始文字', user_turns)
 
+    def test_10_round02_preset_lifecycle_and_system_logs(self):
+        pid=self.__class__.steph['id'];cid='re-game:leon:re2'
+        pack={'format':'elsewhere-preset','schemaVersion':1,'id':'r02-test','name':'小狗乐园结构验证','entries':[
+            {'id':'e1','name':'入园与选角仪式','role':'system','enabled':True,'group':'核心定位','content':'你是 {{char}}，唯一对手是 {{user}}。'},
+            {'id':'e2','name':'高饱和度感官电影流','role':'system','enabled':True,'group':'文风（单选）','content':'高饱和感官描写，围绕 {{char}} 与 {{user}}'},
+            {'id':'e3','name':'毛姆式冷眼世故','role':'system','enabled':False,'group':'文风（单选）','content':'冷眼旁观禁用内容'},
+            {'id':'e4','name':'白水烹鲜温润白描','role':'system','enabled':False,'group':'文风（单选）','content':'温润白描禁用内容'},
+            {'id':'e5','name':'动笔前连续性检查','role':'system','enabled':True,'group':'COT','content':'动笔前检查：先承接 {{user}} 的动作，检查 {{char}} 认知边界'},
+            {'id':'e6','name':'底部誓约与状态确认','role':'assistant','enabled':True,'group':'收尾','content':'【已完整读取】我已进入 {{char}} 并锁定 {{user}}'}
+        ]}
+        imp=self.call('/preset-import',{'import_mode':'replace','preset':pack})
+        self.assertEqual(imp['imported'],6)
+        diag=imp['diagnostics']['meeting']
+        self.assertEqual(diag['totalCount'],6)
+        self.assertEqual(diag['enabledCount'],4)
+        self.assertEqual(diag['disabledCount'],2)
+        self.assertEqual(diag['enabledStyleCount'],1)
+        self.assertTrue(diag['hasCotCheck'])
+        self.assertTrue(diag['hasBottomPledge'])
+
+        with server.connect() as db:
+            p=server.profile_get(db,pid)
+            msgs=server.compile_messages(db,p,server.BY_ID[cid],'meeting',trigger_opening=True)
+        full_str=json.dumps(msgs,ensure_ascii=False)
+        self.assertNotIn('冷眼旁观禁用内容',full_str)
+        self.assertNotIn('温润白描禁用内容',full_str)
+        self.assertNotIn('{{user}}',full_str)
+        self.assertNotIn('{{char}}',full_str)
+        self.assertEqual(msgs[0]['role'],'system')
+        self.assertEqual(msgs[-3]['role'],'system')
+        self.assertIn('动笔前检查：先承接 Stephanie 的动作',msgs[-3]['content'])
+        self.assertEqual(msgs[-2]['role'],'assistant')
+        self.assertIn('我已进入 Leon S. Kennedy 并锁定 Stephanie',msgs[-2]['content'])
+        self.assertEqual(msgs[-1]['role'],'user')
+        self.assertIn('【场景开启】',msgs[-1]['content'])
+
+        # Test max_tokens up to 32768 and system logs endpoints
+        s_res=self.call('/settings',{'max_tokens':8192})['settings']
+        self.assertEqual(s_res['max_tokens'],8192)
+        server.record_system_log({'mode':'meeting','entry_point':'meeting-opening','model':'test-m','char_count_raw':820,'char_count_parsed':820,'finish_reason':'stop'})
+        logs=self.call('/system-logs')['logs']
+        self.assertGreaterEqual(len(logs),1)
+        self.assertEqual(logs[0]['char_count_parsed'],820)
+        self.call('/system-logs-clear',{})
+        self.assertEqual(len(self.call('/system-logs')['logs']),0)
+
 if __name__=='__main__':unittest.main()
+
 
 

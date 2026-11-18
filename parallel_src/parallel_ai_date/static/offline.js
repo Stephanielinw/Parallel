@@ -18,7 +18,8 @@
   const stamp=()=>new Date().toISOString();
   const uid=()=>typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'p'+Math.random().toString(36).slice(2)+Date.now().toString(36);
   const pairKey=(p,c)=>p+'|'+c;
-  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:3000,auto_portraits:false,proactive_mode:'daily'}});
+  const DEFAULT_PRESET_IDS=new Set(DEFAULT_PRESETS.map(x=>x.id));
+  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},systemLogs:[],presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,auto_portraits:false,proactive_mode:'daily'}});
   let db;let storageAvailable=true;
   const PROTOCOL_LEADING_TAG_RE=/^(?:[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)[ \t]*)+/gm;
   const INLINE_TIMED_TAG_SEQ_RE=/(?:(?:\[|【)\s*(?:短信|见面)[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?\s*(?:\]|】)[ \t]*)+/g;
@@ -155,6 +156,12 @@
     }
     return changed;
   };
+  const inferPresetGroup=p=>{
+    if(p&&typeof p.group==='string'&&p.group.trim())return p.group.trim();
+    const nm=String(p?.name||'');
+    const slashIdx=nm.indexOf(' / ');
+    return slashIdx>0?nm.slice(0,slashIdx).trim():'';
+  };
   const ensureDbFields=target=>{
     target.photoDescriptions ||= {};
     target.queue ||= {};
@@ -166,16 +173,26 @@
     target.diaries ||= {};
     target.meetings ||= [];
     target.episodicMemories ||= [];
+    target.systemLogs ||= [];
     if(target.connection){
       target.connection.image_base_url ||= '';
       target.connection.image_api_key ||= '';
       target.connection.image_model ||= '';
       target.connection.proactive_mode ||= 'daily';
+      if(!target.connection.max_tokens||target.connection.max_tokens<100){
+        target.connection.max_tokens=4096;
+      }
     }
     if(Array.isArray(target.presets)){
       const cm=target.presets.find(x=>x.id==='chat-main');
       if(cm&&cm.content&&cm.content.includes('用自然、个性化、符合角色的简短聊天气泡')&&!cm.content.includes('|||')){
         cm.content=DEFAULT_PRESETS[0].content;
+      }
+      for(const p of target.presets){
+        if(p&&typeof p==='object'&&!p.group){
+          const g=inferPresetGroup(p);
+          if(g)p.group=g;
+        }
       }
     }
     sanitizeStoredData(target);
@@ -190,8 +207,8 @@
       if(pack.schemaVersion!==1||!Array.isArray(pack.entries)||pack.entries.length<1||pack.entries.length>200)bodyErr('Elsewhere 自有预设结构无效');
       const ids=new Set(),entries=pack.entries.map((x,i)=>{
         if(!x||typeof x.id!=='string'||ids.has(x.id)||typeof x.name!=='string'||!x.name.trim()||typeof x.content!=='string'||x.content.length>60000||!['system','user','assistant'].includes(x.role)||typeof x.enabled!=='boolean')bodyErr('Elsewhere 条目 '+(i+1)+' 格式无效');
-        ids.add(x.id);const group=String(x.group||'').trim().slice(0,70);
-        return {mode:'meeting',name:((group?group+' / ':'')+x.name.trim()).slice(0,100),role:x.role,content:x.content,enabled:x.enabled,sort_order:i};
+        ids.add(x.id);const group=String(x.group||'').trim().slice(0,70);const rawName=x.name.trim();
+        return {mode:'meeting',name:((group?group+' / ':'')+rawName).slice(0,100),raw_name:rawName.slice(0,100),group,source_id:x.id,origin:'elsewhere',role:x.role,content:x.content,enabled:x.enabled,sort_order:i};
       });return {modes:['meeting'],entries};
     }
     if(!pack||typeof pack!=='object'||Array.isArray(pack)||pack.format!=='parallel-text-preset'||pack.schemaVersion!==1)
@@ -200,12 +217,80 @@
     if(!Array.isArray(modes)||modes.length<1||modes.length>2||new Set(modes).size!==modes.length||modes.some(x=>!['chat','meeting'].includes(x)))bodyErr('预设的模式列表无效');
     if(!Array.isArray(entries)||entries.length<1||entries.length>200)bodyErr('预设应包含 1–200 个条目');
     if(new TextEncoder().encode(JSON.stringify(pack)).length>4*1024*1024)bodyErr('预设文件超过 4 MB');
-    const fields=['mode','name','role','enabled','content','sort_order'];
+    const reqFields=['mode','name','role','enabled','content','sort_order'];
+    const optFields=new Set(['mode','name','role','enabled','content','sort_order','group','source_id','origin','raw_name']);
     return {modes,entries:entries.map((x,i)=>{
-      const valid=x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).length===fields.length&&fields.every(k=>Object.prototype.hasOwnProperty.call(x,k))&&modes.includes(x.mode)&&['system','user','assistant'].includes(x.role)&&typeof x.name==='string'&&x.name.trim().length>0&&x.name.length<=100&&typeof x.content==='string'&&x.content.length<=60000&&typeof x.enabled==='boolean'&&Number.isInteger(x.sort_order)&&x.sort_order>=0&&x.sort_order<=10000;
+      const valid=x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).every(k=>optFields.has(k))&&reqFields.every(k=>Object.prototype.hasOwnProperty.call(x,k))&&modes.includes(x.mode)&&['system','user','assistant'].includes(x.role)&&typeof x.name==='string'&&x.name.trim().length>0&&x.name.length<=100&&typeof x.content==='string'&&x.content.length<=60000&&typeof x.enabled==='boolean'&&Number.isInteger(x.sort_order)&&x.sort_order>=0&&x.sort_order<=10000;
       if(!valid)bodyErr('预设条目 '+(i+1)+' 格式无效');
-      return {...x,name:x.name.trim()};
+      const group=String(x.group||inferPresetGroup(x)||'').trim().slice(0,70);
+      return {mode:x.mode,name:x.name.trim(),raw_name:String(x.raw_name||x.name).trim().slice(0,100),group,source_id:String(x.source_id||''),origin:String(x.origin||'parallel'),role:x.role,enabled:x.enabled,content:x.content,sort_order:x.sort_order};
     })};
+  };
+  const diagnosePresets=(mode='meeting')=>{
+    const all=(db.presets||[]).filter(x=>x.mode===mode).sort((a,b)=>a.sort_order-b.sort_order);
+    const enabled=all.filter(x=>x.enabled);
+    const disabled=all.filter(x=>!x.enabled);
+    const isDefaultEntry=x=>DEFAULT_PRESET_IDS.has(x.id)||(mode==='meeting'&&(x.name==='面对面 · 小说模式'||x.name==='线下见面 · 小说模式'||x.name==='克制与连贯')&&!x.group);
+    const defaultEnabled=enabled.filter(isDefaultEntry);
+    const customEnabled=enabled.filter(x=>!isDefaultEntry(x));
+    const defaultAndCustomCoexist=defaultEnabled.length>0&&customEnabled.length>0;
+    const seenContent=new Map();
+    const duplicateEntries=[];
+    for(const item of all){
+      const key=`${item.role}::${String(item.name||'').trim()}::${String(item.content||'').trim().slice(0,240)}`;
+      if(seenContent.has(key)){
+        duplicateEntries.push({id:item.id,name:item.name,enabled:!!item.enabled,duplicateOf:seenContent.get(key)});
+      }else{
+        seenContent.set(key,item.id);
+      }
+    }
+    const styleEntries=all.filter(x=>{
+      const g=inferPresetGroup(x);
+      return g.includes('文风')||String(x.name||'').startsWith('文风');
+    });
+    const enabledStyleEntries=styleEntries.filter(x=>x.enabled);
+    const cotEntries=enabled.filter(x=>{
+      const g=inferPresetGroup(x);
+      return g.toUpperCase()==='COT'||String(x.name||'').includes('动笔前')||String(x.name||'').toUpperCase().includes('COT /');
+    });
+    const pledgeEntries=enabled.filter(x=>x.role==='assistant'||inferPresetGroup(x).includes('誓约')||String(x.name||'').includes('誓约'));
+    const warnings=[];
+    if(defaultAndCustomCoexist){
+      warnings.push(`检测到系统默认保底预设（${defaultEnabled.map(x=>x.name).join('、')}）与导入的自定义预设同时启用。这通常是因为导入时选择了「追加导入」，可能导致简短保底指令稀释自定义预设的文风与篇幅规则。`);
+    }
+    if(duplicateEntries.length>0){
+      warnings.push(`检测到 ${duplicateEntries.length} 个重复的预设条目（可能是多次点击「追加导入」所致），重复注入会浪费上下文预算。`);
+    }
+    if(styleEntries.length>0&&enabledStyleEntries.length>1){
+      warnings.push(`「文风（单选）」分组当前同时启用了 ${enabledStyleEntries.length} 个文风条目（${enabledStyleEntries.map(x=>x.name).join('、')}），建议仅启用 1 个以防文风打架。`);
+    }else if(styleEntries.length>0&&enabledStyleEntries.length===0){
+      warnings.push(`「文风（单选）」分组当前未启用任何文风条目（共 ${styleEntries.length} 个均已停用）。`);
+    }
+    const rolesBreakdown={
+      system:enabled.filter(x=>x.role==='system').length,
+      user:enabled.filter(x=>x.role==='user').length,
+      assistant:enabled.filter(x=>x.role==='assistant').length
+    };
+    return {
+      mode,
+      totalCount:all.length,
+      enabledCount:enabled.length,
+      disabledCount:disabled.length,
+      totalEnabledChars:enabled.reduce((acc,x)=>acc+String(x.content||'').length,0),
+      hasCustomPresets:customEnabled.length>0,
+      defaultAndCustomCoexist,
+      defaultEnabledIds:defaultEnabled.map(x=>x.id),
+      duplicateCount:duplicateEntries.length,
+      duplicateEntries,
+      styleGroupTotal:styleEntries.length,
+      enabledStyleCount:enabledStyleEntries.length,
+      enabledStyleNames:enabledStyleEntries.map(x=>x.name),
+      disabledStyleNames:styleEntries.filter(x=>!x.enabled).map(x=>x.name),
+      hasCotCheck:cotEntries.length>0,
+      hasBottomPledge:pledgeEntries.length>0,
+      rolesBreakdown,
+      warnings
+    };
   };
 
   const getP=id=>db.profiles.find(p=>p.id===id)||bodyErr('请先选择有效的 Profile');
@@ -322,8 +407,8 @@
     const pending=q.pending.slice(),generation=q.revision||0,token=uid();q.pending=[];q.dueAt=0;q.status='inflight';q.inflight=token;save();
     const r=relation(p.id,c.id);let txt,engine='demo',warning='';
     // Compile before the first await: a later message never leaks into this request's history.
-    const msgs=prompt(p,c,'chat',pending);
-    if(curMode==='live'){try{txt=await llm(msgs);engine='live'}catch(e){warning=String(e.message||e);engine='error'}}else txt=demo(p,c,'chat');
+    const msgs=prompt(p,c,'chat',pending,{entry_point:'chat_flush'});
+    if(curMode==='live'){try{txt=await llm(msgs,{profile:p,character:c,mode:'chat',entry_point:'chat_flush'});engine='live'}catch(e){warning=String(e.message||e);engine='error'}}else txt=demo(p,c,'chat');
     if(q.inflight!==token||q.revision!==generation||r?.mode!=='chat'||r?.status!=='matched')return {reply:null,replies:[],discarded:true,queue:queueInfo(p.id,c.id)};
     q.status='idle';q.inflight='';let reply=null,replies=[];
     if(engine==='error'){
@@ -1259,13 +1344,49 @@
     return parts.join('；')+'。';
   };
   const selectWorkingHistory=(pid,cid,mode='chat')=>{
-    const chron=messagesOf(pid,cid).slice(-24);
-    if(!chron.length)return [];
-    const winLimit=mode==='meeting'?8:10;
+    const all=messagesOf(pid,cid);
+    if(!all.length)return [];
+    if(mode==='meeting'){
+      const r=relation(pid,cid);
+      const activeMid=r?.active_meeting_id||'';
+      const winLimit=16;
+      if(activeMid){
+        const curMeet=all.filter(m=>m.mode==='meeting'&&m.meeting_id===activeMid);
+        if(curMeet.length)return curMeet.slice(-winLimit);
+      }
+      const trailingMeet=[];
+      for(let i=all.length-1;i>=0;i--){
+        if(all[i].mode==='meeting')trailingMeet.unshift(all[i]);
+        else if(trailingMeet.length)break;
+      }
+      if(trailingMeet.length)return trailingMeet.slice(-winLimit);
+      return all.filter(m=>m.mode==='meeting').slice(-winLimit);
+    }
+    const chron=all.slice(-24);
+    const winLimit=10;
     const todayPrefix=String(chron[chron.length-1].created_at).slice(0,10);
     const todayMsgs=chron.filter(m=>String(m.created_at).slice(0,10)===todayPrefix);
     if(todayMsgs.length>=4)return todayMsgs.slice(-winLimit);
     return chron.slice(-Math.min(6,winLimit));
+  };
+  const selectPreMeetingChatContext=(pid,cid,limit=6)=>{
+    const all=messagesOf(pid,cid);
+    if(!all.length)return [];
+    return all.filter(m=>m.mode==='chat'&&m.engine!=='recalled'&&!m.recalled).slice(-limit);
+  };
+  const expandPresetMacros=(text,p,c)=>{
+    return String(text??'')
+      .replace(/\{\{\s*user\s*\}\}/gi,p.name)
+      .replace(/\{\{\s*char\s*\}\}/gi,c.name)
+      .replace(/<\s*user\s*>/gi,p.name)
+      .replace(/<\s*char\s*>/gi,c.name);
+  };
+  const isPostHistoryPreset=entry=>{
+    if(!entry)return false;
+    if(entry.role!=='system')return true;
+    const g=inferPresetGroup(entry).toUpperCase();
+    const nm=String(entry.name||'').toUpperCase();
+    return g==='COT'||g.includes('底部')||g.includes('誓约')||nm.includes('COT')||nm.includes('动笔前')||nm.includes('连续性检查')||nm.includes('底部誓约');
   };
   const event=(pid,cid,type,summary)=>{
     const nowStr=stamp();
@@ -1342,25 +1463,43 @@
     const mapped=norm(aliasMap[nq]||q);
     return CATALOG.filter(c=>(!source||c.source===source||c.version===source||sourceMatches(source,c))&&[c.name,...c.aliases].some(a=>a.toLowerCase()===q||a.toLowerCase().split(/\s+/).includes(q)||norm(a)===nq||norm(a)===mapped||(nq.length>=2&&norm(a).includes(nq)))).slice(0,20).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,age:c.age,canon:c.canon}));
   };
-  const prompt=(p,c,mode,pendingIds=[])=>{
-    const macros=t=>t.replace(/\{\{user\}\}/g,p.name).replace(/\{\{char\}\}/g,c.name);
+  const prompt=(p,c,mode,pendingIds=[],options={})=>{
+    const macros=t=>expandPresetMacros(t,p,c);
     const workingHistory=selectWorkingHistory(p.id,c.id,mode);
     const workingIds=new Set(workingHistory.map(m=>m.id));
+    ensureMeetingRecords(p,c);
     ensureDailySummaries(p,c,workingIds);
-    const querySeed=workingHistory.slice(-3).filter(m=>m.sender==='user').map(m=>String(m.text??'').trim()).join(' ')||workingHistory.slice(-2).map(m=>m.sender==='user'?String(m.text??'').trim():cleanChatBubbleText(m.text)).join(' ');
+    const preChatContext=mode==='meeting'?selectPreMeetingChatContext(p.id,c.id,6):[];
+    const querySeed=(options.latestText||'').trim()
+      ||workingHistory.slice(-3).filter(m=>m.sender==='user').map(m=>String(m.text??'').trim()).join(' ')
+      ||workingHistory.slice(-2).map(m=>m.sender==='user'?String(m.text??'').trim():cleanChatBubbleText(m.text)).join(' ')
+      ||preChatContext.slice(-2).map(m=>m.sender==='user'?String(m.text??'').trim():cleanChatBubbleText(m.text)).join(' ');
     const recalled=retrieveRelevantMemories(p.id,c.id,querySeed,workingIds,4,1200);
     const relSummary=relationshipBaselineSummary(p.id,c.id,p.name);
     const interestsStr=(p.interests||[]).join('、')||'未填写';
     const intentStr=p.intent||'未填写';
+    const curSurv=getCurrentSurveillanceSlot(p,c);
+    const meetingLoc=relation(p.id,c.id)?.meeting_location||curSurv?.location||'约定的街角咖啡馆';
     let sys='你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n';
     sys+=`【第一层 · 身份记忆 (Identity Memory)】\n你的身份：${c.name}（角色ID：${c.id}）。来源：${c.source}。时期：${c.version}。已收录背景：${c.canon}。\n当前互动对象 Profile：${p.name}，${p.age}岁，性别${p.gender}，交友目的：${intentStr}，兴趣爱好：${interestsStr}；公开简介：${p.bio}。`;
     if(p.role_character_id&&byId.has(p.role_character_id)){const x=byId.get(p.role_character_id);sys+=`\n对方扮演的原作人物：${x.name}（${x.source} ${x.version}），${x.canon}。`}
     else if(p.role_hint)sys+=`\n对方提供的身份说明（未验证）：${p.role_hint.slice(0,240)}`;
     sys+=`\n\n【第二层 · 关系记忆基线 (Relationship Memory)】\n${relSummary}`;
+    if(mode==='meeting'){
+      sys+=`\n当前见面地点：「${meetingLoc}」${curSurv?`（实时状态同步：${curSurv.activity}）`:''}。`;
+    }
     if(recalled.length){
       sys+=`\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n`+recalled.map(formatEpisodicEntry).join('\n');
     }else{
       sys+=`\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n（当前话题未触发额外远期档案，仅依靠下方今日活跃上下文连贯交流）`;
+    }
+    if(mode==='meeting'&&preChatContext.length){
+      const smsLines=preChatContext.map(m=>{
+        const who=m.sender==='ai'?c.name:p.name;
+        const body=m.sender==='user'?String(m.text??'').trim():(cleanChatBubbleText(m.text)||'…');
+        return `- [${fmtHHMM(m.created_at)||'--:--'} 手机消息] ${who}：${body.slice(0,140)}`;
+      });
+      sys+=`\n\n【见面前的近期手机联系脉络（仅供剧情前情参考，严禁模仿手机短信的简短篇幅或气泡格式）】\n`+smsLines.join('\n');
     }
     const timelineLines=[];
     const historyTurns=[];
@@ -1381,6 +1520,39 @@
       sys+=`\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n`+timelineLines.join(' ｜ ');
     }
     const presets=db.presets.filter(x=>x.mode===mode&&x.enabled).sort((a,b)=>a.sort_order-b.sort_order);
+    if(mode==='meeting'){
+      // Split presets into pre-history foundational system rules vs post-history (COT / non-system / bottom pledge)
+      let splitIdx=presets.findIndex(x=>isPostHistoryPreset(x));
+      if(splitIdx<0)splitIdx=presets.length;
+      const corePresets=presets.slice(0,splitIdx);
+      const postPresets=presets.slice(splitIdx);
+      const coreSysText=corePresets.filter(x=>x.role==='system').map(x=>macros(x.content)).join('\n\n');
+      if(coreSysText)sys+='\n\n'+coreSysText;
+      const chat=[{role:'system',content:sys}];
+      // Any non-system entries that appeared early in corePresets
+      for(const x of corePresets){
+        if(x.role!=='system')chat.push({role:x.role,content:macros(x.content)});
+      }
+      const hasTrailingUser=historyTurns.length>0&&historyTurns[historyTurns.length-1].role==='user';
+      const priorHistory=hasTrailingUser?historyTurns.slice(0,-1):historyTurns.slice();
+      const finalUserTurn=hasTrailingUser
+        ?historyTurns[historyTurns.length-1]
+        :{
+          role:'user',
+          content:historyTurns.length===0
+            ?(options.latestText||`【场景开启】${p.name} 与 ${c.name} 现已在「${meetingLoc}」当面相见。请承接上方的角色设定、双方关系记忆、见面前消息脉络，并严格遵循当前已启用预设的文风、叙事与篇幅规则，描写本次见面的开场第一幕，在自然交接点停下，留给 ${p.name} 回应空间。`)
+            :(options.latestText||`【继续推进】请紧接上一轮结尾的现场状态、动作与气氛，继续往下描写 ${c.name} 在「${meetingLoc}」中的反应与场景推进，不要重复上一轮已写过的内容，严格遵循当前已启用预设的文风与篇幅规则，在自然交接点收束。`)
+        };
+      chat.push(...priorHistory);
+      const postSystemParts=postPresets.filter(x=>x.role==='system').map(x=>macros(x.content));
+      postSystemParts.push(`【第四层 · 当前状态 (Current State)】当前见面地点：「${meetingLoc}」。请严格按照上方已启用的预设模块规则（含文风、视角、去油腻、连续性及正文篇幅要求）输出面对面小说正文；只决定 ${c.name} 自己与环境中合理的事，不要替 ${p.name} 说话、行动或决定心理，不要在正文开头添加任何时间或模式标签。`);
+      chat.push({role:'system',content:postSystemParts.join('\n\n')});
+      for(const x of postPresets){
+        if(x.role!=='system')chat.push({role:x.role,content:macros(x.content)});
+      }
+      chat.push(finalUserTurn);
+      return chat;
+    }
     sys+='\n\n'+presets.filter(x=>x.role==='system').map(x=>macros(x.content)).join('\n\n');
     const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)})),...historyTurns];
     let batchHint='';
@@ -1391,22 +1563,191 @@
         batchHint=`\n【打包消息时间线】你在未看手机的这段时间里，对方陆续给你发来了 ${bundledRows.length} 条消息（按发送时间先后：${timelineStr}）。你现在刚拿起手机把这些消息一次性读完，请结合这些消息各自的时间戳跨度与内容，像真人一样自然连贯地统一回复。`;
       }
     }
-    const curSurv=getCurrentSurveillanceSlot(p,c);
     const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】当前时间 ${fmtHHMM(Date.now())||'12:00'}，你此刻身处「${curSurv.location}」，状态：「${curSurv.activity}」（现场细节：${curSurv.scene}）。若对方问起你在哪、在做什么或提出现在见面，请严格以此真实位置与状态为准，保持世界观与地点一致。`:'';
-    chat.push({role:'system',content:'【第四层 · 当前状态 (Current State)】'+(mode==='meeting'?`当前必须以面对面小说式 RP 写下一条回复（当前见面地点：${relation(p.id,c.id)?.meeting_location||curSurv?.location||'约定的街角咖啡馆'}）。不要控制玩家角色，不要在正文开头添加任何时间或模式标签。`:'当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint)});
+    chat.push({role:'system',content:'【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint});
     return chat;
   };
   function getApiUrl(suffix){const b=db.connection.base_url.trim().replace(/\/+$/,'');if(!/^https?:\/\//.test(b))bodyErr('API Base URL 需要以 http:// 或 https:// 开头');if(/^http:\/\//.test(b)&&!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/.test(b))bodyErr('远程 API 必须使用 HTTPS');return b+suffix}
+  const maskApiKey=k=>{
+    const s=String(k||'').trim();
+    if(!s)return '';
+    if(s.length<=8)return '***REDACTED***';
+    return s.slice(0,4)+'***REDACTED***'+s.slice(-3);
+  };
+  const recordSystemLog=entry=>{
+    db.systemLogs ||= [];
+    db.systemLogs.unshift(entry);
+    if(db.systemLogs.length>40){
+      db.systemLogs=db.systemLogs.slice(0,40);
+    }
+    try{save();}catch(e){}
+    return entry;
+  };
   async function llm(messages,options={}){
     const s=db.connection;if(!s.base_url||!s.api_key||!s.model)bodyErr('还没有配置可用的 API 地址、密钥及模型');
-    const payload={model:s.model,messages,temperature:s.temperature,top_p:s.top_p,max_tokens:options.max_tokens||s.max_tokens};
+    const reqMaxTokens=Number(options.max_tokens||s.max_tokens||4096);
+    const payload={model:s.model,messages,temperature:s.temperature,top_p:s.top_p,max_tokens:reqMaxTokens};
     if(options.json_mode)payload.response_format={type:'json_object'};
-    let res;try{res=await fetch(getApiUrl('/chat/completions'),{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.api_key},body:JSON.stringify(payload)})}
-    catch(e){bodyErr('浏览器无法直连模型（可能是 API 不允许跨域 CORS）。可改用随项目提供的 Python 本地服务器版。')}
-    if(!res.ok)bodyErr('模型接口错误 HTTP '+res.status);
-    const data=await res.json();let result=data?.choices?.[0]?.message?.content;
+    const mode=options.mode|| (options.json_mode?'json':'chat');
+    const pObj=options.profile||null;
+    const cObj=options.character||null;
+    const entryPoint=options.entry_point||mode;
+    const presetMode=(mode==='meeting'||mode==='chat')?mode:null;
+    const modePresets=presetMode?(db.presets||[]).filter(x=>x.mode===presetMode).sort((a,b)=>a.sort_order-b.sort_order):[];
+    const enabledPresets=modePresets.filter(x=>x.enabled);
+    const disabledPresets=modePresets.filter(x=>!x.enabled);
+    const activePresetsSummary=enabledPresets.map((x,idx)=>({
+      order:idx+1,
+      id:x.id,
+      source_id:x.source_id||'',
+      name:x.name,
+      group:inferPresetGroup(x),
+      role:x.role,
+      sort_order:x.sort_order,
+      chars:String(x.content||'').length,
+      char_count:String(x.content||'').length
+    }));
+    const endpoint=getApiUrl('/chat/completions');
+    const startedMs=Date.now();
+    const logBase={
+      id:'log_'+uid(),
+      created_at:stamp(),
+      profile_id:pObj?.id||'',
+      profile_name:pObj?.name||'',
+      character_id:cObj?.id||'',
+      character_name:cObj?.name||'',
+      mode,
+      entry_point:entryPoint,
+      model:s.model,
+      endpoint,
+      headers_masked:{
+        'Content-Type':'application/json',
+        'Authorization':'Bearer '+maskApiKey(s.api_key)
+      },
+      sampling:{
+        temperature:s.temperature,
+        top_p:s.top_p,
+        max_tokens:reqMaxTokens
+      },
+      active_preset_count:enabledPresets.length,
+      disabled_preset_count:disabledPresets.length,
+      active_presets:activePresetsSummary,
+      disabled_presets:disabledPresets.map(x=>({id:x.id,name:x.name,group:inferPresetGroup(x),role:x.role})),
+      request_payload:JSON.parse(JSON.stringify(payload))
+    };
+    let res;
+    try{
+      res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.api_key},body:JSON.stringify(payload)});
+    }catch(e){
+      const errMsg='浏览器无法直连模型（可能是 API 不允许跨域 CORS）。可改用随项目提供的 Python 本地服务器版。';
+      recordSystemLog({
+        ...logBase,
+        status:'error',
+        http_status:0,
+        duration_ms:Date.now()-startedMs,
+        error:errMsg+' ('+String(e?.message||e)+')',
+        raw_response:null,
+        raw_content:'',
+        reasoning_content:'',
+        parsed_content:'',
+        char_count_raw:0,
+        char_count_parsed:0,
+        finish_reason:'network_error',
+        usage:null,
+        truncation_warning:''
+      });
+      bodyErr(errMsg);
+    }
+    if(!res.ok){
+      let errBody='';
+      try{errBody=await res.text();}catch(e){}
+      const errMsg='模型接口错误 HTTP '+res.status;
+      recordSystemLog({
+        ...logBase,
+        status:'error',
+        http_status:res.status,
+        duration_ms:Date.now()-startedMs,
+        error:errMsg+(errBody?`: ${errBody.slice(0,500)}`:''),
+        raw_response:errBody?errBody.slice(0,2000):null,
+        raw_content:'',
+        reasoning_content:'',
+        parsed_content:'',
+        char_count_raw:0,
+        char_count_parsed:0,
+        finish_reason:'http_'+res.status,
+        usage:null,
+        truncation_warning:''
+      });
+      bodyErr(errMsg);
+    }
+    const data=await res.json();
+    const choice=(data?.choices||[])[0]||{};
+    const msgObj=choice.message||{};
+    let result=msgObj.content;
     if(Array.isArray(result))result=result.map(x=>x.text||'').join('');
-    if(typeof result!=='string')bodyErr('模型未返回可用文本');return result.trim();
+    const reasoningRaw=typeof msgObj.reasoning_content==='string'?msgObj.reasoning_content:(typeof choice.reasoning==='string'?choice.reasoning:'');
+    const finishReason=choice.finish_reason||data?.finish_reason||null;
+    const usageRaw=data?.usage||null;
+    const reasoningTokens=usageRaw?.completion_tokens_details?.reasoning_tokens??usageRaw?.reasoning_tokens??null;
+    const usage=usageRaw?{
+      prompt_tokens:usageRaw.prompt_tokens??null,
+      completion_tokens:usageRaw.completion_tokens??null,
+      total_tokens:usageRaw.total_tokens??null,
+      reasoning_tokens:reasoningTokens
+    }:null;
+    if(typeof result!=='string'||!result.trim()){
+      const emptyReason=finishReason==='length'
+        ?'模型因达到 max_tokens 长度上限而被截断（可能是思维链/推理消耗了全部 max_tokens 预算，建议调大 Max tokens 至 4096–8192）'
+        :'模型未返回可用文本';
+      recordSystemLog({
+        ...logBase,
+        status:'error',
+        http_status:res.status,
+        duration_ms:Date.now()-startedMs,
+        error:emptyReason,
+        raw_response:data,
+        raw_content:typeof result==='string'?result:'',
+        reasoning_content:reasoningRaw,
+        parsed_content:'',
+        char_count_raw:typeof result==='string'?result.length:0,
+        char_count_parsed:0,
+        finish_reason:finishReason,
+        usage,
+        truncation_warning:finishReason==='length'?'finish_reason=length：输出因达到 max_tokens 上限被截断':''
+      });
+      bodyErr(emptyReason);
+    }
+    const rawTrimmed=result.trim();
+    const parsedPreview=mode==='meeting'
+      ?cleanMeetingNovelText(rawTrimmed)
+      :(mode==='chat'?splitChatBubbles(rawTrimmed).join('\n'):rawTrimmed);
+    const truncWarnings=[];
+    if(finishReason==='length'){
+      truncWarnings.push('模型返回 finish_reason="length"，说明正文因达到 max_tokens 上限而被中途截断，建议在「终端 -> 连接与模型」调大 Max tokens。');
+    }
+    if(reasoningTokens&&reqMaxTokens&&(reasoningTokens/reqMaxTokens)>0.6){
+      truncWarnings.push(`推理/思维链消耗了 ${reasoningTokens} tokens（占 max_tokens ${reqMaxTokens} 的 ${Math.round(reasoningTokens*100/reqMaxTokens)}%），可能导致正文字数被压缩。`);
+    }
+    if(parsedPreview.length<rawTrimmed.length){
+      truncWarnings.push(`协议标签清洗移除了 ${rawTrimmed.length-parsedPreview.length} 个字符（如行首 [见面/短信 HH:MM] 标签），未截断正文段落。`);
+    }
+    recordSystemLog({
+      ...logBase,
+      status:'success',
+      http_status:res.status,
+      duration_ms:Date.now()-startedMs,
+      error:'',
+      raw_response:data,
+      raw_content:rawTrimmed,
+      reasoning_content:reasoningRaw,
+      parsed_content:parsedPreview,
+      char_count_raw:rawTrimmed.length,
+      char_count_parsed:parsedPreview.length,
+      finish_reason:finishReason,
+      usage,
+      truncation_warning:truncWarnings.join(' ')
+    });
+    return rawTrimmed;
   }
   async function generateBios(selected,forceRefresh=false){
     if(pub().mode!=='live')return 'catalog-demo';
@@ -1415,7 +1756,7 @@
     const compact=pending.map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,canon:c.canon,current_bio:db.bios[c.id]||c.bio,tags:c.tags}));
     const rules='根据给定的、已收录的原作人物身份，为他们各写一条符合当下性格与心境的约会软件公开档案（包含一句自然独特的个人简介 bio，以及 2–3 个个性标签 tags）。不得编造新的角色、错误时间线或伪造重要原作事实；若是刷新，请换一个贴合人设的新角度描写。每条中文 bio 不超过80字，真实自然。只输出 JSON 对象，形如 {"profiles":[{"id":"exact-id","bio":"...","tags":["标签1","标签2"]}]}，只用输入中的ID。';
     try{
-      const out=await llm([{role:'system',content:rules},{role:'user',content:JSON.stringify(compact)}],{json_mode:true,max_tokens:950});
+      const out=await llm([{role:'system',content:rules},{role:'user',content:JSON.stringify(compact)}],{json_mode:true,max_tokens:950,mode:'bio',entry_point:'discover_bios'});
       const val=JSON.parse(out);
       const valid=new Set(pending.map(c=>c.id));let count=0;
       for(const x of (val?.profiles||[])){
@@ -1454,13 +1795,24 @@
     }
     return past<3?'嗯，我在。|||你想先从什么聊起？':['这点倒是挺有意思。|||不过……你为什么会突然这么想？','等一下。|||我刚忙完手头的事，现在空下来了。|||你刚刚说的那个，我其实一直记得。','我可能需要想一想再回答你。','真的？|||你有时候真的会让我意外。|||那下次见面的时候，当面跟我细说吧。'][past%4];
   };
-  async function produceReply(p,c,mode,userMsg=null){
+  async function produceReply(p,c,mode,userMsg=null,entryPoint=''){
     const curMode=pub().mode;
     if(curMode==='normal'){
       return {reply:null,replies:[],warning:'当前处于正常模式且尚未连接 API，请先在「终端」配置 API 后再试。'};
     }
+    const ep=entryPoint||(mode==='meeting'?(userMsg?'meeting_message':'meeting_continue'):(userMsg?'chat_message':'chat_continue'));
     let engine='demo',warning='',txt;
-    if(curMode==='live'){try{txt=await llm(prompt(p,c,mode));engine='live'}catch(e){warning=String(e.message||e);txt='（模型连接失败，历史已保存。请检查终端设置，再尝试角色回复。）';engine='error'}}
+    if(curMode==='live'){
+      try{
+        const compiled=prompt(p,c,mode,[],{entry_point:ep,latestText:userMsg?.text||''});
+        txt=await llm(compiled,{profile:p,character:c,mode,entry_point:ep});
+        engine='live';
+      }catch(e){
+        warning=String(e.message||e);
+        txt='（模型连接失败，历史已保存。请检查终端设置，再尝试角色回复。）';
+        engine='error';
+      }
+    }
     else txt=demo(p,c,mode);
     const bubbleTexts=engine==='error'?[txt]:(mode==='chat'?splitChatBubbles(txt):[cleanMeetingNovelText(txt)]);
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai',mode,bTxt,engine));
@@ -1474,7 +1826,7 @@
     }
     return {reply,replies,warning};
   }
-  async function matchDecision(p,c,attempt){if(pub().mode==='live'){try{const interestsStr=(p.interests||[]).join('、')||'未填写',intentStr=p.intent||'未填写';const text=await llm([{role:'system',content:`你是 ${c.name}（${c.source} ${c.version}）。原作身份：${c.canon}。对方 ${p.name}，${p.age}岁，交友目的：${intentStr}，兴趣爱好：${interestsStr}，简介 ${p.bio}。你有自己的择偶标准，可自由决定是否右滑同意匹配。只输出 JSON 对象 {"match":true/false}。`},{role:'user',content:'你是否想匹配？'}],{json_mode:true,max_tokens:70});return {matched:!!JSON.parse(text).match,engine:'live'}}catch(e){/* fallback */}}
+  async function matchDecision(p,c,attempt){if(pub().mode==='live'){try{const interestsStr=(p.interests||[]).join('、')||'未填写',intentStr=p.intent||'未填写';const text=await llm([{role:'system',content:`你是 ${c.name}（${c.source} ${c.version}）。原作身份：${c.canon}。对方 ${p.name}，${p.age}岁，交友目的：${intentStr}，兴趣爱好：${interestsStr}，简介 ${p.bio}。你有自己的择偶标准，可自由决定是否右滑同意匹配。只输出 JSON 对象 {"match":true/false}。`},{role:'user',content:'你是否想匹配？'}],{json_mode:true,max_tokens:70,profile:p,character:c,mode:'match',entry_point:'match_decision'});return {matched:!!JSON.parse(text).match,engine:'live'}}catch(e){/* fallback */}}
     let h=Math.imul(attempt,2654435761)|0;for(const ch of p.id+c.id+String(attempt))h=(Math.imul(31,h)+ch.charCodeAt(0))|0;return {matched:attempt>=4||((h>>>0)%100<72),engine:pub().mode==='live'?'live':'demo'};
   }
   async function firstMessage(p,c,again){
@@ -1484,9 +1836,9 @@
     }
     if(curMode==='live'){
       try{
-        const ms=prompt(p,c,'chat');
+        const ms=prompt(p,c,'chat',[],{entry_point:'chat_first_message'});
         ms.push({role:'user',content:again?`【系统事件：重逢匹配】你刚刚和 ${p.name} 重新匹配上了，你记得你们之前的经历。请根据你的性格与过往记忆，主动发 1～2 条有真实重逢感的手机开场消息（多条气泡之间用 ||| 分隔，绝不要用生硬套话）。`:`【系统事件：首次匹配】你刚刚在约会软件上与 ${p.name} 互相右滑匹配成功。请结合你的原作性格、所处境遇以及对方的公开资料（简介：${p.bio||'无'}；兴趣：${(p.interests||[]).join('、')||'无'}），主动给对方发 1～2 条自然、有个人特色的第一条手机消息（多条气泡之间用 ||| 分隔，绝对不要说“看来我们匹配上了”这种千篇一律的套话）。`});
-        const raw=await llm(ms,{max_tokens:220});
+        const raw=await llm(ms,{max_tokens:220,profile:p,character:c,mode:'chat',entry_point:'chat_first_message'});
         return {bubbles:splitChatBubbles(raw),engine:'live'};
       }catch(e){}
     }
@@ -1499,10 +1851,10 @@
     let engine='demo',txt='';
     if(curMode==='live'){
       try{
-        const ms=prompt(p,c,'chat');
+        const ms=prompt(p,c,'chat',[],{entry_point:'chat_proactive'});
         const memHint=unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
         ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
-        txt=await llm(ms,{max_tokens:220});
+        txt=await llm(ms,{max_tokens:220,profile:p,character:c,mode:'chat',entry_point:'chat_proactive'});
         engine='live';
       }catch(e){
         return {replies:[],warning:String(e.message||e)};
@@ -1559,6 +1911,7 @@
         if(data.image_api_key)s.image_api_key=String(data.image_api_key).slice(0,1000);
         for(const k of ['model','image_model'])if(k in data)s[k]=String(data[k]||'').slice(0,200);
         for(const k of ['temperature','top_p','max_tokens'])if(k in data)s[k]=Number(data[k]);
+        if(s.max_tokens)s.max_tokens=Math.max(100,Math.min(32768,Math.round(s.max_tokens)));
         save();return {settings:pub()};
       }
       case '/models':{
@@ -1824,7 +2177,7 @@
             syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
             event(p.id,c.id,'meeting','与 '+p.name+' 开始面对面见面');
             if(data.triggerOpening===true&&pub().mode!=='normal'){
-              const res=await produceReply(p,c,'meeting',null);
+              const res=await produceReply(p,c,'meeting',null,'meeting_opening');
               openingReply=res.reply;
               warning=res.warning||'';
               const mMsgs=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===r.active_meeting_id);
@@ -1849,7 +2202,7 @@
                   const sumJson=await llm([
                     {role:'system',content:`请根据以下 ${c.name} 与 ${p.name} 的见面互动记录，提取见面地点与一句温暖简练的见面梗概（如：和${p.name}在街角咖啡馆见面，聊了近况并度过了安静的傍晚）。只输出 JSON 对象：{"location":"地点（不超过12字）","summary":"见面梗概（不超过65字）"}`},
                     {role:'user',content:transcript}
-                  ],{json_mode:true,max_tokens:160});
+                  ],{json_mode:true,max_tokens:160,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize'});
                   const parsed=JSON.parse(sumJson);
                   if(parsed.location&&!locInput)aiLoc=String(parsed.location).trim().slice(0,32);
                   if(parsed.summary)aiSum=String(parsed.summary).trim().slice(0,150);
@@ -1911,9 +2264,18 @@
         }
         const qi=queueInfo(p.id,c.id);
         if(mode==='chat'&&(qi.count||qi.status==='inflight'))return await flushQueue(p,c,true);
-        const response=await produceReply(p,c,mode,user);r.updated_at=stamp();save();return {user,reply:response.reply,replies:response.replies||[],auto_meeting:false,mode,warning:response.warning};
+        const ep=route==='/message'?(mode==='meeting'?'meeting_message':'chat_message'):(mode==='meeting'?'meeting_continue':'chat_continue');
+        const response=await produceReply(p,c,mode,user,ep);
+        if(mode==='meeting'&&r.active_meeting_id){
+          const mMsgs=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===r.active_meeting_id);
+          if(mMsgs.length)upsertMeetingRecord(p,c,r.active_meeting_id,mMsgs,r.meeting_location||'');
+        }
+        r.updated_at=stamp();save();return {user,reply:response.reply,replies:response.replies||[],auto_meeting:false,mode,warning:response.warning};
       }
-      case '/presets':return {entries:db.presets.slice().sort((a,b)=>a.mode.localeCompare(b.mode)||a.sort_order-b.sort_order)};
+      case '/presets':return {
+        entries:db.presets.slice().sort((a,b)=>a.mode.localeCompare(b.mode)||a.sort_order-b.sort_order),
+        diagnostics:{chat:diagnosePresets('chat'),meeting:diagnosePresets('meeting')}
+      };
       case '/preset-import':{
         const how=data.import_mode;if(!['append','replace'].includes(how))bodyErr('请选择追加或替换预设');
         const {modes,entries}=validatePresetPackage(data.preset);
@@ -1922,12 +2284,48 @@
           const offset=Math.max(-1,...next.filter(x=>x.mode===mode).map(x=>x.sort_order))+1;
           entries.filter(x=>x.mode===mode).sort((a,b)=>a.sort_order-b.sort_order).forEach((x,i)=>next.push({...x,id:uid(),sort_order:offset+i}));
         }
-        db.presets=next;save();return {ok:true,imported:entries.length,modes};
+        db.presets=next;save();return {ok:true,imported:entries.length,modes,diagnostics:{chat:diagnosePresets('chat'),meeting:diagnosePresets('meeting')}};
       }
       case '/preset':{
-        if(data.action==='delete'){db.presets=db.presets.filter(x=>x.id!==data.id);save();return {ok:true}}
-        if(data.action==='order'){(data.ids||[]).forEach((id,i)=>{const x=db.presets.find(p=>p.id===id);if(x)x.sort_order=i});save();return {ok:true}}
-        const mode=data.mode||'chat',role=data.role||'system';if(!['chat','meeting'].includes(mode)||!['system','user','assistant'].includes(role))bodyErr('预设模式不正确');const old=db.presets.find(x=>x.id===data.id),id=old?.id||uid();const obj={id,mode,name:String(data.name||'新条目').slice(0,100),role,content:String(data.content||'').slice(0,60000),enabled:!!data.enabled,sort_order:old?.sort_order??(Math.max(-1,...db.presets.filter(x=>x.mode===mode).map(x=>x.sort_order))+1)};if(old)Object.assign(old,obj);else db.presets.push(obj);save();return {ok:true,id};
+        if(data.action==='delete'){db.presets=db.presets.filter(x=>x.id!==data.id);save();return {ok:true,diagnostics:{chat:diagnosePresets('chat'),meeting:diagnosePresets('meeting')}}}
+        if(data.action==='order'){(data.ids||[]).forEach((id,i)=>{const x=db.presets.find(p=>p.id===id);if(x)x.sort_order=i});save();return {ok:true,diagnostics:{chat:diagnosePresets('chat'),meeting:diagnosePresets('meeting')}}}
+        if(data.action==='disable_defaults'){
+          const targetMode=data.mode||'meeting';
+          for(const x of db.presets){
+            if(x.mode===targetMode&&(DEFAULT_PRESET_IDS.has(x.id)||(x.name==='面对面 · 小说模式'||x.name==='线下见面 · 小说模式'||x.name==='克制与连贯')&&!x.group)){
+              x.enabled=false;
+            }
+          }
+          save();return {ok:true,diagnostics:{chat:diagnosePresets('chat'),meeting:diagnosePresets('meeting')}};
+        }
+        if(data.action==='deduplicate'){
+          const targetMode=data.mode||'meeting';
+          const seen=new Set();
+          db.presets=db.presets.filter(x=>{
+            if(x.mode!==targetMode)return true;
+            const k=`${x.role}::${String(x.name||'').trim()}::${String(x.content||'').trim().slice(0,240)}`;
+            if(seen.has(k))return false;
+            seen.add(k);
+            return true;
+          });
+          save();return {ok:true,diagnostics:{chat:diagnosePresets('chat'),meeting:diagnosePresets('meeting')}};
+        }
+        const mode=data.mode||'chat',role=data.role||'system';if(!['chat','meeting'].includes(mode)||!['system','user','assistant'].includes(role))bodyErr('预设模式不正确');const old=db.presets.find(x=>x.id===data.id),id=old?.id||uid();const nameStr=String(data.name||'新条目').slice(0,100);const groupStr=String(data.group??old?.group??inferPresetGroup({name:nameStr})??'').trim().slice(0,70);const obj={id,mode,name:nameStr,group:groupStr,source_id:old?.source_id||'',origin:old?.origin||'parallel',role,content:String(data.content||'').slice(0,60000),enabled:!!data.enabled,sort_order:old?.sort_order??(Math.max(-1,...db.presets.filter(x=>x.mode===mode).map(x=>x.sort_order))+1)};if(old)Object.assign(old,obj);else db.presets.push(obj);save();return {ok:true,id,diagnostics:{chat:diagnosePresets('chat'),meeting:diagnosePresets('meeting')}};
+      }
+      case '/system-logs':{
+        const modeFilter=String(params.get('mode')||data.mode||'').trim();
+        const logs=(db.systemLogs||[]).filter(l=>!modeFilter||l.mode===modeFilter);
+        return {logs};
+      }
+      case '/system-logs-clear':{
+        const logId=String(data.id||'').trim();
+        if(logId){
+          db.systemLogs=(db.systemLogs||[]).filter(l=>l.id!==logId);
+        }else{
+          db.systemLogs=[];
+        }
+        save();
+        return {ok:true,count:(db.systemLogs||[]).length};
       }
       case '/portrait':{
         const c=getC(data.characterId||params.get('characterId'));
@@ -1952,7 +2350,7 @@
         let description=photoText(c),engine='curated-demo';
         if(data.regenerate&&pub().mode==='live'){
           const instructions=`描述一张交友软件上虚构原作角色上传的照片（80至150个简体汉字），只描写画面中的外貌、姿态、光影、服饰和场景，保持人设与时期准确，不公开秘密，不编造重大剧情。${c.name}，${c.source}，${c.version}，设定：${c.canon}`;
-          description=(await llm([{role:'system',content:instructions},{role:'user',content:'描述这张照片。'}],{max_tokens:350})).slice(0,1200);engine='live-text';
+          description=(await llm([{role:'system',content:instructions},{role:'user',content:'描述这张照片。'}],{max_tokens:350,character:c,mode:'photo',entry_point:'photo_description'})).slice(0,1200);engine='live-text';
         }
         db.photoDescriptions[c.id]={description,engine};save();return {description,engine};
       }
@@ -1966,9 +2364,11 @@
     cleanMeetingNovelText,
     splitChatBubbles,
     sanitizeStoredData,
-    buildPromptPreview:(pid,cid,mode='chat')=>prompt(getP(pid),getC(cid),mode),
+    diagnosePresets,
+    getSystemLogs:()=>db.systemLogs.slice(),
+    buildPromptPreview:(pid,cid,mode='chat',opts={})=>prompt(getP(pid),getC(cid),mode,[],opts),
     get storageAvailable(){return storageAvailable},
-    exportData:()=>{const copy=JSON.parse(JSON.stringify(db));copy.connection.api_key='';copy.connection.image_api_key='';return JSON.stringify({format:'parallel-portable-backup',schemaVersion:1,createdAt:stamp(),data:copy},null,2)},
+    exportData:()=>{const copy=JSON.parse(JSON.stringify(db));copy.connection.api_key='';copy.connection.image_api_key='';delete copy.systemLogs;return JSON.stringify({format:'parallel-portable-backup',schemaVersion:1,createdAt:stamp(),data:copy},null,2)},
     importData:(raw)=>{
       if(typeof raw!=='string'||raw.length>20*1024*1024)bodyErr('备份体积过大');
       let pack;try{pack=JSON.parse(raw)}catch{bodyErr('不是有效 JSON 文件')}

@@ -26,8 +26,14 @@ DEFAULT_PRESETS = [
 PRESET_FORMAT = 'parallel-text-preset'
 PRESET_VERSION = 1
 
+def infer_preset_group(name=''):
+    s=str(name or '')
+    if ' / ' in s:
+        return s.split(' / ',1)[0].strip()
+    return ''
+
 def validate_preset_package(pack):
-    """Only Parallel-owned JSON format; no third-party preset conversion."""
+    """Only Parallel-owned or Elsewhere-owned JSON format."""
     if isinstance(pack,dict) and pack.get('format')=='elsewhere-preset':
         if pack.get('schemaVersion')!=1 or not isinstance(pack.get('entries'),list) or not 1<=len(pack['entries'])<=200:
             raise ValueError('Elsewhere 自有预设结构无效')
@@ -37,7 +43,7 @@ def validate_preset_package(pack):
                 raise ValueError(f'Elsewhere 条目 {i+1} 格式无效')
             ids.add(x['id']);group=str(x.get('group','')).strip()[:70];name=x['name'].strip()
             label=((group+' / ') if group else '')+name
-            entries.append({'mode':'meeting','name':label[:100],'role':x['role'],'enabled':x['enabled'],'content':x['content'],'sort_order':i})
+            entries.append({'mode':'meeting','name':label[:100],'raw_name':name[:100],'group':group,'source_id':x['id'],'origin':'elsewhere','role':x['role'],'enabled':x['enabled'],'content':x['content'],'sort_order':i})
         return ['meeting'],entries
     if not isinstance(pack,dict) or pack.get('format')!=PRESET_FORMAT or type(pack.get('schemaVersion')) is not int or pack['schemaVersion']!=PRESET_VERSION:
         raise ValueError('仅支持 Parallel 自有预设 JSON（v1），不支持第三方预设格式')
@@ -46,9 +52,11 @@ def validate_preset_package(pack):
         raise ValueError('预设的模式列表无效')
     if not isinstance(entries,list) or not 1<=len(entries)<=200:
         raise ValueError('预设应包含 1–200 个条目')
+    allowed_keys={'mode','name','role','enabled','content','sort_order','group','source_id','origin','raw_name'}
+    required_keys={'mode','name','role','enabled','content','sort_order'}
     output=[]
     for i,e in enumerate(entries):
-        if not isinstance(e,dict) or set(e)!={'mode','name','role','enabled','content','sort_order'}:
+        if not isinstance(e,dict) or not required_keys.issubset(set(e)) or not set(e).issubset(allowed_keys):
             raise ValueError(f'预设条目 {i+1} 格式无效')
         if e['mode'] not in modes or e['role'] not in ('system','user','assistant'):
             raise ValueError(f'预设条目 {i+1} 角色或模式无效')
@@ -58,10 +66,77 @@ def validate_preset_package(pack):
             raise ValueError(f'预设条目 {i+1} 正文过长或无效')
         if type(e['enabled']) is not bool or type(e['sort_order']) is not int or not 0<=e['sort_order']<=10000:
             raise ValueError(f'预设条目 {i+1} 启停或排序值无效')
-        output.append({**e,'name':e['name'].strip()})
+        nm=e['name'].strip()
+        grp=str(e.get('group') or infer_preset_group(nm)).strip()[:70]
+        output.append({'mode':e['mode'],'name':nm,'role':e['role'],'enabled':e['enabled'],'content':e['content'],'sort_order':e['sort_order'],'group':grp})
     if len(json.dumps(pack,ensure_ascii=False).encode('utf8'))>4*1024*1024:
         raise ValueError('预设文件超过 4 MB')
     return modes,output
+
+def preset_row_dict(x):
+    d=dict(x)
+    d['enabled']=bool(d['enabled'])
+    d['group']=infer_preset_group(d.get('name',''))
+    return d
+
+def diagnose_presets(db,mode='meeting'):
+    rows=db.execute('SELECT * FROM presets WHERE mode=? ORDER BY sort_order,id',(mode,)).fetchall()
+    items=[preset_row_dict(r) for r in rows]
+    enabled=[x for x in items if x['enabled']]
+    disabled=[x for x in items if not x['enabled']]
+    default_ids={'meeting-main','meeting-pacing'} if mode=='meeting' else {'chat-main','chat-memory','chat-agency'}
+    default_names={'线下见面 · 小说模式','克制与连贯'} if mode=='meeting' else {'手机聊天 · 自然气泡','记忆与身份边界','人物自主性'}
+    enabled_defaults=[x for x in enabled if x['id'] in default_ids or x['name'] in default_names]
+    enabled_custom=[x for x in enabled if x not in enabled_defaults]
+    default_and_custom_coexist=len(enabled_defaults)>0 and len(enabled_custom)>0
+    seen_by_name={}
+    duplicates=[]
+    for x in items:
+        key=f"{x['role']}::{x['name'].strip()}"
+        if key in seen_by_name:
+            duplicates.append({'id':x['id'],'name':x['name'],'first_id':seen_by_name[key]})
+        else:
+            seen_by_name[key]=x['id']
+    style_items=[x for x in items if x.get('group')=='文风（单选）' or str(x['name']).startswith('文风（单选） /')]
+    enabled_styles=[x for x in style_items if x['enabled']]
+    has_cot=any('COT' in str(x['name']) or '连续性检查' in str(x['name']) for x in enabled)
+    has_bottom_pledge=any(x['role']=='assistant' or '底部誓约' in str(x['name']) for x in enabled)
+    total_chars=sum(len(str(x.get('content',''))) for x in enabled)
+    warnings=[]
+    if len(enabled)==0:
+        warnings.append({'code':'no_enabled_presets','level':'error','message':'当前模式没有任何已启用的预设条目，模型将仅凭基础身份信息生成。'})
+    if default_and_custom_coexist:
+        warnings.append({'code':'default_and_custom_coexist','level':'warn','message':f"检测到默认预设（{'、'.join(x['name'] for x in enabled_defaults)}）与导入的自定义预设同时启用。这通常是因为使用了「追加导入」，可点击「停用默认保底条目」仅保留自定义预设。"})
+    if duplicates:
+        warnings.append({'code':'duplicate_entries','level':'warn','message':f"检测到 {len(duplicates)} 个重复名称的预设条目（可能因多次追加导入产生），建议点击「清理重复条目」。"})
+    if mode=='meeting' and style_items:
+        if len(enabled_styles)>1:
+            warnings.append({'code':'multiple_styles_enabled','level':'warn','message':f"「文风（单选）」分组同时启用了 {len(enabled_styles)} 个条目（{'、'.join(x['name'] for x in enabled_styles)}），多套文风同时生效会产生指令冲突，建议只启用 1 个。"})
+        elif len(enabled_styles)==0:
+            warnings.append({'code':'no_style_enabled','level':'info','message':'「文风（单选）」分组当前未启用任何具体文风卡。'})
+    return {
+        'mode':mode,
+        'totalCount':len(items),
+        'enabledCount':len(enabled),
+        'disabledCount':len(disabled),
+        'totalEnabledChars':total_chars,
+        'defaultAndCustomCoexist':default_and_custom_coexist,
+        'enabledDefaultIds':[x['id'] for x in enabled_defaults],
+        'duplicateEntries':duplicates,
+        'duplicateCount':len(duplicates),
+        'styleGroupTotal':len(style_items),
+        'enabledStyleCount':len(enabled_styles),
+        'enabledStyleNames':[x['name'] for x in enabled_styles],
+        'disabledStyleNames':[x['name'] for x in style_items if not x['enabled']],
+        'hasCotCheck':has_cot,
+        'hasBottomPledge':has_bottom_pledge,
+        'rolesBreakdown':{
+            'system':len([x for x in enabled if x['role']=='system']),
+            'user':len([x for x in enabled if x['role']=='user']),
+            'assistant':len([x for x in enabled if x['role']=='assistant']),
+        },
+        'warnings':warnings
+    }
 
 class ClosingConnection(sqlite3.Connection):
     def __exit__(self, exc_type, exc, tb):
@@ -98,7 +173,7 @@ def init_db():
         sanitize_stored_db(db)
         db.commit()
     if not SECRETFILE.exists():
-        save_connection({'base_url':'','api_key':'','model':'','image_base_url':'','image_api_key':'','image_model':'','temperature':0.85,'top_p':1,'max_tokens':3000,'auto_portraits':False})
+        save_connection({'base_url':'','api_key':'','model':'','image_base_url':'','image_api_key':'','image_model':'','temperature':0.85,'top_p':1,'max_tokens':4096,'auto_portraits':False})
 
 def utc(): return datetime.now(timezone.utc).isoformat(timespec='microseconds')
 def uid(): return str(uuid.uuid4())
@@ -117,7 +192,7 @@ def save_connection(v):
 
 def load_connection():
     try:return json.loads(SECRETFILE.read_text('utf8'))
-    except Exception:return {'base_url':'','api_key':'','model':'','image_base_url':'','image_api_key':'','image_model':'','temperature':0.85,'top_p':1,'max_tokens':3000,'auto_portraits':False}
+    except Exception:return {'base_url':'','api_key':'','model':'','image_base_url':'','image_api_key':'','image_model':'','temperature':0.85,'top_p':1,'max_tokens':4096,'auto_portraits':False}
 
 def public_connection():
     d=load_connection()
@@ -382,7 +457,7 @@ def queue_flush(db,p,c,force=False):
         db.commit()
     settings=load_connection();warning='';engine='demo';reply=None;replies=[]
     if all(settings.get(k) for k in ('base_url','api_key','model')):
-        try:txt=completion(prompt);engine='live'
+        try:txt=completion(prompt,log_meta={'mode':'chat','entryPoint':'chat-flush','profile':p,'character':c,'parseFn':lambda raw:' / '.join(split_chat_bubbles(raw))});engine='live'
         except Exception as e:warning=str(e);engine='error'
     else:txt=demo_text(db,p,c,'chat')
     with CHAT_LOCK:
@@ -1249,17 +1324,38 @@ def relationship_baseline_summary(db,pid,cid,p_name):
 
 def select_working_history(db,pid,cid,mode='chat',through_rowid=None):
     if through_rowid is not None:
-        rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND rowid<=? ORDER BY rowid DESC LIMIT 24',(pid,cid,through_rowid)).fetchall()
+        rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND rowid<=? ORDER BY rowid DESC LIMIT 48',(pid,cid,through_rowid)).fetchall()
     else:
-        rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 24',(pid,cid)).fetchall()
+        rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 48',(pid,cid)).fetchall()
     chron=list(reversed([dict(r) for r in rows]))
     if not chron:return []
-    win_limit=8 if mode=='meeting' else 10
+    if mode=='meeting':
+        active_streak=[]
+        for m in reversed(chron):
+            if m['mode']=='meeting':
+                active_streak.insert(0,m)
+            elif active_streak:
+                break
+        if active_streak:
+            return active_streak[-16:]
+        all_meet=[m for m in chron if m['mode']=='meeting']
+        return all_meet[-16:]
+    win_limit=10
     today_prefix=chron[-1]['created_at'][:10]
     today_msgs=[m for m in chron if str(m['created_at'])[:10]==today_prefix]
     if len(today_msgs)>=4:
         return today_msgs[-win_limit:]
     return chron[-min(6,win_limit):]
+
+def select_pre_meeting_chat_context(db,pid,cid,limit=6):
+    rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 48',(pid,cid)).fetchall()
+    chron=list(reversed([dict(r) for r in rows if r['engine']!='recalled']))
+    if not chron:return []
+    end_idx=len(chron)
+    while end_idx>0 and chron[end_idx-1]['mode']=='meeting':
+        end_idx-=1
+    chat_before=[m for m in chron[:end_idx] if m['mode']=='chat']
+    return chat_before[-limit:]
 
 def write_message(db,pid,cid,sender,mode,txt,engine='human'):
     clean_txt = (clean_meeting_novel_text(txt) if mode=='meeting' else (clean_chat_bubble_text(txt) or '…')) if (sender=='ai' and engine not in ('error','recalled')) else str(txt or '')
@@ -1289,26 +1385,234 @@ def latest_memory(db,cid,pid):
     other_clean=[{k:r[k] for k in ('person','type','summary')} for r in other_sorted]
     return current_clean, other_clean
 
-def completion(messages,*,json_mode=False,max_tokens=None):
+SYSTEM_LOGS=[]
+
+def mask_api_key(k=''):
+    s=str(k or '').strip()
+    if not s:return ''
+    if len(s)<=8:return s[:2]+'***'
+    return f"{s[:4]}...{s[-4:]}"
+
+def record_system_log(entry):
+    log_item={
+        'id':entry.get('id') or ('log_'+uid()),
+        'created_at':entry.get('created_at') or utc(),
+        'profile_id':entry.get('profile_id',''),
+        'profile_name':entry.get('profile_name',''),
+        'character_id':entry.get('character_id',''),
+        'character_name':entry.get('character_name',''),
+        'mode':entry.get('mode','chat'),
+        'entry_point':entry.get('entry_point',''),
+        'model':entry.get('model',''),
+        'endpoint':entry.get('endpoint',''),
+        'headers_masked':entry.get('headers_masked') or {},
+        'sampling':entry.get('sampling') or {},
+        'active_preset_count':entry.get('active_preset_count',0),
+        'disabled_preset_count':entry.get('disabled_preset_count',0),
+        'active_presets':entry.get('active_presets') or [],
+        'disabled_presets':entry.get('disabled_presets') or [],
+        'request_payload':entry.get('request_payload'),
+        'raw_response':entry.get('raw_response'),
+        'raw_content':entry.get('raw_content',''),
+        'reasoning_content':entry.get('reasoning_content',''),
+        'parsed_content':entry.get('parsed_content',''),
+        'char_count_raw':entry.get('char_count_raw',0),
+        'char_count_parsed':entry.get('char_count_parsed',0),
+        'finish_reason':entry.get('finish_reason',''),
+        'usage':entry.get('usage'),
+        'truncation_warning':entry.get('truncation_warning',''),
+        'duration_ms':entry.get('duration_ms',0),
+        'error':entry.get('error',''),
+        'http_status':entry.get('http_status',0),
+    }
+    SYSTEM_LOGS.insert(0,log_item)
+    if len(SYSTEM_LOGS)>80:
+        del SYSTEM_LOGS[80:]
+    return log_item
+
+def completion(messages,*,json_mode=False,max_tokens=None,log_meta=None):
     settings=load_connection();base=settings.get('base_url');key=settings.get('api_key');model=settings.get('model')
     if not all((base,key,model)):raise RuntimeError('尚未配置可用的 API 地址、密钥及模型')
-    payload={'model':model,'messages':messages,'temperature':settings.get('temperature',0.85),'top_p':settings.get('top_p',1),'max_tokens':max_tokens or settings.get('max_tokens',700)}
+    meta=log_meta or {}
+    req_mode=meta.get('mode','chat')
+    max_tok=int(max_tokens or settings.get('max_tokens') or 4096)
+    temp=float(settings.get('temperature',0.85))
+    top_p_val=float(settings.get('top_p',1))
+    payload={'model':model,'messages':messages,'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok}
     if json_mode:payload['response_format']={'type':'json_object'}
-    req=urllib.request.Request(base+'/chat/completions',data=js(payload).encode('utf8'),headers={'Authorization':'Bearer '+key,'Content-Type':'application/json','Accept':'application/json'},method='POST')
+    endpoint=base+'/chat/completions'
+    headers_masked={'Content-Type':'application/json','Authorization':'Bearer '+mask_api_key(key)}
+    active_presets=[]
+    disabled_presets=[]
     try:
-        with urllib.request.urlopen(req,timeout=65) as r: data=json.loads(r.read(2*1024*1024))
-        content=data['choices'][0]['message']['content']
+        with connect() as db_log:
+            p_rows=db_log.execute('SELECT * FROM presets WHERE mode=? ORDER BY sort_order,id',(req_mode,)).fetchall()
+            for r in p_rows:
+                pd=preset_row_dict(r)
+                if pd['enabled']:
+                    active_presets.append({'id':pd['id'],'name':pd['name'],'group':pd.get('group',''),'role':pd['role'],'sort_order':pd['sort_order'],'chars':len(str(pd.get('content','')))})
+                else:
+                    disabled_presets.append({'id':pd['id'],'name':pd['name'],'group':pd.get('group',''),'role':pd['role'],'sort_order':pd['sort_order']})
+    except Exception:
+        pass
+    t0=now_ms()
+    req=urllib.request.Request(endpoint,data=js(payload).encode('utf8'),headers={'Authorization':'Bearer '+key,'Content-Type':'application/json','Accept':'application/json'},method='POST')
+    try:
+        with urllib.request.urlopen(req,timeout=65) as r:
+            status_code=getattr(r,'status',200)
+            data=json.loads(r.read(4*1024*1024))
+        duration_ms=now_ms()-t0
+        choice=(data.get('choices') or [{}])[0]
+        msg_obj=choice.get('message') or {}
+        finish_reason=str(choice.get('finish_reason') or '')
+        usage_raw=data.get('usage') or {}
+        comp_details=usage_raw.get('completion_tokens_details') or {}
+        usage={
+            'prompt_tokens':usage_raw.get('prompt_tokens'),
+            'completion_tokens':usage_raw.get('completion_tokens'),
+            'total_tokens':usage_raw.get('total_tokens'),
+            'reasoning_tokens':comp_details.get('reasoning_tokens') or usage_raw.get('reasoning_tokens') or 0
+        } if usage_raw else None
+        content=msg_obj.get('content')
+        reasoning_content=str(msg_obj.get('reasoning_content') or msg_obj.get('reasoning') or '')
         if isinstance(content,list):content=''.join(x.get('text','') for x in content if isinstance(x,dict))
-        if not isinstance(content,str) or not content.strip():raise RuntimeError('模型没有返回可用文本')
-        return content.strip()
+        raw_trimmed=content.strip() if isinstance(content,str) else ''
+        if not raw_trimmed:
+            record_system_log({
+                'profile_id':(meta.get('profile') or {}).get('id',''),
+                'profile_name':(meta.get('profile') or {}).get('name',''),
+                'character_id':(meta.get('character') or {}).get('id',''),
+                'character_name':(meta.get('character') or {}).get('name',''),
+                'mode':req_mode,
+                'entry_point':meta.get('entryPoint',req_mode),
+                'model':model,
+                'endpoint':endpoint,
+                'headers_masked':headers_masked,
+                'sampling':{'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok},
+                'active_preset_count':len(active_presets),
+                'disabled_preset_count':len(disabled_presets),
+                'active_presets':active_presets,
+                'disabled_presets':disabled_presets,
+                'request_payload':payload,
+                'raw_response':data,
+                'raw_content':'',
+                'reasoning_content':reasoning_content,
+                'parsed_content':'',
+                'char_count_raw':0,
+                'char_count_parsed':0,
+                'finish_reason':finish_reason,
+                'usage':usage,
+                'duration_ms':duration_ms,
+                'http_status':status_code,
+                'error':f"模型没有返回可用文本（finish_reason={finish_reason or 'unknown'}）"
+            })
+            raise RuntimeError('模型没有返回可用文本')
+        parse_fn=meta.get('parseFn')
+        parsed_content=parse_fn(raw_trimmed) if callable(parse_fn) else (clean_meeting_novel_text(raw_trimmed) if req_mode=='meeting' else raw_trimmed)
+        trunc_warn=''
+        if finish_reason in ('length','max_tokens'):
+            trunc_warn=f"模型因达到 max_tokens ({max_tok}) 上限被截断（finish_reason={finish_reason}）。建议在「终端 -> 连接与模型」中调高 Max tokens。"
+        record_system_log({
+            'profile_id':(meta.get('profile') or {}).get('id',''),
+            'profile_name':(meta.get('profile') or {}).get('name',''),
+            'character_id':(meta.get('character') or {}).get('id',''),
+            'character_name':(meta.get('character') or {}).get('name',''),
+            'mode':req_mode,
+            'entry_point':meta.get('entryPoint',req_mode),
+            'model':model,
+            'endpoint':endpoint,
+            'headers_masked':headers_masked,
+            'sampling':{'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok},
+            'active_preset_count':len(active_presets),
+            'disabled_preset_count':len(disabled_presets),
+            'active_presets':active_presets,
+            'disabled_presets':disabled_presets,
+            'request_payload':payload,
+            'raw_response':data,
+            'raw_content':raw_trimmed,
+            'reasoning_content':reasoning_content,
+            'parsed_content':parsed_content,
+            'char_count_raw':len(raw_trimmed),
+            'char_count_parsed':len(parsed_content or ''),
+            'finish_reason':finish_reason,
+            'usage':usage,
+            'truncation_warning':trunc_warn,
+            'duration_ms':duration_ms,
+            'http_status':status_code,
+            'error':''
+        })
+        return raw_trimmed
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f'模型接口返回 HTTP {exc.code}；请检查地址、模型和额度')
-    except urllib.error.URLError as exc:raise RuntimeError('无法连接模型接口：'+str(exc.reason)[:140])
+        err_msg=f'模型接口返回 HTTP {exc.code}；请检查地址、模型和额度'
+        record_system_log({
+            'profile_id':(meta.get('profile') or {}).get('id',''),
+            'profile_name':(meta.get('profile') or {}).get('name',''),
+            'character_id':(meta.get('character') or {}).get('id',''),
+            'character_name':(meta.get('character') or {}).get('name',''),
+            'mode':req_mode,
+            'entry_point':meta.get('entryPoint',req_mode),
+            'model':model,
+            'endpoint':endpoint,
+            'headers_masked':headers_masked,
+            'sampling':{'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok},
+            'active_preset_count':len(active_presets),
+            'disabled_preset_count':len(disabled_presets),
+            'active_presets':active_presets,
+            'disabled_presets':disabled_presets,
+            'request_payload':payload,
+            'raw_response':None,
+            'duration_ms':now_ms()-t0,
+            'http_status':exc.code,
+            'error':err_msg
+        })
+        raise RuntimeError(err_msg)
+    except urllib.error.URLError as exc:
+        err_msg='无法连接模型接口：'+str(exc.reason)[:140]
+        record_system_log({
+            'profile_id':(meta.get('profile') or {}).get('id',''),
+            'profile_name':(meta.get('profile') or {}).get('name',''),
+            'character_id':(meta.get('character') or {}).get('id',''),
+            'character_name':(meta.get('character') or {}).get('name',''),
+            'mode':req_mode,
+            'entry_point':meta.get('entryPoint',req_mode),
+            'model':model,
+            'endpoint':endpoint,
+            'headers_masked':headers_masked,
+            'sampling':{'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok},
+            'active_preset_count':len(active_presets),
+            'disabled_preset_count':len(disabled_presets),
+            'active_presets':active_presets,
+            'disabled_presets':disabled_presets,
+            'request_payload':payload,
+            'raw_response':None,
+            'duration_ms':now_ms()-t0,
+            'http_status':0,
+            'error':err_msg
+        })
+        raise RuntimeError(err_msg)
 
-def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_ids=None):
-    ordered=db.execute('SELECT * FROM presets WHERE mode=? AND enabled=1 ORDER BY sort_order,id',(mode,)).fetchall()
-    def macros(t):return t.replace('{{user}}',p['name']).replace('{{char}}',c['name'])
-    sys_parts=[macros(x['content']) for x in ordered if x['role']=='system']
+def expand_preset_macros(text,p,c):
+    u_name=(p.get('name') if p else None) or 'User'
+    c_name=(c.get('name') if c else None) or 'Character'
+    s=str(text or '')
+    s=re.sub(r'\{\{\s*user\s*\}\}',u_name,s,flags=re.IGNORECASE)
+    s=re.sub(r'\{\{\s*char\s*\}\}',c_name,s,flags=re.IGNORECASE)
+    s=re.sub(r'<user>',u_name,s,flags=re.IGNORECASE)
+    s=re.sub(r'<char>',c_name,s,flags=re.IGNORECASE)
+    return s
+
+def is_post_history_system_preset(entry):
+    if not entry or entry.get('role')!='system':return False
+    nm=str(entry.get('name',''))
+    grp=str(entry.get('group') or infer_preset_group(nm))
+    return grp=='COT' or ('COT' in nm) or ('连续性检查' in nm) or ('动笔前' in nm) or ('自检' in nm)
+
+def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_ids=None,trigger_opening=False,is_continue=False):
+    ordered=[preset_row_dict(r) for r in db.execute('SELECT * FROM presets WHERE mode=? AND enabled=1 ORDER BY sort_order,id',(mode,)).fetchall()]
+    macros=lambda t:expand_preset_macros(t,p,c)
+    core_presets=[x for x in ordered if x['role']=='system' and not is_post_history_system_preset(x)] if mode=='meeting' else [x for x in ordered if x['role']=='system']
+    post_presets=[x for x in ordered if is_post_history_system_preset(x) or x['role']!='system'] if mode=='meeting' else [x for x in ordered if x['role']!='system']
+    core_sys_parts=[macros(x['content']) for x in core_presets]
     working_history=select_working_history(db,p['id'],c['id'],mode=mode,through_rowid=through_rowid)
     working_ids={m['id'] for m in working_history}
     ensure_daily_summaries(db,p,c,working_ids)
@@ -1332,6 +1636,15 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n"+"\n".join(format_episodic_entry(e) for e in recalled)
     else:
         system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n（当前话题未触发额外远期档案，仅依靠下方今日活跃上下文连贯交流）"
+    if mode=='meeting':
+        pre_chat=select_pre_meeting_chat_context(db,p['id'],c['id'],6)
+        if pre_chat:
+            chat_lines=[]
+            for m in pre_chat:
+                who=c['name'] if m['sender']=='ai' else p['name']
+                txt_clean=(str(m.get('text','')).strip() if m['sender']=='user' else clean_chat_bubble_text(m['text']))[:100]
+                chat_lines.append(f"- [{fmt_hhmm(m.get('created_at')) or '--:--'} {who}]: {txt_clean}")
+            system+="\n\n【见面前的近期手机联系脉络（仅供剧情前情参考，严禁模仿手机短信的简短篇幅或气泡格式）】\n"+"\n".join(chat_lines)
     timeline_lines=[]
     history_turns=[]
     for idx,msg in enumerate(working_history):
@@ -1347,10 +1660,33 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             history_turns.append({'role':role,'content':clean_body})
     if timeline_lines:
         system+="\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n"+" ｜ ".join(timeline_lines)
-    if sys_parts:system+='\n\n'+'\n\n'.join(sys_parts)
+    if core_sys_parts:system+='\n\n'+'\n\n'.join(core_sys_parts)
     messages=[{'role':'system','content':system}]
-    for x in ordered:
-        if x['role']!='system':messages.append({'role':x['role'],'content':macros(x['content'])})
+    if mode=='meeting':
+        m_state=MEETING_STATE.get((p['id'],c['id']),{})
+        meet_loc=(cur_surv and cur_surv.get('location')) or infer_meeting_location(db,p['id'],c['id'],m_state.get('meeting_location',''))
+        has_trailing_user=(len(history_turns)>0 and history_turns[-1]['role']=='user' and not trigger_opening and not is_continue)
+        prior_turns=history_turns[:-1] if has_trailing_user else history_turns
+        final_user_turn=history_turns[-1] if has_trailing_user else None
+        messages.extend(prior_turns)
+        post_sys_parts=[macros(x['content']) for x in post_presets if x['role']=='system']
+        non_sys_post_presets=[x for x in post_presets if x['role']!='system']
+        meeting_state_line=f"【第四层 · 当前状态 (Current State)】当前为线下见面小说模式（地点：{meet_loc}）。请严格遵循上方导入的面对面小说预设中的文风、叙事视角、人物边界、篇幅区间与创作铁律，不要替 {p['name']} 说话、行动或决定内心感受，不要在正文开头添加任何时间或模式标签，直接输出小说正文。"
+        if post_sys_parts:
+            messages.append({'role':'system','content':'\n\n'.join(post_sys_parts)+'\n\n'+meeting_state_line})
+        else:
+            messages.append({'role':'system','content':meeting_state_line})
+        for x in non_sys_post_presets:
+            messages.append({'role':x['role'],'content':macros(x['content'])})
+        if final_user_turn:
+            messages.append(final_user_turn)
+        elif trigger_opening or len(history_turns)==0:
+            messages.append({'role':'user','content':f"【场景开启】{p['name']} 与 {c['name']} 刚刚在「{meet_loc}」线下碰面。请严格按照当前面对面小说预设的所有规则与目标篇幅，从 {c['name']} 的视角与反应切入，描写双方刚刚照面时的环境氛围、神态动作与开场互动正文（不要替 {p['name']} 决定台词或心理）。"})
+        else:
+            messages.append({'role':'user','content':f"【继续推进】请承接上一轮在「{meet_loc}」的现场氛围与动作，严格按照当前面对面小说预设的所有规则与目标篇幅，继续推进下一段细腻的面对面互动正文（不要替 {p['name']} 决定台词或心理）。"})
+        return messages
+    for x in post_presets:
+        messages.append({'role':x['role'],'content':macros(x['content'])})
     messages.extend(history_turns)
     batch_hint=''
     if mode=='chat' and pending_ids and len(pending_ids)>1:
@@ -1361,7 +1697,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         if len(bundled_rows)>1:
             tl=' -> '.join(f"{fmt_hhmm(x['created_at'])}「{(str(x['text'] or '').strip() if x.get('sender')=='user' else clean_chat_bubble_text(x['text']))[:60]}」" for x in bundled_rows)
             batch_hint=f"\n【打包消息时间线】你在未看手机的这段时间里，对方陆续给你发来了 {len(bundled_rows)} 条消息（按发送时间先后：{tl}）。你现在刚拿起手机把这些消息一次性读完，请结合这些消息各自的时间戳跨度与内容，像真人一样自然连贯地统一回复。"
-    messages.append({'role':'system','content':'【第四层 · 当前状态 (Current State)】当前输出模式：'+('线下小说式 RP（不要替玩家行动，不要在正文开头添加任何时间或模式标签）' if mode=='meeting' else '约会 App 手机聊天；仅发聊天气泡，不写小说旁白，不要在正文开头添加任何时间或模式标签。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）'+batch_hint)+'。'})
+    messages.append({'role':'system','content':'【第四层 · 当前状态 (Current State)】当前输出模式：约会 App 手机聊天；仅发聊天气泡，不写小说旁白，不要在正文开头添加任何时间或模式标签。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）'+batch_hint+'。'})
     return messages
 
 def demo_text(db,p,c,mode):
@@ -1552,7 +1888,9 @@ class Handler(BaseHTTPRequestHandler):
                     x=db.execute('SELECT description FROM photo_descriptions WHERE character_id=?',(cid,)).fetchone()
                     return self.respond({'description':x['description'] if x else photo_description(c),'engine':'saved' if x else 'curated-demo'})
                 if route=='/api/presets':
-                    return self.respond({'entries':[dict(x)|{'enabled':bool(x['enabled'])} for x in db.execute('SELECT * FROM presets ORDER BY mode,sort_order,id').fetchall()]})
+                    return self.respond({'entries':[preset_row_dict(x) for x in db.execute('SELECT * FROM presets ORDER BY mode,sort_order,id').fetchall()],'diagnostics':{'chat':diagnose_presets(db,'chat'),'meeting':diagnose_presets(db,'meeting')}})
+                if route=='/api/system-logs':
+                    return self.respond({'logs':SYSTEM_LOGS})
                 if route=='/api/settings':return self.respond(public_connection())
                 if route=='/api/models':
                     settings=load_connection()
@@ -1778,7 +2116,7 @@ class Handler(BaseHTTPRequestHandler):
                             if data.get('triggerOpening') is True and public_connection()['mode']!='normal':
                                 engine='demo';settings=load_connection()
                                 if all(settings.get(k) for k in ('base_url','api_key','model')):
-                                    try:reply_txt=clean_meeting_novel_text(completion(compile_messages(db,p,c,'meeting')));engine='live'
+                                    try:reply_txt=clean_meeting_novel_text(completion(compile_messages(db,p,c,'meeting',trigger_opening=True),log_meta={'mode':'meeting','entryPoint':'meeting-opening','profile':p,'character':c,'parseFn':clean_meeting_novel_text}));engine='live'
                                     except Exception as e:warning=str(e);reply_txt='（模型连接失败，请检查终端设置后重试。）';engine='error'
                                 else:reply_txt=clean_meeting_novel_text(demo_text(db,p,c,'meeting'))
                                 opening_reply=write_message(db,p['id'],cid,'ai','meeting',reply_txt,engine)
@@ -1883,7 +2221,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond({'reply':None,'replies':[],'mode':mode,'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。'})
                     engine='demo';warning='';settings=load_connection()
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
-                        try:reply=completion(compile_messages(db,p,c,mode));engine='live'
+                        try:reply=completion(compile_messages(db,p,c,mode,is_continue=(mode=='meeting')),log_meta={'mode':mode,'entryPoint':'meeting-continue' if mode=='meeting' else 'chat-reply','profile':p,'character':c,'parseFn':clean_meeting_novel_text if mode=='meeting' else (lambda raw:' / '.join(split_chat_bubbles(raw)))});engine='live'
                         except Exception as e:warning=str(e);reply='（模型连接失败，请检查终端设置后重试。）';engine='error'
                     else:reply=demo_text(db,p,c,mode)
                     bubble_texts=[reply] if engine=='error' else (split_chat_bubbles(reply) if mode=='chat' else [clean_meeting_novel_text(reply)])
@@ -1918,7 +2256,7 @@ class Handler(BaseHTTPRequestHandler):
                         db.commit();return self.respond({'user':user_msg,'reply':None,'replies':[],'auto_meeting':auto,'mode':mode,'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。'})
                     engine='demo';warning='';settings=load_connection()
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
-                        try:reply=clean_meeting_novel_text(completion(compile_messages(db,p,c,mode)));engine='live'
+                        try:reply=clean_meeting_novel_text(completion(compile_messages(db,p,c,mode,latest=txt),log_meta={'mode':mode,'entryPoint':'meeting-message' if mode=='meeting' else 'chat-message','profile':p,'character':c,'parseFn':clean_meeting_novel_text}));engine='live'
                         except Exception as e:warning=str(e);reply='（模型连接失败，消息已保存。请检查终端设置后重试发送。）';engine='error'
                     else:reply=clean_meeting_novel_text(demo_text(db,p,c,mode))
                     ai_msg=write_message(db,p['id'],cid,'ai',mode,reply,engine)
@@ -1947,7 +2285,7 @@ class Handler(BaseHTTPRequestHandler):
                     if 'image_model' in data:d['image_model']=str(data['image_model']).strip()[:200]
                     if 'temperature' in data:d['temperature']=max(0,min(2,float(data['temperature'])))
                     if 'top_p' in data:d['top_p']=max(0.01,min(1,float(data['top_p'])))
-                    if 'max_tokens' in data:d['max_tokens']=max(100,min(4096,int(data['max_tokens'])))
+                    if 'max_tokens' in data:d['max_tokens']=max(100,min(32768,int(data['max_tokens'])))
                     save_connection(d);return self.respond({'settings':public_connection()})
                 if route=='/api/portrait':
                     cid=data.get('characterId');c=BY_ID.get(cid)
@@ -1969,6 +2307,15 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond({'portrait':uri,'engine':'live-image'})
                     except urllib.error.HTTPError as e:raise ValueError('图片生成请求失败：HTTP '+str(e.code))
                     except urllib.error.URLError as e:raise ValueError('无法连接图片生成接口：'+str(e.reason)[:120])
+                if route=='/api/system-logs':
+                    return self.respond({'logs':SYSTEM_LOGS})
+                if route=='/api/system-logs-clear':
+                    target_id=str(data.get('id','')).strip()
+                    if target_id:
+                        SYSTEM_LOGS[:]=[x for x in SYSTEM_LOGS if x.get('id')!=target_id]
+                    else:
+                        SYSTEM_LOGS.clear()
+                    return self.respond({'ok':True,'logs':SYSTEM_LOGS})
                 if route=='/api/preset-import':
                     how=data.get('import_mode')
                     if how not in ('append','replace'):raise ValueError('请选择追加或替换预设')
@@ -1980,11 +2327,30 @@ class Handler(BaseHTTPRequestHandler):
                         ordered=sorted((e for e in entries if e['mode']==mode), key=lambda e:e['sort_order'])
                         for pos,e in enumerate(ordered):
                             db.execute('INSERT INTO presets VALUES (?,?,?,?,?,?,?)',(uid(),mode,e['name'],int(e['enabled']),e['role'],e['content'],offset+pos))
-                    db.commit();return self.respond({'ok':True,'imported':len(entries),'modes':modes})
+                    db.commit();return self.respond({'ok':True,'imported':len(entries),'modes':modes,'diagnostics':{'chat':diagnose_presets(db,'chat'),'meeting':diagnose_presets(db,'meeting')}})
                 if route=='/api/preset':
                     action=data.get('action');id=data.get('id')
                     if action=='delete':
                         db.execute('DELETE FROM presets WHERE id=?',(id,));db.commit();return self.respond({'ok':True})
+                    if action=='disable_defaults':
+                        target_mode=data.get('mode','meeting')
+                        def_ids=('meeting-main','meeting-pacing') if target_mode=='meeting' else ('chat-main','chat-memory','chat-agency')
+                        def_names=('线下见面 · 小说模式','克制与连贯') if target_mode=='meeting' else ('手机聊天 · 自然气泡','记忆与身份边界','人物自主性')
+                        db.execute(f"UPDATE presets SET enabled=0 WHERE mode=? AND (id IN ({','.join('?' for _ in def_ids)}) OR name IN ({','.join('?' for _ in def_names)}))",(target_mode,*def_ids,*def_names))
+                        db.commit();return self.respond({'ok':True,'diagnostics':diagnose_presets(db,target_mode)})
+                    if action=='deduplicate':
+                        target_mode=data.get('mode','meeting')
+                        rows=db.execute('SELECT * FROM presets WHERE mode=? ORDER BY sort_order,id',(target_mode,)).fetchall()
+                        seen=set();removed=0
+                        for r in rows:
+                            k=f"{r['role']}::{str(r['name']).strip()}"
+                            if k in seen:
+                                db.execute('DELETE FROM presets WHERE id=?',(r['id'],));removed+=1
+                            else:seen.add(k)
+                        remaining=db.execute('SELECT id FROM presets WHERE mode=? ORDER BY sort_order,id',(target_mode,)).fetchall()
+                        for idx,r in enumerate(remaining):
+                            db.execute('UPDATE presets SET sort_order=? WHERE id=?',(idx,r['id']))
+                        db.commit();return self.respond({'ok':True,'removed':removed,'diagnostics':diagnose_presets(db,target_mode)})
                     if action=='order':
                         ids=data.get('ids',[])
                         for i,x in enumerate(ids):db.execute('UPDATE presets SET sort_order=? WHERE id=?',(i,x))

@@ -122,6 +122,24 @@ function start(){const win={};const context={window:win,localStorage,crypto:requ
  assert(memAfterCorr.memories.some(m=>m.summary.includes('京都看红叶')&&m.disputed===1),'conversational correction marks memory disputed');
  assert(memAfterCorr.memories.some(m=>m.source_type==='correction'),'correction record added');
 
- console.log('Portable HTML data tests passed: profile role exclusion, timeline, mode, reply, reunion, persistence, backup, and v0.5 4-layer memory');
+ // 7. ROUND-02: Meeting prompt compilation structure (core system -> history -> COT + Layer 4 -> assistant bottom pledge -> trailing user turn) & diagnostics
+ const r2Pack={format:'elsewhere-preset',schemaVersion:1,entries:[
+   {id:'e1',name:'入园与选角仪式',group:'核心定位',role:'system',enabled:true,content:'核心扮演：{{char}} 与 {{user}}'},
+   {id:'e2',name:'高饱和度感官电影流',group:'文风（单选）',role:'system',enabled:true,content:'电影感镜头'},
+   {id:'e3',name:'毛姆式冷眼世故',group:'文风（单选）',role:'system',enabled:false,content:'冷眼旁观禁用测试'},
+   {id:'e4',name:'动笔前连续性检查',group:'COT',role:'system',enabled:true,content:'COT自检：先承接 {{user}} 的动作'},
+   {id:'e5',name:'底部誓约与状态确认',group:'收尾',role:'assistant',enabled:true,content:'我已完全进入 {{char}} 并锁定 {{user}}'}
+ ]};
+ const r2Imp=await app.request('/preset-import',{import_mode:'replace',preset:r2Pack});
+ assert(r2Imp.imported===5 && r2Imp.diagnostics.meeting.enabledCount===4 && r2Imp.diagnostics.meeting.disabledCount===1,'ROUND-02 preset diagnostics');
+ const meetPreview=app.buildPromptPreview(p.id,cid,'meeting',{triggerOpening:true});
+ assert(meetPreview[0].role==='system' && meetPreview[0].content.includes('核心扮演：Leon S. Kennedy 与 Stephanie'),'core system preset with macro expansion');
+ assert(!JSON.stringify(meetPreview).includes('冷眼旁观禁用测试'),'disabled style never enters meeting prompt');
+ assert(meetPreview[meetPreview.length-3].role==='system' && meetPreview[meetPreview.length-3].content.includes('COT自检：先承接 Stephanie 的动作'),'COT placed post-history');
+ assert(meetPreview[meetPreview.length-2].role==='assistant' && meetPreview[meetPreview.length-2].content.includes('我已完全进入 Leon S. Kennedy 并锁定 Stephanie'),'assistant bottom pledge placed second to last');
+ assert(meetPreview[meetPreview.length-1].role==='user' && (meetPreview[meetPreview.length-1].content.includes('【场景开启】') || meetPreview[meetPreview.length-1].content.includes('【继续推进】')),'trailing message in meeting mode is always user role');
+
+ console.log('Portable HTML data tests passed: profile role exclusion, timeline, mode, reply, reunion, persistence, backup, v0.5 4-layer memory, and ROUND-02 preset compilation');
 })().catch(e=>{console.error(e);process.exit(1)});
+
 
