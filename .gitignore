@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Private preset imports and generated download bundles
+/private-presets/
+/public/assets/aistudio/*.json
+/public/assets/aistudio/*.zip
+/public/Parallel_v0.5_HTML与源码_修复版.zip

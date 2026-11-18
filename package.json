@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
+    "build": "npm run build:downloads && vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "build:downloads": "node parallel_src/parallel_ai_date/build_portable.cjs && node scripts/build-release.cjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

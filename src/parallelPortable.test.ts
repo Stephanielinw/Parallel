@@ -770,20 +770,20 @@ test('10. Character Diary (角色日记) auto-generates past-day diaries from su
 });
 
 function load26EntryPresetFixture() {
-  const localPath = path.resolve(process.cwd(), 'public/assets/aistudio/_____685745cf.json');
-  if (fs.existsSync(localPath)) {
+  const localPath = process.env.PARALLEL_PRIVATE_PRESET;
+  if (localPath && fs.existsSync(localPath)) {
     return JSON.parse(fs.readFileSync(localPath, 'utf8'));
   }
   const entries = [];
   for (let i = 0; i < 26; i++) {
-    const isDisabledStyle = i === 16 || i === 17;
-    const isEnabledStyle = i === 18;
+    const isDisabledStyle = i === 22 || i === 23;
+    const isEnabledStyle = i === 21;
     const isCot = i === 24;
     const isBottom = i === 25;
     entries.push({
       id: `entry-${i + 1}`,
       name: isDisabledStyle
-        ? i === 16
+        ? i === 22
           ? '毛姆式冷眼世故'
           : '白水烹鲜温润白描'
         : isEnabledStyle
