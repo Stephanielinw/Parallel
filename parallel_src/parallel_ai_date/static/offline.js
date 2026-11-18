@@ -68,6 +68,8 @@
     if(!s)return '…';
     return stripProtocolTags(s,{preserveParagraphs:true})||'…';
   };
+  // Standalone narration markers are protocol artifacts, not phone messages.
+  const isNarrationMarker=raw=>/^(?:旁白|【旁白】|\[旁白\]|（旁白）|\(旁白\)|\*旁白\*|narrator|narration)\s*[:：。.!！]?\s*$/i.test(String(raw??'').trim());
   const isBareChatDivider=raw=>/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(String(raw??''));
   const pipeChatParts=line=>{
     if(isBareChatDivider(line))return [];
@@ -83,9 +85,9 @@
     result.push(line.slice(start));return result;
   };
   const explicitChatParts=raw=>String(raw??'').replace(/\r\n?/g,'\n').split('\n')
-    .flatMap(line=>pipeChatParts(splitInlineProtocolLine(line))).map(s=>cleanChatBubbleText(s)).filter(s=>s&&!isBareChatDivider(s));
+    .flatMap(line=>pipeChatParts(splitInlineProtocolLine(line))).map(s=>cleanChatBubbleText(s)).filter(s=>s&&!isBareChatDivider(s)&&!isNarrationMarker(s));
   const storedChatText=raw=>explicitChatParts(raw).join('\n');
-  const isChatArtifact=m=>m?.sender==='ai'&&m.mode!=='meeting'&&m.engine!=='recalled'&&!m.recalled&&isBareChatDivider(cleanChatBubbleText(m.text));
+  const isChatArtifact=m=>m?.sender==='ai'&&m.mode!=='meeting'&&m.engine!=='recalled'&&!m.recalled&&(isBareChatDivider(cleanChatBubbleText(m.text))||isNarrationMarker(cleanChatBubbleText(m.text)));
   const sanitizeStoredData=target=>{
     if(!target||typeof target!=='object')return false;
     let changed=false;
@@ -400,7 +402,7 @@
     const rawStr=String(raw||'').trim();
     if(!rawStr)return ['…'];
     let parts=explicitChatParts(rawStr);
-    if(!parts.length&&isBareChatDivider(rawStr.replace(PROTOCOL_LEADING_TAG_RE,'')))return [];
+    if(!parts.length&&(isBareChatDivider(rawStr.replace(PROTOCOL_LEADING_TAG_RE,''))||isNarrationMarker(cleanChatBubbleText(rawStr))))return [];
     if(parts.length===1&&parts[0].length>=32){
       const sentences=parts[0].match(/[^。！？!?]+[。！？!?]+|[^。！？!?]+$/g)?.map(s=>cleanChatBubbleText(s)).filter(Boolean)||[parts[0]];
       if(sentences.length>=2){
@@ -1821,7 +1823,8 @@
       ?cleanMeetingNovelText(rawTrimmed)
       :(mode==='chat'?splitChatBubbles(rawTrimmed).join('\n'):rawTrimmed);
     const truncWarnings=[];
-    if(mode==='chat'&&!parsedPreview.trim())truncWarnings.push('模型仅返回了气泡分隔符，没有可显示正文。');
+    const invalidChat=mode==='chat'&&!parsedPreview.trim();
+    if(invalidChat)truncWarnings.push('模型仅返回了分隔符或旁白占位符，没有可显示的短信正文。');
     if(finishReason==='length'){
       truncWarnings.push('模型返回 finish_reason="length"，说明正文因达到 max_tokens 上限而被中途截断，建议在「终端 -> 连接与模型」调大 Max tokens。');
     }
@@ -1836,10 +1839,10 @@
     }
     recordSystemLog({
       ...logBase,
-      status:'success',
+      status:invalidChat?'error':'success',
       http_status:res.status,
       duration_ms:Date.now()-startedMs,
-      error:'',
+      error:invalidChat?'模型没有返回有效短信正文，请重试。':'',
       raw_response:data,
       raw_content:rawTrimmed,
       reasoning_content:reasoningRaw,
@@ -1850,7 +1853,7 @@
       usage,
       truncation_warning:truncWarnings.join(' ')
     });
-    if(mode==='chat'&&!parsedPreview.trim())bodyErr('模型没有返回有效短信正文，请重试。');
+    if(invalidChat)bodyErr('模型没有返回有效短信正文，请重试。');
     return rawTrimmed;
   }
   async function generateBios(selected,forceRefresh=false){
@@ -1913,6 +1916,7 @@
         engine='live';
       }catch(e){
         warning=String(e.message||e);
+        if(mode==='chat')return {reply:null,replies:[],warning};
         txt='（模型连接失败，历史已保存。请检查终端设置，再尝试角色回复。）';
         engine='error';
       }
@@ -1944,7 +1948,7 @@
         ms.push({role:'user',content:again?`【系统事件：重逢匹配】你刚刚和 ${p.name} 重新匹配上了，你记得你们之前的经历。请根据你的性格与过往记忆，主动发 1～2 条有真实重逢感的手机开场消息（多条气泡之间用 ||| 分隔，绝不要用生硬套话）。`:`【系统事件：首次匹配】你刚刚在约会软件上与 ${p.name} 互相右滑匹配成功。请结合你的原作性格、所处境遇以及对方的公开资料（简介：${p.bio||'无'}；兴趣：${(p.interests||[]).join('、')||'无'}），主动给对方发 1～2 条自然、有个人特色的第一条手机消息（多条气泡之间用 ||| 分隔，绝对不要说“看来我们匹配上了”这种千篇一律的套话）。`});
         const raw=await llm(ms,{max_tokens:220,profile:p,character:c,mode:'chat',entry_point:'chat_first_message'});
         return {bubbles:splitChatBubbles(raw),engine:'live'};
-      }catch(e){}
+      }catch(e){return {bubbles:[],engine:'error',warning:String(e.message||e)}}
     }
     const demoTxt=again?`${p.name}，没想到这么快又刷到你了。|||又见面了……上次的事我没有忘。`:`Hey，${p.name}。|||看来我们匹配上了。`;
     return {bubbles:splitChatBubbles(demoTxt),engine:'demo'};
@@ -2052,17 +2056,18 @@
         if(prior?.status==='matched'){save();return {direction:'right',matched:true,already_matched:true,character:char(c)}}
         const attempt=(prior?.attempts||0)+1,{matched,engine}=await matchDecision(p,c,attempt);
         db.relations[pairKey(p.id,c.id)]={profile_id:p.id,character_id:c.id,status:matched?'matched':'pending',mode:'chat',hot_chat:Boolean(prior?.hot_chat),attempts:attempt,updated_at:stamp()};
-        let greetingReplies=[];
+        let greetingReplies=[],greetingWarning='';
         if(matched){
           event(p.id,c.id,'matched',p.name+(again?' 重新匹配':' 首次匹配'));
           const first=await firstMessage(p,c,again);
+          greetingWarning=first.warning||'';
           if(first.bubbles&&first.bubbles.length){
             greetingReplies=first.bubbles.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,first.engine));
             const lastG=greetingReplies[greetingReplies.length-1];
             if(lastG)recordDialogueEpisode(p,c,[],{...lastG,text:first.bubbles.join(' / ')},'chat');
           }
         }
-        save();return {direction:d,matched,engine,character:char(c),again,replies:greetingReplies};
+        save();return {direction:d,matched,engine,character:char(c),again,replies:greetingReplies,warning:greetingWarning};
       }
       case '/hot-chat':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id);

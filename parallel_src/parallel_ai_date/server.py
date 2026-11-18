@@ -298,6 +298,9 @@ def sanitize_stored_db(db):
         if cs != r['summary'] or cas != r['ai_summary'] or ent_changed:
             db.execute('UPDATE meetings SET summary=?,ai_summary=?,entries=? WHERE id=?', (cs, cas, js(entries), r['id']))
 
+def _is_narration_marker(raw):
+    return bool(re.fullmatch(r'(?:旁白|【旁白】|\[旁白\]|（旁白）|\(旁白\)|\*旁白\*|narrator|narration)\s*[:：。.!！]?\s*',str(raw or '').strip(),re.IGNORECASE))
+
 def _is_bare_chat_divider(raw):
     return bool(re.fullmatch(r'[\s|｜]*[|｜]{2,}[\s|｜]*',str(raw or '')))
 
@@ -317,17 +320,17 @@ def _explicit_chat_parts(raw):
     for line in re.sub(r'\r\n?','\n',str(raw or '')).split('\n'):
         for piece in _pipe_chat_parts(_split_inline_protocol_line(line)):
             cleaned=clean_chat_bubble_text(piece)
-            if cleaned and not _is_bare_chat_divider(cleaned):parts.append(cleaned)
+            if cleaned and not _is_bare_chat_divider(cleaned) and not _is_narration_marker(cleaned):parts.append(cleaned)
     return parts
 
 def _is_chat_artifact(m):
-    return m.get('sender')=='ai' and m.get('mode')!='meeting' and m.get('engine')!='recalled' and _is_bare_chat_divider(clean_chat_bubble_text(m.get('text')))
+    return m.get('sender')=='ai' and m.get('mode')!='meeting' and m.get('engine')!='recalled' and (_is_bare_chat_divider(clean_chat_bubble_text(m.get('text'))) or _is_narration_marker(clean_chat_bubble_text(m.get('text'))))
 
 def split_chat_bubbles(raw):
     raw_str=str(raw or '').strip()
     if not raw_str:return ['…']
     parts=_explicit_chat_parts(raw_str)
-    if not parts and _is_bare_chat_divider(PROTOCOL_LEADING_TAG_RE.sub('',raw_str)):return []
+    if not parts and (_is_bare_chat_divider(PROTOCOL_LEADING_TAG_RE.sub('',raw_str)) or _is_narration_marker(clean_chat_bubble_text(raw_str))):return []
     if len(parts)==1 and len(parts[0])>=32:
         sentences=[clean_chat_bubble_text(s) for s in re.findall(r'[^。！？!?]+[。！？!?]+|[^。！？!?]+$',parts[0]) if clean_chat_bubble_text(s)]
         if len(sentences)>=2:
@@ -1771,9 +1774,9 @@ def match_reply(db,p,c,again=False):
             else:
                 interests_str='、'.join(p.get('interests') or []) or '无'
                 prompt.append({'role':'user','content':f"【系统事件：首次匹配】你刚刚在约会软件上与 {p['name']} 互相右滑匹配成功。请结合你的原作性格、所处境遇以及对方的公开资料（简介：{p.get('bio') or '无'}；兴趣：{interests_str}），主动给对方发 1～2 条自然、有个人特色的第一条手机消息（多条气泡之间用 ||| 分隔，绝对不要说“看来我们匹配上了”这种千篇一律的套话）。"})
-            raw=completion(prompt,max_tokens=220)
+            raw=completion(prompt,max_tokens=220,log_meta={'mode':'chat','entryPoint':'chat_first_message','profile':p,'character':c})
             return split_chat_bubbles(raw),'live'
-        except Exception:pass
+        except Exception:return [],'error'
     demo_txt=f"{p['name']}，没想到这么快又刷到你了。|||又见面了……上次的事我没有忘。" if again else f"Hey，{p['name']}。|||看来我们匹配上了。"
     return split_chat_bubbles(demo_txt),'demo'
 
@@ -2273,7 +2276,10 @@ class Handler(BaseHTTPRequestHandler):
                     engine='demo';warning='';settings=load_connection()
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
                         try:reply=completion(compile_messages(db,p,c,mode,is_continue=(mode=='meeting')),log_meta={'mode':mode,'entryPoint':'meeting-continue' if mode=='meeting' else 'chat-reply','profile':p,'character':c,'parseFn':clean_meeting_novel_text if mode=='meeting' else (lambda raw:' / '.join(split_chat_bubbles(raw)))});engine='live'
-                        except Exception as e:warning=str(e);reply='（模型连接失败，请检查终端设置后重试。）';engine='error'
+                        except Exception as e:
+                            warning=str(e)
+                            if mode=='chat':return self.respond({'reply':None,'replies':[],'mode':mode,'warning':warning})
+                            reply='（模型连接失败，请检查终端设置后重试。）';engine='error'
                     else:reply=demo_text(db,p,c,mode)
                     bubble_texts=[reply] if engine=='error' else (split_chat_bubbles(reply) if mode=='chat' else [clean_meeting_novel_text(reply)])
                     replies=[write_message(db,p['id'],cid,'ai',mode,b_txt,engine) for b_txt in bubble_texts]

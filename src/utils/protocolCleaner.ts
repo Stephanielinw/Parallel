@@ -116,6 +116,7 @@ export function cleanMeetingNovelText(raw: string): string {
 /**
  * Splits raw model chat output into 1–4 clean SMS bubbles.
  */
+  const isNarrationMarker=(raw: string)=>/^(?:旁白|【旁白】|\[旁白\]|（旁白）|\(旁白\)|\*旁白\*|narrator|narration)\s*[:：。.!！]?\s*$/i.test(String(raw??'').trim());
   const isBareChatDivider=(raw: string)=>/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(String(raw??''));
   const pipeChatParts=(line: string)=>{
     if(isBareChatDivider(line))return [];
@@ -131,7 +132,7 @@ export function cleanMeetingNovelText(raw: string): string {
     result.push(line.slice(start));return result;
   };
   const explicitChatParts=(raw: string)=>String(raw??'').replace(/\r\n?/g,'\n').split('\n')
-    .flatMap(line=>pipeChatParts(splitInlineProtocolLine(line))).map(s=>cleanChatBubbleText(s)).filter(s=>s&&!isBareChatDivider(s));
+    .flatMap(line=>pipeChatParts(splitInlineProtocolLine(line))).map(s=>cleanChatBubbleText(s)).filter(s=>s&&!isBareChatDivider(s)&&!isNarrationMarker(s));
   const storedChatText=(raw: string)=>explicitChatParts(raw).join('\n');
 
 export function splitChatBubbles(raw: string): string[] {
@@ -139,7 +140,7 @@ export function splitChatBubbles(raw: string): string[] {
   if (!rawStr) return ['…'];
 
   let parts = explicitChatParts(rawStr);
-  if (!parts.length && isBareChatDivider(rawStr.replace(PROTOCOL_LEADING_TAG_RE,''))) return [];
+  if (!parts.length && (isBareChatDivider(rawStr.replace(PROTOCOL_LEADING_TAG_RE,'')) || isNarrationMarker(cleanChatBubbleText(rawStr)))) return [];
 
   if (parts.length === 1 && parts[0].length >= 32) {
     const sentences =
@@ -209,6 +210,7 @@ export function serializeWorkingHistory(
   const turns: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
   workingHistory.forEach((m, idx) => {
+    if (m.sender==='ai' && m.mode==='chat' && m.engine!=='recalled' && !m.recalled && isNarrationMarker(cleanChatBubbleText(m.text))) return;
     const role = m.sender === 'ai' ? 'assistant' : 'user';
     if (m.engine === 'recalled' || m.recalled) {
       turns.push({

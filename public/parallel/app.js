@@ -152,10 +152,11 @@ async function navigate(tab){
   if(existingInput&&state.threadId)state.draftInputs[state.threadId]=existingInput.value;
   state.profileMenuOpen=false;
   state.tab=tab;
+  const navigationProfile=state.activeId;
   ++threadRequestSeq;
   const vEl=$('view');
   if(vEl)vEl.classList.toggle('is-discover-view',tab==='discover');
-  renderChrome();$('view').scrollTop=0;$('view').innerHTML='<div class="empty-state"><div class="empty-illustration">'+I('spark')+'</div><p>正在读取...</p></div>';try{if(tab==='profile')renderProfile();if(tab==='discover')await loadCandidates(false);if(tab==='messages')await loadThreads();if(tab==='terminal')await loadTerminal()}catch(e){toast(e.message);$('view').innerHTML=`<div class="empty-state"><h2>没有读取成功</h2><p>${esc(e.message)}</p><button class="btn soft" data-action="retry">重试</button></div>`}}
+  renderChrome();$('view').scrollTop=0;$('view').innerHTML='<div class="empty-state"><div class="empty-illustration">'+I('spark')+'</div><p>正在读取...</p></div>';try{if(tab==='profile')renderProfile();if(tab==='discover')await loadCandidates(false);if(tab==='messages')await loadThreads();if(tab==='terminal')await loadTerminal()}catch(e){if(state.tab!==tab||state.activeId!==navigationProfile)return;toast(e.message);$('view').innerHTML=`<div class="empty-state"><h2>没有读取成功</h2><p>${esc(e.message)}</p><button class="btn soft" data-action="retry">重试</button></div>`}}
 // Profile controls
 function newDraft(){return {id:'',name:'',age:'',gender:'female',interested_in:['all'],min_age:18,max_age:60,intent:'认识新朋友',bio:'',interests:[],sources:[],avatar:'',role_character_id:'',role_hint:''}}
 function renderProfile(draft){const p=activeProfile();const d=draft||state.profileDraft||p||newDraft();state.profileDraft=structuredClone(d);const creating=!d.id;
@@ -171,11 +172,40 @@ function removeSourceTag(btn){btn.remove();$('pf-source-input')?.focus()}
 async function identifyAction(){const name=$('pf-name').value.trim();if(!name){toast('先填写姓名');return}try{const data=await api('/identify?name='+encodeURIComponent(name));const holder=$('identify-results');const selected=$('pf-role-id').value;holder.innerHTML=data.matches.length?`<div class="identify-box"><div class="caption">找到 ${data.matches.length} 个已收录的角色版本。请选择准确的平行世界身份：</div>${data.matches.map(c=>`<button type="button" class="ident-option ${selected===c.id?'active':''}" data-action="choose-identity" data-id="${esc(c.id)}">${I('usercheck')}<span><b>${esc(c.name)}</b> · ${esc(c.version)}<br><span class="subtle">${esc(c.source)}</span></span></button>`).join('')}<button type="button" class="btn ghost" data-action="clear-role">不使用原作身份</button></div>`:`<div class="notice">本地目录没有找到“${esc(name)}”。请在下方补充作品名称和时期；暂时不会假装已经确认原作设定。在线人物识别待接入外部可核实资料源。</div>`}catch(e){toast(e.message)}}
 async function uploadAvatar(e){const file=e.target.files?.[0];if(!file)return;if(!file.type.startsWith('image/')){toast('请选择图片');return}const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{const cv=document.createElement('canvas');const scale=Math.min(1,520/Math.max(img.width,img.height));cv.width=Math.round(img.width*scale);cv.height=Math.round(img.height*scale);cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);state.profileDraft=readProfileDraft();state.profileDraft.avatar=cv.toDataURL('image/jpeg',.74);URL.revokeObjectURL(url);renderProfile(state.profileDraft);toast('头像已添加，保存 Profile 后生效')};img.onerror=()=>toast('头像读取失败');img.src=url}
 // Discover and swipe
+// A discover batch belongs to one Profile and survives tab navigation, including an exhausted batch.
+const discoverDecks=new Map(),discoverRequests=new Map();
+function discoverFilterKey(p){return JSON.stringify([p.id,p.sources||[],p.interested_in||[],p.min_age,p.max_age,p.role_character_id||''])}
+function isCurrentDiscover(pid,key){const p=activeProfile();return state.tab==='discover'&&state.activeId===pid&&p&&discoverFilterKey(p)===key}
+function showDiscoverDeck(pid,deck){if(!isCurrentDiscover(pid,deck.key)||discoverDecks.get(pid)!==deck)return;state.candidates=deck.candidates;state.deckIndex=deck.index;renderDiscover(deck.total)}
 async function loadCandidates(showToast=false){$('topbar-actions').innerHTML=`${activeProfile()?`<button class="icon-btn" title="刷新 10 位候选" data-action="refresh">${I('refresh')}</button>${renderProfileDropdownHtml()}`:''}`;if(!activeProfile()){return $('view').innerHTML=empty('dog','先创建你的 Profile','填写身份与作品来源后，就可以开始滑卡。','创建 Profile','profile')}
+    const profile=activeProfile(),pid=profile.id,key=discoverFilterKey(profile);
+    const cached=discoverDecks.get(pid),existing=discoverRequests.get(pid);
+    if(existing&&existing.key===key){try{await existing.promise}catch(e){if(isCurrentDiscover(pid,key))throw e}return;}
+    if(cached&&cached.key===key&&(!showToast||state.loading)){showDiscoverDeck(pid,cached);return;}
+    if(showToast&&state.loading)return;
     if(!(activeProfile().sources||[]).length&&!state.allowAllSources){return $('view').innerHTML=`<div class="empty-state"><div class="empty-illustration">${I('compass')}</div><h2>还没有填写希望匹配的作品</h2><p>请先在你的 Profile 中添加「希望匹配的作品」Tag（如：生化危机、巫师3、漫威电影、赛博朋克2077），平行世界将只为你匹配对应作品中的角色。</p><div class="inline-row" style="justify-content:center"><button class="btn primary" data-action="nav" data-tab="profile">去添加作品 Tag ${I('arrow')}</button><button class="btn soft" data-action="allow-all-sources">不限作品 · 随机探索全部</button></div></div>`}
-    const d=await api('/discover',{profileId:state.activeId,refresh:Boolean(showToast)});state.candidates=d.candidates;state.deckIndex=0;renderDiscover(d.total_available);if(showToast)toast(`已刷新：${d.candidates.length} 位候选${d.generation==='live-generated'?' · AI 已重新生成角色档案':''}${d.candidates.length<10?'（当前目录不足 10 位）':''}`);}
+    const request={key,promise:null};
+    discoverRequests.set(pid,request);
+    request.promise=(async()=>{
+      try{
+        const d=await api('/discover',{profileId:pid,refresh:Boolean(showToast)});
+        if(discoverRequests.get(pid)!==request)return;
+        const deck={key,candidates:d.candidates,index:0,total:d.total_available};
+        discoverDecks.set(pid,deck);
+        if(isCurrentDiscover(pid,key)){
+          showDiscoverDeck(pid,deck);
+          if(showToast)toast(`已刷新：${d.candidates.length} 位候选${d.generation==='live-generated'?' · AI 已重新生成角色档案':''}${d.candidates.length<10?'（当前目录不足 10 位）':''}`);
+        }
+      }catch(e){
+        if(discoverRequests.get(pid)!==request||!isCurrentDiscover(pid,key))return;
+        if(cached&&cached.key===key){showDiscoverDeck(pid,cached);toast(e.message);return;}
+        throw e;
+      }finally{if(discoverRequests.get(pid)===request)discoverRequests.delete(pid);}
+    })();
+    return request.promise;
+}
 function empty(icon,title,description,button,target){return `<div class="empty-state"><div class="empty-illustration">${I(icon)}</div><h2>${esc(title)}</h2><p>${esc(description)}</p>${button?`<button class="btn primary" data-action="nav" data-tab="${target}">${esc(button)} ${I('arrow')}</button>`:''}</div>`}
-function renderDiscover(total=state.candidates.length){const c=state.candidates[state.deckIndex];$('view').classList.add('is-discover-view');$('view').innerHTML=`<div class="discover-screen"><div class="discover-intro"><p class="discover-greeting">${esc(activeProfile()?.name||'')}，今天会遇见谁？</p><span class="counter">${c?`${state.deckIndex+1} / ${state.candidates.length}`:'0 / 0'} · ${total} 可选</span></div><div class="deck-container"><div class="deck-shadow"></div>${c?renderCard(c):`<div class="deck-empty">${I('sparkleheart')}<h3>${total===0?'暂时没有符合条件的角色':'这轮已经刷完啦'}</h3><p>${total===0?'你添加的作品 Tag 已经保存，但当前本地目录里没有符合这些条件的角色。可以先调整 Tag；后续再接入新作品识别。':'刷新再遇见新的候选，也可能再次刷到熟悉的人。'}</p>${total===0?`<button class="btn primary" data-action="nav" data-tab="profile">${I('user')} 编辑作品 Tag</button>`:`<button class="btn primary" data-action="refresh">${I('refresh')} 刷新候选</button>`}</div>`}</div>${c?`<div class="swipe-actions"><button class="pass" data-action="swipe-left" title="不感兴趣">${I('x')}</button><button class="details" data-action="card-details" title="查看背景">${I('info')}</button><button class="like" data-action="swipe-right" title="感兴趣">${I('heart')}</button></div>`:''}</div>`;if(c){attachSwipe();if(state.settings.image_mode==='live'&&!c.portrait&&state.portraitBusyId!==c.id&&!(state.portraitFailed&&state.portraitFailed[c.id]))generateCardPortrait(false,true)}}
+function renderDiscover(total=discoverDecks.get(state.activeId)?.total??state.candidates.length){if(state.tab!=='discover')return;const c=state.candidates[state.deckIndex];$('view').classList.add('is-discover-view');$('view').innerHTML=`<div class="discover-screen"><div class="discover-intro"><p class="discover-greeting">${esc(activeProfile()?.name||'')}，今天会遇见谁？</p><span class="counter">${c?`${state.deckIndex+1} / ${state.candidates.length}`:'0 / 0'} · ${total} 可选</span></div><div class="deck-container"><div class="deck-shadow"></div>${c?renderCard(c):`<div class="deck-empty">${I('sparkleheart')}<h3>${total===0?'暂时没有符合条件的角色':'这轮已经刷完啦'}</h3><p>${total===0?'你添加的作品 Tag 已经保存，但当前本地目录里没有符合这些条件的角色。可以先调整 Tag；后续再接入新作品识别。':'刷新再遇见新的候选，也可能再次刷到熟悉的人。'}</p>${total===0?`<button class="btn primary" data-action="nav" data-tab="profile">${I('user')} 编辑作品 Tag</button>`:`<button class="btn primary" data-action="refresh">${I('refresh')} 刷新候选</button>`}</div>`}</div>${c?`<div class="swipe-actions"><button class="pass" data-action="swipe-left" title="不感兴趣">${I('x')}</button><button class="details" data-action="card-details" title="查看背景">${I('info')}</button><button class="like" data-action="swipe-right" title="感兴趣">${I('heart')}</button></div>`:''}</div>`;if(c){attachSwipe();if(state.settings.image_mode==='live'&&!c.portrait&&state.portraitBusyId!==c.id&&!(state.portraitFailed&&state.portraitFailed[c.id]))generateCardPortrait(false,true)}}
 function renderCard(c){
   const useImg=state.settings.image_mode==='live'||!!c.portrait;
   if(c.portrait){
@@ -206,7 +236,28 @@ async function generateCardPortrait(regenerate=false,silent=false){
   }
 }
 function attachSwipe(){const el=$('swipe-card');let startX=0,dx=0,dragging=false;el.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;dragging=true;startX=e.clientX;dx=0;el.classList.add('dragging');el.setPointerCapture(e.pointerId)});el.addEventListener('pointermove',e=>{if(!dragging)return;dx=e.clientX-startX;el.style.transform=`translateX(${dx}px) rotate(${dx/24}deg)`;$('stamp-like').style.opacity=Math.min(1,Math.max(0,dx/100));$('stamp-nope').style.opacity=Math.min(1,Math.max(0,-dx/100))});el.addEventListener('pointerup',e=>{if(!dragging)return;dragging=false;el.classList.remove('dragging');if(Math.abs(dx)>95){doSwipe(dx>0?'right':'left')}else{el.style.transform='';$('stamp-like').style.opacity=0;$('stamp-nope').style.opacity=0}})}
-async function doSwipe(direction){if(state.loading)return;const c=state.candidates[state.deckIndex];if(!c)return;state.loading=true;const card=$('swipe-card');if(card){card.style.transform=`translateX(${direction==='right'?600:-600}px) rotate(${direction==='right'?25:-25}deg)`;card.style.opacity='0'}try{const res=await api('/swipe',{profileId:state.activeId,characterId:c.id,direction});state.deckIndex++;setTimeout(()=>renderDiscover(),130);if(res.matched&&!res.already_matched){refreshInboxQuietly();setTimeout(()=>matchModal(c,res),330)}else if(res.already_matched){toast('你们已经在匹配列表中了')}else if(direction==='right'){toast(res.engine==='demo'?'对方这次没有选择匹配（演示判定）':'对方这次没有选择匹配')}}catch(e){toast(e.message);if(card){card.style.transform='';card.style.opacity='1'}}finally{state.loading=false}}
+async function doSwipe(direction){
+  const pid=state.activeId,deck=discoverDecks.get(pid);
+  if(state.loading||discoverRequests.has(pid)||!deck||!isCurrentDiscover(pid,deck.key))return;
+  const index=deck.index,c=deck.candidates[index];if(!c)return;
+  state.loading=true;const card=$('swipe-card');
+  if(card){card.style.transform=`translateX(${direction==='right'?600:-600}px) rotate(${direction==='right'?25:-25}deg)`;card.style.opacity='0'}
+  try{
+    const res=await api('/swipe',{profileId:pid,characterId:c.id,direction});
+    if(discoverDecks.get(pid)!==deck)return;
+    deck.index=index+1;
+    if(res.warning&&state.activeId===pid)toast(res.warning);
+    if(isCurrentDiscover(pid,deck.key)){state.deckIndex=deck.index;setTimeout(()=>showDiscoverDeck(pid,deck),130);}
+    if(res.matched&&!res.already_matched){
+      refreshInboxQuietly(pid);
+      setTimeout(()=>{if(isCurrentDiscover(pid,deck.key)&&discoverDecks.get(pid)===deck)matchModal(c,res)},330);
+    }else if(isCurrentDiscover(pid,deck.key)){
+      if(res.already_matched)toast('你们已经在匹配列表中了');
+      else if(direction==='right')toast(res.engine==='demo'?'对方这次没有选择匹配（演示判定）':'对方这次没有选择匹配');
+    }
+  }catch(e){if(isCurrentDiscover(pid,deck.key)&&discoverDecks.get(pid)===deck){toast(e.message);if(card){card.style.transform='';card.style.opacity='1'}}}
+  finally{state.loading=false}
+}
 function matchModal(c,r){const isNormal=state.settings.mode==='normal';const html=`<div class="match-spotlight">${I('hearts')}<div class="match-text">IT'S A MATCH</div></div><h2>${r.again?'又遇见了，'+esc(c.name):'你们互相喜欢！'}</h2><p>${r.again?'你们之前的聊天和经历都还在。':(isNormal?'你们已经建立匹配，连接 API 后角色会用真实模型向你打招呼，你也可以现在先发消息。':'你可以现在开始聊天，角色也给你发来了第一条消息。')}${r.engine==='demo'?' 当前匹配判定为演示模式。':''}</p>`;modal(html,`<button class="btn ghost" data-action="close-modal">继续发现</button><button class="btn primary" data-action="open-match" data-id="${esc(c.id)}">${I('letter')} 去聊天</button>`)}
 function cardModal(){const c=state.candidates[state.deckIndex];if(!c)return;modal(`<div class="kicker">CANON PROFILE</div><h2>${esc(c.name)} · ${c.age||'年龄未公开'}</h2><p>${esc(c.source)} / ${esc(c.version)}</p><div class="glass-info"><b>已收录原作背景</b><p>${esc(c.canon)}</p></div><p>简介是约会软件中的公开资料，不等于这个角色拥有的全部秘密。</p>`,`<button class="btn soft" data-action="close-modal">返回卡片</button>`)}
 async function photoDescriptionModal(regenerate=false,forceText=false){const c=state.candidates[state.deckIndex];if(!c)return;
@@ -1118,7 +1169,7 @@ function renderPortableBackup(){return `<div class="terminal-card"><div class="k
 function exportBackup(){const raw=globalThis.ParallelOffline.exportData(),blob=new Blob([raw],{type:'application/json'}),href=URL.createObjectURL(blob),a=document.createElement('a');a.href=href;a.download='Parallel_Backup_'+new Date().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),2000);toast('存档已导出（不包含 API Key）')}
 let pendingRestoreText='';
 async function importBackup(file){if(!file)return;try{pendingRestoreText=await file.text();modal(`<h2>恢复存档确认</h2><p>这将用备份文件 <b>${esc(file.name)}</b> 覆盖当前存档。确定继续吗？</p>`,`<button class="btn ghost" data-action="close-modal">取消</button><button class="btn primary" data-action="confirm-restore-backup">确认恢复</button>`)}catch(e){toast('读取备份失败：'+e.message)}}
-async function confirmRestoreBackup(){if(!pendingRestoreText)return;try{const r=globalThis.ParallelOffline.importData(pendingRestoreText);pendingRestoreText='';closeModal();state.activeId='';state.profileDraft=null;state.threadId='';state.renderedThreadId='';state.draftInputs={};state.candidates=[];state.threads=[];state.messages=[];await bootstrap();toast(`已恢复 ${r.profiles} 个 Profile、${r.messages} 条消息，请重新填写 API Key`)}catch(e){toast('恢复失败：'+e.message)}}
+async function confirmRestoreBackup(){if(!pendingRestoreText)return;try{const r=globalThis.ParallelOffline.importData(pendingRestoreText);pendingRestoreText='';closeModal();state.activeId='';state.profileDraft=null;state.threadId='';state.renderedThreadId='';state.draftInputs={};discoverDecks.clear();discoverRequests.clear();state.candidates=[];state.deckIndex=0;state.threads=[];state.messages=[];await bootstrap();toast(`已恢复 ${r.profiles} 个 Profile、${r.messages} 条消息，请重新填写 API Key`)}catch(e){toast('恢复失败：'+e.message)}}
 
 const modelPickerConfig={
   chat:{input:'api-model',url:'api-url',key:'api-key',settingUrl:'base_url',hasKey:'has_key',route:'/models',label:'聊天模型'},
