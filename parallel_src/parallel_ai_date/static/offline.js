@@ -2149,7 +2149,7 @@
         return {delivered:sent,sent,matchedCount:matchedRels.length};
       }
       case '/threads':{
-        const p=getP(params.get('profileId'));return {threads:Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&byId.has(r.character_id)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(r=>({character:char(getC(r.character_id),p.id),relation:r,last:messagesOf(p.id,r.character_id).filter(m=>!isChatArtifact(m)).at(-1)||null,queue:queueInfo(p.id,r.character_id)}))};
+        const p=getP(params.get('profileId'));return {threads:Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&byId.has(r.character_id)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(r=>({character:char(getC(r.character_id),p.id),relation:r,last:messagesOf(p.id,r.character_id).filter(m=>!isChatArtifact(m)).at(-1)||null,last_incoming:messagesOf(p.id,r.character_id).filter(m=>m.sender==='ai'&&m.engine!=='error'&&m.engine!=='recalled'&&!m.recalled&&!isChatArtifact(m)).at(-1)||null,queue:queueInfo(p.id,r.character_id)}))};
       }
       case '/thread':{
         const p=getP(params.get('profileId')),c=getC(params.get('characterId')),r=requireMatch(p.id,c.id);

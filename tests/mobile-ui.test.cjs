@@ -1,0 +1,37 @@
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const app=fs.readFileSync(path.join(__dirname,'../public/parallel/app.js'),'utf8');
+const css=fs.readFileSync(path.join(__dirname,'../public/parallel/style.css'),'utf8');
+const source=app.slice(app.indexOf('const READ_CURSOR_KEY='),app.indexOf('async function loadThreads('));
+test('unread cursors track incoming messages, not sent or pending messages, and isolate profiles',()=>{
+  const values=new Map();
+  const storage={getItem:k=>values.get(k)||null,setItem:(k,v)=>values.set(k,v)};
+  const state={activeId:'p1',tab:'discover',threadId:'',messages:[],hiddenReplyIds:new Set()};
+  const doc={hidden:false,querySelectorAll:()=>[]};
+  const h=new Function('localStorage','state','document',source+';return {applyInboxSnapshot,threadHasUnread,markDisplayedIncomingRead,isIncoming};')(storage,state,doc);
+  const m=(id,sender='ai',p='p1')=>({id,sender,profile_id:p,character_id:'c1',mode:'chat',engine:'live',text:'hello'});
+  const t=(incoming,queue=0)=>({character:{id:'c1'},last_incoming:incoming,queue:{count:queue}});
+  h.applyInboxSnapshot('p1',[t(m('old'))]);
+  assert.equal(h.threadHasUnread(t(m('old'),3)),false);
+  assert.equal(h.threadHasUnread(t(m('user','user'),3)),false);
+  assert.equal(h.threadHasUnread(t(m('new'))),true);
+  state.tab='messages';state.threadId='c1';state.messages=[m('new')];doc.hidden=true;
+  h.markDisplayedIncomingRead();assert.equal(h.threadHasUnread(t(m('new'))),true);
+  doc.hidden=false;h.markDisplayedIncomingRead();assert.equal(h.threadHasUnread(t(m('new'))),false);
+  state.hiddenReplyIds.add('future');state.messages.push(m('future'));h.markDisplayedIncomingRead();
+  assert.equal(h.threadHasUnread(t(m('future'))),true);
+  state.activeId='p2';h.applyInboxSnapshot('p2',[]);
+  assert.equal(h.threadHasUnread(t(m('new','ai','p2'))),true);
+  assert.equal(h.threadHasUnread(t({...m('error','ai','p2'),engine:'error'})),false);
+  state.activeId='p1';assert.equal(h.threadHasUnread(t(m('new'))),false);
+  const h2=new Function('localStorage','state','document',source+';return {threadHasUnread};')(storage,state,doc);
+  assert.equal(h2.threadHasUnread(t(m('new'))),false);
+});
+test('layout locks document but keeps inner scroll and 16px editable controls',()=>{
+  assert.match(css,/html,body,#root\{[^}]*overflow:hidden/);
+  assert.match(css,/#app \.chat-body\{overflow-y:auto/);
+  assert.match(css,/textarea,select,\[contenteditable="true"\]\{font-size:16px!important\}/);
+  assert.doesNotMatch(app,/thread-queue-badge/);
+});

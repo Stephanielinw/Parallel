@@ -439,6 +439,41 @@
 .syslog-pre{margin:4px 0 0;padding:10px 12px;max-height:320px;overflow:auto;border-radius:10px;background:#F7F2E9;border:1.4px solid #E0D1BE;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word;color:var(--ink)}
 
 
+
+
+/* One bounded app viewport. Only content panes may scroll. */
+html,body,#root{width:100%;height:100%;min-height:0;margin:0;overflow:hidden;overscroll-behavior:none}
+#app.shell{height:100vh;height:100dvh;height:var(--parallel-visible-height,100dvh);min-height:0;max-height:none;overflow:hidden;grid-template-rows:minmax(0,1fr)}
+#app .main-panel{height:100%;min-height:0;max-height:100%;min-width:0;overflow:hidden}
+#app .sidebar,#app .right-panel{min-height:0;overflow-y:auto;overscroll-behavior:contain}
+#app .topbar,#app .chat-header,#app .chat-compose,#app .mobile-nav{flex-shrink:0}
+#app #view.main-view{min-height:0;min-width:0;overscroll-behavior:contain;overflow-x:hidden;overflow-y:auto}
+#app #view.is-discover-view,#app #view:has(.messages-layout){overflow:hidden}
+#app #view .messages-layout{height:100%;min-height:0;max-height:100%;grid-template-rows:minmax(0,1fr)}
+#app .threads,#app .chat-view,#app .chat-body{min-height:0;min-width:0}
+#app .threads,#app .chat-body,.modal,.syslog-pre,.surv-timeline,.diary-prose,.meeting-modal-transcript,.daily-modal-messages{overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+#app .chat-body{overflow-y:auto;overflow-x:hidden}
+#app .chat-compose textarea{min-width:0}
+.thread-unread-badge,.nav-unread-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#D96B78;flex-shrink:0}
+.thread-unread-badge{margin-left:7px;vertical-align:middle}
+#app [data-tab="messages"]{position:relative}
+.nav-unread-dot{position:absolute;right:8px;top:8px;box-shadow:0 0 0 2px #FFFDF9;pointer-events:none}
+@media(max-width:870px){
+  #app.shell{position:fixed;top:var(--parallel-visible-top,0px);left:0;right:0;padding:0;max-width:760px;margin:0 auto}
+  #app .main-panel{height:100%;min-height:0;max-height:none}
+  #app #view.main-view{padding-bottom:12px}
+  #app .mobile-nav{position:relative;inset:auto;left:auto;right:auto;bottom:auto;margin:0 14px max(10px,env(safe-area-inset-bottom,0px));width:auto}
+  input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),textarea,select,[contenteditable="true"]{font-size:16px!important}
+  html{-webkit-text-size-adjust:100%}
+  .modal{max-height:calc(var(--parallel-visible-height,100dvh) - 32px)}
+}
+@media(max-width:580px){
+  #app .mobile-nav{margin:0 12px max(8px,env(safe-area-inset-bottom,0px))}
+  #app #view.main-view{padding-bottom:10px}
+}
+@media(pointer:coarse){
+  input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),textarea,select,[contenteditable="true"]{font-size:16px!important}
+}
 </style></head><body><div class="backdrop"><div class="orb orb-a"></div><div class="orb orb-b"></div><div class="orb orb-c"></div></div><div id="app" class="shell"><aside class="sidebar glass"><div class="brand"><div class="brand-logo"><img src="/parallel-icon.png" alt="Parallel" class="brand-logo-img" onerror="this.style.display='none'"><svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M26 19C14 20 8 27 10 32C12 37 22 36 27 30C29 27 29 23 26 22C24 22 23 24 23 26C23 24 21 22 19 22C16 23 16 27 19 30C24 35 32 29 39 14M28 18L39 14L35 25M16 37C26 39 38 34 40 27"/></svg></div><div><div class="brand-name">parallel<span>.</span></div><div class="brand-sub">ANOTHER WORLD, ANOTHER YOU.</div></div></div><div class="sidebar-label">EXPLORE YOUR STORY</div><nav id="side-nav" class="side-nav"></nav><div class="sidebar-spacer"></div><div class="sidebar-note"><span class="dot"></span><div><b>一个人，很多个宇宙。</b><p>每个角色保留来时的故事，也记得与你经历的故事。</p></div></div><div class="sidebar-footer" id="sidebar-current"></div></aside><section class="main-panel glass"><header class="topbar"><div class="topbar-title"><div class="eyebrow" id="section-eyebrow">WELCOME TO PARALLEL</div><h1 id="section-title">发现心动</h1></div><div class="topbar-actions" id="topbar-actions"></div></header><main id="view" class="main-view"></main><nav id="mobile-nav" class="mobile-nav glass"></nav></section><aside class="right-panel"><div class="right-top"><span class="overline">THE LITTLE DETAILS</span><span class="status-pill" id="mode-pill">正常模式 · 未连接 API</span></div><div class="quote-card glass"><span class="quote-mark">“</span><p>同一个人，下一次遇见时，依然记得上一次的你。</p><span class="quote-by">THE PARALLEL RULE</span></div><div class="side-info glass" id="side-info"></div><div class="right-footer">PARALLEL / AN EARLY LOCAL PROTOTYPE<br>FICTIONAL CHARACTERS ONLY · 18+</div></aside></div><div id="toast" role="status" aria-live="polite"></div><div id="modal-root"></div><script>/* Parallel Portable Edition: browser-only storage and compatible model adapter.
    No server, no external scripts; direct model calls require provider CORS permission.
    The API key is saved in this browser's origin storage (not encrypted). */
@@ -2590,7 +2625,7 @@
         return {delivered:sent,sent,matchedCount:matchedRels.length};
       }
       case '/threads':{
-        const p=getP(params.get('profileId'));return {threads:Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&byId.has(r.character_id)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(r=>({character:char(getC(r.character_id),p.id),relation:r,last:messagesOf(p.id,r.character_id).filter(m=>!isChatArtifact(m)).at(-1)||null,queue:queueInfo(p.id,r.character_id)}))};
+        const p=getP(params.get('profileId'));return {threads:Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&byId.has(r.character_id)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(r=>({character:char(getC(r.character_id),p.id),relation:r,last:messagesOf(p.id,r.character_id).filter(m=>!isChatArtifact(m)).at(-1)||null,last_incoming:messagesOf(p.id,r.character_id).filter(m=>m.sender==='ai'&&m.engine!=='error'&&m.engine!=='recalled'&&!m.recalled&&!isChatArtifact(m)).at(-1)||null,queue:queueInfo(p.id,r.character_id)}))};
       }
       case '/thread':{
         const p=getP(params.get('profileId')),c=getC(params.get('characterId')),r=requireMatch(p.id,c.id);
@@ -3074,6 +3109,7 @@ async function bootstrap(){
     if(!activeProfile())state.activeId=state.profiles[0]?.id||'';
     if(!activeProfile())state.tab='profile';
     renderChrome();
+    if(state.activeId)await refreshInboxSnapshot().catch(()=>null);
     await navigate(state.tab);
     if(state.activeId&&state.settings.mode!=='normal'&&state.settings.proactive_mode!=='off'){
       setTimeout(()=>checkProactiveMessages('startup'),1100);
@@ -3082,12 +3118,13 @@ async function bootstrap(){
     $('view').innerHTML=`<div class="empty-state"><h2>无法连接本地服务</h2><p>${esc(e.message)}</p><p>${globalThis.ParallelOffline?'当前浏览器限制了数据存储，请使用 Chrome / Safari 普通窗口打开 HTML。':'请先运行 <code>python3 server.py</code>'}</p></div>`;
   }
 }
-function renderChrome(){const nav=x=>`<button type="button" class="${x.id===state.tab?'active ':''}nav-link" data-action="nav" data-tab="${x.id}">${I(x.icon)}<span>${x.detail}</span></button>`;$('side-nav').innerHTML=tabs.map(nav).join('');$('mobile-nav').innerHTML=tabs.map(x=>`<button type="button" class="${x.id===state.tab?'active':''}" data-action="nav" data-tab="${x.id}">${I(x.icon)}<span>${x.label}</span></button>`).join('');const p=activeProfile();$('sidebar-current').innerHTML=p?`${avatar(p)}<span><span class="subtle" style="font-size:9px">正在扮演</span><br>${esc(p.name)}</span>`:`<span class="mini-avatar empty-dog">${I('paw')}</span><span class="subtle">尚未创建角色</span>`;const mode=$('mode-pill');mode.textContent=getModeLabel(state.settings);mode.classList.toggle('live',state.settings.mode==='live');$('section-title').textContent=tabs.find(x=>x.id===state.tab)?.detail||'Parallel';$('section-eyebrow').textContent=({profile:'YOUR IDENTITY',discover:'DISCOVER ANOTHER WORLD',messages:'CONNECTIONS THAT REMEMBER',terminal:'YOUR CREATIVE CONTROL'})[state.tab];const ctx=({profile:[['dog','不同 Profile 可以扮演完全不同的人。'],['shield','原作人物身份与其世界观背景将保持独立。']],discover:[['sparkleheart','每次刷新尝试展示 10 位已有作品角色。'],['clock','重复相遇，记忆不会重置。']],messages:[['letter','消息气泡与面对面小说使用不同预设。'],['book','解除匹配后再次相遇，旧消息仍然存在。']],terminal:[['lock','API Key 仅存放在本机服务的数据目录。'],['sliders','文字 Prompt 可以按模式分开编辑。']]})[state.tab];$('side-info').innerHTML=`<h3>一点关于这里的事</h3>${ctx.map(v=>`<div class="side-fact">${I(v[0])}<span>${v[1]}</span></div>`).join('')}`}
+function renderChrome(){const nav=x=>`<button type="button" class="${x.id===state.tab?'active ':''}nav-link" data-action="nav" data-tab="${x.id}">${I(x.icon)}<span>${x.detail}</span></button>`;$('side-nav').innerHTML=tabs.map(nav).join('');$('mobile-nav').innerHTML=tabs.map(x=>`<button type="button" class="${x.id===state.tab?'active':''}" data-action="nav" data-tab="${x.id}">${I(x.icon)}<span>${x.label}</span></button>`).join('');const p=activeProfile();$('sidebar-current').innerHTML=p?`${avatar(p)}<span><span class="subtle" style="font-size:9px">正在扮演</span><br>${esc(p.name)}</span>`:`<span class="mini-avatar empty-dog">${I('paw')}</span><span class="subtle">尚未创建角色</span>`;const mode=$('mode-pill');mode.textContent=getModeLabel(state.settings);mode.classList.toggle('live',state.settings.mode==='live');$('section-title').textContent=tabs.find(x=>x.id===state.tab)?.detail||'Parallel';$('section-eyebrow').textContent=({profile:'YOUR IDENTITY',discover:'DISCOVER ANOTHER WORLD',messages:'CONNECTIONS THAT REMEMBER',terminal:'YOUR CREATIVE CONTROL'})[state.tab];const ctx=({profile:[['dog','不同 Profile 可以扮演完全不同的人。'],['shield','原作人物身份与其世界观背景将保持独立。']],discover:[['sparkleheart','每次刷新尝试展示 10 位已有作品角色。'],['clock','重复相遇，记忆不会重置。']],messages:[['letter','消息气泡与面对面小说使用不同预设。'],['book','解除匹配后再次相遇，旧消息仍然存在。']],terminal:[['lock','API Key 仅存放在本机服务的数据目录。'],['sliders','文字 Prompt 可以按模式分开编辑。']]})[state.tab];$('side-info').innerHTML=`<h3>一点关于这里的事</h3>${ctx.map(v=>`<div class="side-fact">${I(v[0])}<span>${v[1]}</span></div>`).join('')}`;updateNavUnread()}
 async function navigate(tab){
   const existingInput=$('chat-input');
   if(existingInput&&state.threadId)state.draftInputs[state.threadId]=existingInput.value;
   state.profileMenuOpen=false;
   state.tab=tab;
+  ++threadRequestSeq;
   const vEl=$('view');
   if(vEl)vEl.classList.toggle('is-discover-view',tab==='discover');
   renderChrome();$('view').scrollTop=0;$('view').innerHTML='<div class="empty-state"><div class="empty-illustration">'+I('spark')+'</div><p>正在读取...</p></div>';try{if(tab==='profile')renderProfile();if(tab==='discover')await loadCandidates(false);if(tab==='messages')await loadThreads();if(tab==='terminal')await loadTerminal()}catch(e){toast(e.message);$('view').innerHTML=`<div class="empty-state"><h2>没有读取成功</h2><p>${esc(e.message)}</p><button class="btn soft" data-action="retry">重试</button></div>`}}
@@ -3099,7 +3136,7 @@ function renderProfile(draft){const p=activeProfile();const d=draft||state.profi
     $('profile-form').addEventListener('submit',saveProfile);$('upload-avatar').addEventListener('change',uploadAvatar);
 }
 function readProfileDraft(){const old=state.profileDraft||newDraft();const chipSources=[...document.querySelectorAll('#source-chips .source-tag')].map(x=>x.dataset.value);const pendingInput=($('pf-source-input')?.value||'').split(/[，,]/).map(s=>s.trim().replace(/\s+/g,' ')).filter(Boolean);for(const item of pendingInput){if(!chipSources.some(s=>s.toLocaleLowerCase()===item.toLocaleLowerCase())&&chipSources.length<20)chipSources.push(item)}const rawAge=$('pf-age')?.value?.trim();return {...old,name:$('pf-name')?.value||'',age:rawAge?Number(rawAge):18,gender:$('pf-gender')?.value,intent:$('pf-intent')?.value,bio:$('pf-bio')?.value||'',interests:($('pf-interests')?.value||'').split(/[，,]/).map(s=>s.trim()).filter(Boolean),min_age:Number($('pf-minage')?.value)||18,max_age:Number($('pf-maxage')?.value)||60,interested_in:[...document.querySelectorAll('#gender-chips .active')].map(x=>x.dataset.value),sources:chipSources,role_character_id:$('pf-role-id')?.value||'',role_hint:$('pf-hint')?.value||''}}
-async function saveProfile(e){e.preventDefault();try{const result=await api('/profile',readProfileDraft());state.profiles=state.profiles.filter(x=>x.id!==result.profile.id).concat(result.profile);state.activeId=result.profile.id;try{localStorage.setItem('parallel-active-profile',state.activeId)}catch{};state.profileDraft=null;toast('身份已保存');renderChrome();renderProfile(result.profile)}catch(e){toast(e.message)}}
+async function saveProfile(e){e.preventDefault();try{const result=await api('/profile',readProfileDraft());state.profiles=state.profiles.filter(x=>x.id!==result.profile.id).concat(result.profile);state.activeId=result.profile.id;try{localStorage.setItem('parallel-active-profile',state.activeId)}catch{};state.profileDraft=null;toast('身份已保存');renderChrome();refreshInboxQuietly();renderProfile(result.profile)}catch(e){toast(e.message)}}
 function editChips(element){const wrap=element.closest('.chip-row');if(!wrap||wrap.id!=='gender-chips')return;const v=element.dataset.value;if(v==='all'){wrap.querySelectorAll('.chip').forEach(x=>x.classList.toggle('active',x.dataset.value==='all'));return}wrap.querySelector('[data-value="all"]')?.classList.remove('active');element.classList.toggle('active');if(!wrap.querySelector('.active'))wrap.querySelector('[data-value="all"]').classList.add('active')}
 function addSourceTag(){const input=$('pf-source-input'),wrap=$('source-chips');if(!input||!wrap)return;const value=input.value.trim().replace(/\s+/g,' ');if(!value){input.focus();return}const existing=[...wrap.querySelectorAll('.source-tag')].map(x=>x.dataset.value);if(existing.some(s=>s.toLocaleLowerCase()===value.toLocaleLowerCase())){toast('这个作品已经添加了');input.select();return}if(existing.length>=20){toast('每个 Profile 最多添加 20 个作品 Tag');return}const tag=document.createElement('button');tag.type='button';tag.className='chip active source-tag';tag.dataset.action='remove-source-tag';tag.dataset.value=value;tag.title='移除 '+value;tag.innerHTML=esc(value)+' '+I('x');wrap.appendChild(tag);input.value='';input.focus()}
 function removeSourceTag(btn){btn.remove();$('pf-source-input')?.focus()}
@@ -3141,7 +3178,7 @@ async function generateCardPortrait(regenerate=false,silent=false){
   }
 }
 function attachSwipe(){const el=$('swipe-card');let startX=0,dx=0,dragging=false;el.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;dragging=true;startX=e.clientX;dx=0;el.classList.add('dragging');el.setPointerCapture(e.pointerId)});el.addEventListener('pointermove',e=>{if(!dragging)return;dx=e.clientX-startX;el.style.transform=`translateX(${dx}px) rotate(${dx/24}deg)`;$('stamp-like').style.opacity=Math.min(1,Math.max(0,dx/100));$('stamp-nope').style.opacity=Math.min(1,Math.max(0,-dx/100))});el.addEventListener('pointerup',e=>{if(!dragging)return;dragging=false;el.classList.remove('dragging');if(Math.abs(dx)>95){doSwipe(dx>0?'right':'left')}else{el.style.transform='';$('stamp-like').style.opacity=0;$('stamp-nope').style.opacity=0}})}
-async function doSwipe(direction){if(state.loading)return;const c=state.candidates[state.deckIndex];if(!c)return;state.loading=true;const card=$('swipe-card');if(card){card.style.transform=`translateX(${direction==='right'?600:-600}px) rotate(${direction==='right'?25:-25}deg)`;card.style.opacity='0'}try{const res=await api('/swipe',{profileId:state.activeId,characterId:c.id,direction});state.deckIndex++;setTimeout(()=>renderDiscover(),130);if(res.matched&&!res.already_matched){setTimeout(()=>matchModal(c,res),330)}else if(res.already_matched){toast('你们已经在匹配列表中了')}else if(direction==='right'){toast(res.engine==='demo'?'对方这次没有选择匹配（演示判定）':'对方这次没有选择匹配')}}catch(e){toast(e.message);if(card){card.style.transform='';card.style.opacity='1'}}finally{state.loading=false}}
+async function doSwipe(direction){if(state.loading)return;const c=state.candidates[state.deckIndex];if(!c)return;state.loading=true;const card=$('swipe-card');if(card){card.style.transform=`translateX(${direction==='right'?600:-600}px) rotate(${direction==='right'?25:-25}deg)`;card.style.opacity='0'}try{const res=await api('/swipe',{profileId:state.activeId,characterId:c.id,direction});state.deckIndex++;setTimeout(()=>renderDiscover(),130);if(res.matched&&!res.already_matched){refreshInboxQuietly();setTimeout(()=>matchModal(c,res),330)}else if(res.already_matched){toast('你们已经在匹配列表中了')}else if(direction==='right'){toast(res.engine==='demo'?'对方这次没有选择匹配（演示判定）':'对方这次没有选择匹配')}}catch(e){toast(e.message);if(card){card.style.transform='';card.style.opacity='1'}}finally{state.loading=false}}
 function matchModal(c,r){const isNormal=state.settings.mode==='normal';const html=`<div class="match-spotlight">${I('hearts')}<div class="match-text">IT'S A MATCH</div></div><h2>${r.again?'又遇见了，'+esc(c.name):'你们互相喜欢！'}</h2><p>${r.again?'你们之前的聊天和经历都还在。':(isNormal?'你们已经建立匹配，连接 API 后角色会用真实模型向你打招呼，你也可以现在先发消息。':'你可以现在开始聊天，角色也给你发来了第一条消息。')}${r.engine==='demo'?' 当前匹配判定为演示模式。':''}</p>`;modal(html,`<button class="btn ghost" data-action="close-modal">继续发现</button><button class="btn primary" data-action="open-match" data-id="${esc(c.id)}">${I('letter')} 去聊天</button>`)}
 function cardModal(){const c=state.candidates[state.deckIndex];if(!c)return;modal(`<div class="kicker">CANON PROFILE</div><h2>${esc(c.name)} · ${c.age||'年龄未公开'}</h2><p>${esc(c.source)} / ${esc(c.version)}</p><div class="glass-info"><b>已收录原作背景</b><p>${esc(c.canon)}</p></div><p>简介是约会软件中的公开资料，不等于这个角色拥有的全部秘密。</p>`,`<button class="btn soft" data-action="close-modal">返回卡片</button>`)}
 async function photoDescriptionModal(regenerate=false,forceText=false){const c=state.candidates[state.deckIndex];if(!c)return;
@@ -3157,21 +3194,77 @@ async function photoDescriptionModal(regenerate=false,forceText=false){const c=s
   }catch(e){toast('照片文字描述失败：'+e.message)}
 }
 // Messages
-async function loadThreads(preselect){$('topbar-actions').innerHTML=`<button class="btn soft" data-action="go-discover">${I('sparkleheart')} 继续发现</button>${renderProfileDropdownHtml()}`;if(!activeProfile())return $('view').innerHTML=empty('dog','先创建 Profile','消息会按你当前扮演的身份分别展示。','创建 Profile','profile');const r=await api('/threads?profileId='+encodeURIComponent(state.activeId));state.threads=r.threads;if(preselect)state.threadId=preselect;if(!state.threads.find(x=>x.character.id===state.threadId))state.threadId=window.innerWidth>580?(state.threads[0]?.character.id||''):'';if(state.threadId)await loadThread(state.threadId,false);else renderMessages()}
+
+// Read cursors are per device, Profile and character; never count outgoing queue entries.
+const READ_CURSOR_KEY='parallel-incoming-read-v1';
+let readCursors=(()=>{try{const x=JSON.parse(localStorage.getItem(READ_CURSOR_KEY)||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{};}catch{return {};}})();
+let inboxSnapshot={profileId:'',threads:[]};
+let inboxRequestSeq=0,threadRequestSeq=0;
+const isIncoming=m=>Boolean(m&&m.id&&m.sender==='ai'&&m.engine!=='error'&&m.engine!=='recalled'&&!m.recalled&&!(m.mode!=='meeting'&&/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(String(m.text||''))));
+const saveReadCursors=()=>{try{localStorage.setItem(READ_CURSOR_KEY,JSON.stringify(readCursors));}catch{}};
+function applyInboxSnapshot(pid,threads){
+  if(pid!==state.activeId)return false;
+  if(!Object.prototype.hasOwnProperty.call(readCursors,pid)){
+    // Old versions had no read cursor; existing conversations are read once on migration.
+    readCursors[pid]={};
+    for(const t of threads){const m=t.last_incoming;if(isIncoming(m))readCursors[pid][t.character.id]=m.id;}
+    saveReadCursors();
+  }
+  inboxSnapshot={profileId:pid,threads};
+  updateNavUnread();
+  return true;
+}
+function threadHasUnread(thread,pid=state.activeId){
+  const m=thread?.last_incoming;
+  return isIncoming(m)&&readCursors[pid]?.[thread.character.id]!==m.id;
+}
+function updateNavUnread(){
+  const count=inboxSnapshot.profileId===state.activeId?inboxSnapshot.threads.filter(t=>threadHasUnread(t)).length:0;
+  for(const button of document.querySelectorAll('#side-nav [data-tab="messages"],#mobile-nav [data-tab="messages"]')){
+    let dot=button.querySelector('.nav-unread-dot');
+    if(count&&!dot){dot=document.createElement('span');dot.className='nav-unread-dot';dot.setAttribute('aria-hidden','true');button.append(dot);}
+    if(!count&&dot)dot.remove();
+    button.setAttribute('aria-label',count?'消息，'+count+' 个未读会话':'消息');
+  }
+}
+function markDisplayedIncomingRead(){
+  if(state.tab!=='messages'||!state.threadId||document.hidden)return;
+  const m=state.messages.filter(x=>isIncoming(x)&&!state.hiddenReplyIds.has(x.id)).at(-1);
+  if(!m)return;
+  const pid=state.activeId,cid=state.threadId;
+  if((m.profile_id&&m.profile_id!==pid)||(m.character_id&&m.character_id!==cid))return;
+  const map=readCursors[pid]||(readCursors[pid]={});
+  if(map[cid]!==m.id){map[cid]=m.id;saveReadCursors();}
+  updateNavUnread();
+}
+async function refreshInboxSnapshot(pid=state.activeId){
+  if(!pid)return null;
+  const seq=++inboxRequestSeq;
+  const r=await api('/threads?profileId='+encodeURIComponent(pid));
+  if(seq!==inboxRequestSeq||pid!==state.activeId)return null;
+  const threads=r.threads||[];
+  applyInboxSnapshot(pid,threads);
+  return threads;
+}
+function refreshInboxQuietly(pid=state.activeId){if(pid===state.activeId)void refreshInboxSnapshot(pid).catch(()=>{});}
+
+async function loadThreads(preselect){$('topbar-actions').innerHTML=`<button class="btn soft" data-action="go-discover">${I('sparkleheart')} 继续发现</button>${renderProfileDropdownHtml()}`;if(!activeProfile())return $('view').innerHTML=empty('dog','先创建 Profile','消息会按你当前扮演的身份分别展示。','创建 Profile','profile');const pid=state.activeId;const threads=await refreshInboxSnapshot(pid);if(!threads||state.tab!=='messages'||pid!==state.activeId)return;state.threads=threads;if(preselect)state.threadId=preselect;if(!state.threads.find(x=>x.character.id===state.threadId))state.threadId=window.innerWidth>580?(state.threads[0]?.character.id||''):'';if(state.threadId)await loadThread(state.threadId,false);else renderMessages()}
 function isCharacterTyping(){
   return Boolean(state.flushBusy||state.queue?.status==='inflight'||state.revealingBubbles||(state.chatBusy&&state.chatMode==='meeting'));
 }
 async function loadThread(cid,render=true){
   const existingInput=$('chat-input');
   if(existingInput&&state.renderedThreadId)state.draftInputs[state.renderedThreadId]=existingInput.value;
-  const r=await api('/thread?profileId='+encodeURIComponent(state.activeId)+'&characterId='+encodeURIComponent(cid));
+  const pid=state.activeId,seq=++threadRequestSeq;
+  const r=await api('/thread?profileId='+encodeURIComponent(pid)+'&characterId='+encodeURIComponent(cid));
+  if(seq!==threadRequestSeq||state.tab!=='messages'||state.activeId!==pid)return;
   state.threadId=cid;
   state.messages=r.messages||[];
   state.meetings=r.meetings||[];
   if(r.surveillance)state.surveillanceMap[cid]=r.surveillance;
   if(r.diarySummary)state.diarySummaryMap[cid]=r.diarySummary;
   const tItem=state.threads.find(x=>x.character.id===cid);
-  if(tItem&&r.character)tItem.character=r.character;
+  if(tItem){if(r.character)tItem.character=r.character;tItem.last_incoming=state.messages.filter(isIncoming).at(-1)||null;}
   state.chatMode=r.relation.mode;
   state.hotChat=Boolean(r.relation.hot_chat||r.queue?.hotChat);
   state.activeMeetingId=r.relation.active_meeting_id||'';
@@ -3191,7 +3284,7 @@ function renderMessagesListItems(){
     const lastTxt=cleanBodyText(rawLast,x.last?.sender||'ai');
     const dName=displayName(x.character);
     const hasNick=Boolean(x.character.nickname&&x.character.nickname!==x.character.name);
-    return `<button class="thread-card ${x.character.id===state.threadId?'active':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(dName)}${hasNick?`<span class="thread-truename-hint">（${esc(x.character.name)}）</span>`:''}${x.queue?.count?`<span class="thread-queue-badge" title="${x.queue.count} 条已发出消息"></span>`:''}</b><p>${esc(lastTxt)}</p></span></button>`;
+    return `<button class="thread-card ${x.character.id===state.threadId?'active':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(dName)}${hasNick?`<span class="thread-truename-hint">（${esc(x.character.name)}）</span>`:''}${threadHasUnread(x)?'<span class="thread-unread-badge" title="有新消息" aria-label="有未读消息"></span>':''}</b><p>${esc(lastTxt)}</p></span></button>`;
   }).join('')}`;
 }
 function formatNovelParagraphs(text,sender='ai'){
@@ -3350,6 +3443,8 @@ function renderHeaderModeButton(meeting){
   return `<button type="button" class="icon-btn hot-chat-btn ${isHot?'is-hot':''}" data-action="toggle-hot-chat" aria-pressed="${isHot?'true':'false'}" aria-label="${isHot?'热聊模式已开启':'开启热聊模式'}" title="${hotTitle}">${I('hotchat')}</button><button type="button" class="icon-btn mode-icon-btn" data-action="change-mode" aria-label="进入面对面见面" title="进入面对面见面">${I('map')}</button>`;
 }
 function renderMessages(){
+  if(state.tab!=='messages')return;
+  markDisplayedIncomingRead();
   const selected=state.threads.find(x=>x.character.id===state.threadId);
   const existingInput=$('chat-input');
   const wasFocused=existingInput&&document.activeElement===existingInput;
@@ -3783,6 +3878,7 @@ async function revealMultipleBubbles(replies,profileId,id){
     state.hiddenReplyIds.clear();
     state.revealingBubbles=false;
     if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);
+    else refreshInboxQuietly(profileId);
     return;
   }
   state.hiddenReplyIds=new Set(replies.slice(1).map(x=>x.id));
@@ -3797,6 +3893,7 @@ async function revealMultipleBubbles(replies,profileId,id){
   state.revealingBubbles=false;
   state.hiddenReplyIds.clear();
   if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')renderMessages();
+  else refreshInboxQuietly(profileId);
 }
 async function flushChat(force=false){if(state.flushBusy||state.chatBusy||state.revealingBubbles||!state.threadId||state.chatMode!=='chat')return;
   state.flushBusy=true;const id=state.threadId,profileId=state.activeId;
@@ -3809,7 +3906,7 @@ async function flushChat(force=false){if(state.flushBusy||state.chatBusy||state.
       await revealMultipleBubbles(r.replies,profileId,id);
     }else if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages'){
       await loadThreads(id);
-    }
+    }else if(state.activeId===profileId){await refreshInboxSnapshot(profileId);}
   }catch(e){state.flushBusy=false;toast('发送失败：'+e.message);if(state.tab==='messages'&&state.threadId===id)renderMessages()}
 }
 async function flushBackgroundQueues(){
@@ -3822,8 +3919,9 @@ async function flushBackgroundQueues(){
       if(item.warning)toast(`${item.characterName} 回复失败：${item.warning}`);
       else if(item.reply)toast(`收到来自 ${item.characterName} 的新消息`);
     }
-    if(list.length&&state.activeId===profileId&&state.tab==='messages'){
-      await loadThreads(state.threadId);
+    if(list.length&&state.activeId===profileId){
+      if(state.tab==='messages')await loadThreads(state.threadId);
+      else await refreshInboxSnapshot(profileId);
     }
   }catch{}finally{state.flushBusy=false}
 }
@@ -3848,10 +3946,11 @@ async function checkProactiveMessages(trigger='startup',targetCharId=''){
         if(state.threadId===item.characterId&&item.replies?.length>1){
           await revealMultipleBubbles(item.replies,profileId,item.characterId);
         }else{
-          await loadThreads(state.threadId||item.characterId);
+          await loadThreads(state.threadId);
         }
       }
     }
+    if(list.length&&state.activeId===profileId&&state.tab!=='messages')await refreshInboxSnapshot(profileId);
     if(!list.length&&trigger==='manual'){
       toast('当前还没有已匹配的角色，先去「发现」右滑匹配一位角色吧');
     }
@@ -3924,14 +4023,14 @@ async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
   const now=new Date().toISOString();state.messages.push({id:'pending',sender:'user',mode,text:txt,created_at:now,engine:'human'});
   if(mode==='meeting')state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:now,engine:'human'});
   renderMessages();
-  try{const r=await api('/message',{profileId,characterId:id,text:txt});if(r.warning)toast(r.warning);if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}
+  try{const r=await api('/message',{profileId,characterId:id,text:txt});if(r.warning)toast(r.warning);if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);else refreshInboxQuietly(profileId)}
   catch(e){toast(e.message);if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}
   finally{state.chatBusy=false;if(state.tab==='messages'&&state.threadId===id){renderMessages();const el=$('chat-input');if(el)el.focus()}}
 }
 async function continueReply(){if(state.chatBusy||state.flushBusy||state.queue?.status==='inflight'||!state.threadId)return;
   if(state.chatMode==='chat'&&state.queue?.count){return flushChat(true)}
   state.chatBusy=true;const id=state.threadId,profileId=state.activeId,mode=state.chatMode;state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:new Date().toISOString(),engine:'human'});renderMessages();
-  try{const r=await api('/reply',{profileId,characterId:id});if(r.warning)toast(r.warning);if(r.replies&&r.replies.length>1){state.chatBusy=false;await revealMultipleBubbles(r.replies,profileId,id);return}if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}catch(e){toast(e.message);if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}finally{state.chatBusy=false;if(state.tab==='messages'&&state.activeId===profileId&&state.threadId===id)renderMessages()}
+  try{const r=await api('/reply',{profileId,characterId:id});if(r.warning)toast(r.warning);if(r.replies&&r.replies.length>1){state.chatBusy=false;await revealMultipleBubbles(r.replies,profileId,id);return}if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);else refreshInboxQuietly(profileId)}catch(e){toast(e.message);if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}finally{state.chatBusy=false;if(state.tab==='messages'&&state.activeId===profileId&&state.threadId===id)renderMessages()}
 }
 async function deleteMessage(mid){
   if(!mid||!state.threadId||state.chatBusy)return;
@@ -4195,6 +4294,7 @@ if(a==='quick-switch-profile'){
   if(state.tab==='discover')await loadCandidates(false);
   else if(state.tab==='messages')await loadThreads();
   else if(state.tab==='profile')renderProfile(activeProfile());
+  if(state.tab!=='messages')refreshInboxQuietly();
   toast(`已切换至账户「${curName}」`);
   return;
 }
@@ -4222,7 +4322,7 @@ if(a==='retry')return await navigate(state.tab);
 if(a==='go-profile')return navigate('profile');
 if(a==='go-discover')return navigate('discover');
 if(a==='new-profile'){state.profileDraft=newDraft();return renderProfile(state.profileDraft)}
-if(a==='switch-profile'){state.activeId=el.dataset.id;try{localStorage.setItem('parallel-active-profile',state.activeId)}catch{};state.profileDraft=null;state.threadId='';state.renderedThreadId='';state.candidates=[];state.allowAllSources=false;renderChrome();return renderProfile(activeProfile())}
+if(a==='switch-profile'){state.activeId=el.dataset.id;try{localStorage.setItem('parallel-active-profile',state.activeId)}catch{};state.profileDraft=null;state.threadId='';state.renderedThreadId='';state.candidates=[];state.allowAllSources=false;renderChrome();refreshInboxQuietly();return renderProfile(activeProfile())}
 if(a==='allow-all-sources'){state.allowAllSources=true;return loadCandidates(true)}
 if(a==='gender-chip')return editChips(el);
 if(a==='add-source-tag')return addSourceTag();
@@ -4254,7 +4354,7 @@ if(a==='choose-api-mode'){
 if(a==='close-modal')return closeModal();
 if(a==='open-match'){const id=el.dataset.id;closeModal();state.threadId=id;return navigate('messages')}
 if(a==='select-thread')return loadThread(el.dataset.id);
-if(a==='back-threads'){state.threadId='';state.renderedThreadId='';return renderMessages()}
+if(a==='back-threads'){++threadRequestSeq;state.threadId='';state.renderedThreadId='';return renderMessages()}
 if(a==='change-mode')return changeMode();
 if(a==='toggle-hot-chat')return toggleHotChat();
 if(a==='open-char-hub')return openCharacterHubModal(false);
@@ -4370,5 +4470,23 @@ addEventListener('change',e=>{
   if(e.target.id==='diary-date-input'&&e.target.value)openDiaryModal(e.target.value,false);
 });
 addEventListener('keydown',e=>{state.lastUserActiveAt=Date.now();if(e.target.id==='char-hub-nick-input'&&e.key==='Enter'){e.preventDefault();saveCharacterNickname(e.target.value);return}if(e.target.id==='pf-source-input'&&e.key==='Enter'){e.preventDefault();addSourceTag();return}if(e.target.id==='memory-search-input'&&e.key==='Enter'){e.preventDefault();openMemoriesModal(e.target.value.trim());return}if(e.target.id==='memory-add-input'&&e.key==='Enter'){e.preventDefault();document.querySelector('[data-action="add-memory"]')?.click();return}if(e.key==='Escape')closeModal();if(state.tab==='discover'&&e.target.tagName!=='INPUT'&&e.target.tagName!=='TEXTAREA'&&!$('modal-overlay')){if(e.key==='ArrowLeft')doSwipe('left');if(e.key==='ArrowRight')doSwipe('right')}});
+// Fit the visible viewport while the iOS keyboard is open without disabling pinch zoom.
+function syncVisibleViewport(){
+  const vv=window.visualViewport;
+  if(vv&&Math.abs(vv.scale-1)>0.01)return;
+  const height=vv?.height||window.innerHeight;
+  if(height>0)document.documentElement.style.setProperty('--parallel-visible-height',Math.round(height)+'px');
+  document.documentElement.style.setProperty('--parallel-visible-top',Math.round(vv?.offsetTop||0)+'px');
+}
+window.addEventListener('resize',syncVisibleViewport,{passive:true});
+window.visualViewport?.addEventListener('resize',syncVisibleViewport,{passive:true});
+window.visualViewport?.addEventListener('scroll',syncVisibleViewport,{passive:true});
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&state.activeId){
+    if(state.tab==='messages')void loadThreads(state.threadId).catch(()=>{});
+    else refreshInboxQuietly();
+  }
+});
+syncVisibleViewport();
 bootstrap();
 </script></body></html>

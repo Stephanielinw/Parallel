@@ -1848,11 +1848,13 @@ class Handler(BaseHTTPRequestHandler):
                     for r in rows:
                         c=BY_ID.get(r['character_id']);
                         if not c:continue
-                        last=db.execute('SELECT text,sender,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 1',(p['id'],c['id'])).fetchone()
+                        last=db.execute('SELECT id,text,sender,mode,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid DESC LIMIT 1',(p['id'],c['id'])).fetchone()
+                        incoming_rows=db.execute("SELECT id,text,sender,mode,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND sender='ai' AND engine NOT IN ('error','recalled') ORDER BY rowid DESC",(p['id'],c['id']))
+                        last_incoming=next((dict(x) for x in incoming_rows if not _is_chat_artifact(dict(x))),None)
                         m_state=MEETING_STATE.get((p['id'],c['id']),{})
                         nick=str(m_state.get('nickname','')).strip()
                         cv=char_view(db,c)|{'nickname':nick,'display_name':nick or c['name']}
-                        threads.append({'character':cv,'relation':dict(r)|{'hot_chat':bool(m_state.get('hot_chat',False)),'nickname':nick},'last':dict(last) if last else None,'queue':queue_view(db,p['id'],c['id'])})
+                        threads.append({'character':cv,'relation':dict(r)|{'hot_chat':bool(m_state.get('hot_chat',False)),'nickname':nick},'last':dict(last) if last else None,'last_incoming':last_incoming,'queue':queue_view(db,p['id'],c['id'])})
                     return self.respond({'threads':threads})
                 if route=='/api/thread':
                     p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid)
