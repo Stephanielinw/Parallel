@@ -68,13 +68,31 @@
     if(!s)return '…';
     return stripProtocolTags(s,{preserveParagraphs:true})||'…';
   };
+  const isBareChatDivider=raw=>/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(String(raw??''));
+  const pipeChatParts=line=>{
+    if(isBareChatDivider(line))return [];
+    const result=[];let start=0;
+    for(const match of line.matchAll(/[|｜]{2,}/g)){
+      const i=match.index,before=line.slice(0,i),after=line.slice(i+match[0].length);
+      // Preserve literal separators inside quotes, code spans and escaped text.
+      if(hasUnclosedQuoteBefore(before)||((before.match(/\x60/g)||[]).length%2)||/\\$/.test(before))continue;
+      // A simple Boolean expression is not a chat separator.
+      if(match[0]==='||'&&/^[\s(]*[a-z_$0-9][\w.$]*\s*$/.test(before)&&/^\s*[a-z_$0-9][\w.$]*[\s)]*$/.test(after))continue;
+      result.push(line.slice(start,i));start=i+match[0].length;
+    }
+    result.push(line.slice(start));return result;
+  };
+  const explicitChatParts=raw=>String(raw??'').replace(/\r\n?/g,'\n').split('\n')
+    .flatMap(line=>pipeChatParts(splitInlineProtocolLine(line))).map(s=>cleanChatBubbleText(s)).filter(s=>s&&!isBareChatDivider(s));
+  const storedChatText=raw=>explicitChatParts(raw).join('\n');
+  const isChatArtifact=m=>m?.sender==='ai'&&m.mode!=='meeting'&&m.engine!=='recalled'&&!m.recalled&&isBareChatDivider(cleanChatBubbleText(m.text));
   const sanitizeStoredData=target=>{
     if(!target||typeof target!=='object')return false;
     let changed=false;
     if(Array.isArray(target.messages)){
       for(const m of target.messages){
         if(!m||typeof m.text!=='string'||m.sender==='user'||m.engine==='recalled'||m.recalled)continue;
-        const cleaned=m.mode==='meeting'?cleanMeetingNovelText(m.text):(cleanChatBubbleText(m.text)||'…');
+        const cleaned=m.mode==='meeting'?cleanMeetingNovelText(m.text):(storedChatText(m.text)||m.text);
         if(cleaned!==m.text){m.text=cleaned;changed=true;}
       }
     }
@@ -381,8 +399,8 @@
   const splitChatBubbles=raw=>{
     const rawStr=String(raw||'').trim();
     if(!rawStr)return ['…'];
-    const preSplit=rawStr.replace(/\r\n?/g,'\n').split('\n').map(line=>splitInlineProtocolLine(line)).join('\n');
-    let parts=preSplit.split(/\s*\|\|\|\s*|\r?\n+/).map(s=>cleanChatBubbleText(s)).filter(Boolean);
+    let parts=explicitChatParts(rawStr);
+    if(!parts.length&&isBareChatDivider(rawStr.replace(PROTOCOL_LEADING_TAG_RE,'')))return [];
     if(parts.length===1&&parts[0].length>=32){
       const sentences=parts[0].match(/[^。！？!?]+[。！？!?]+|[^。！？!?]+$/g)?.map(s=>cleanChatBubbleText(s)).filter(Boolean)||[parts[0]];
       if(sentences.length>=2){
@@ -1425,7 +1443,7 @@
     return parts.join('；')+'。';
   };
   const selectWorkingHistory=(pid,cid,mode='chat')=>{
-    const all=messagesOf(pid,cid);
+    const all=messagesOf(pid,cid).filter(m=>!isChatArtifact(m));
     if(!all.length)return [];
     if(mode==='meeting'){
       const r=relation(pid,cid);
@@ -1433,7 +1451,7 @@
       const winLimit=16;
       if(activeMid){
         const curMeet=all.filter(m=>m.mode==='meeting'&&m.meeting_id===activeMid);
-        if(curMeet.length)return curMeet.slice(-winLimit);
+        return curMeet.slice(-winLimit);
       }
       const trailingMeet=[];
       for(let i=all.length-1;i>=0;i--){
@@ -1453,7 +1471,7 @@
   const selectPreMeetingChatContext=(pid,cid,limit=6)=>{
     const all=messagesOf(pid,cid);
     if(!all.length)return [];
-    return all.filter(m=>m.mode==='chat'&&m.engine!=='recalled'&&!m.recalled).slice(-limit);
+    return all.filter(m=>m.mode==='chat'&&m.engine!=='recalled'&&!m.recalled&&!isChatArtifact(m)).slice(-limit);
   };
   const expandPresetMacros=(text,p,c)=>{
     return String(text??'')
@@ -1803,6 +1821,7 @@
       ?cleanMeetingNovelText(rawTrimmed)
       :(mode==='chat'?splitChatBubbles(rawTrimmed).join('\n'):rawTrimmed);
     const truncWarnings=[];
+    if(mode==='chat'&&!parsedPreview.trim())truncWarnings.push('模型仅返回了气泡分隔符，没有可显示正文。');
     if(finishReason==='length'){
       truncWarnings.push('模型返回 finish_reason="length"，说明正文因达到 max_tokens 上限而被中途截断，建议在「终端 -> 连接与模型」调大 Max tokens。');
     }
@@ -1831,6 +1850,7 @@
       usage,
       truncation_warning:truncWarnings.join(' ')
     });
+    if(mode==='chat'&&!parsedPreview.trim())bodyErr('模型没有返回有效短信正文，请重试。');
     return rawTrimmed;
   }
   async function generateBios(selected,forceRefresh=false){
@@ -2129,7 +2149,7 @@
         return {delivered:sent,sent,matchedCount:matchedRels.length};
       }
       case '/threads':{
-        const p=getP(params.get('profileId'));return {threads:Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&byId.has(r.character_id)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(r=>({character:char(getC(r.character_id),p.id),relation:r,last:messagesOf(p.id,r.character_id).at(-1)||null,queue:queueInfo(p.id,r.character_id)}))};
+        const p=getP(params.get('profileId'));return {threads:Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&byId.has(r.character_id)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(r=>({character:char(getC(r.character_id),p.id),relation:r,last:messagesOf(p.id,r.character_id).filter(m=>!isChatArtifact(m)).at(-1)||null,queue:queueInfo(p.id,r.character_id)}))};
       }
       case '/thread':{
         const p=getP(params.get('profileId')),c=getC(params.get('characterId')),r=requireMatch(p.id,c.id);
@@ -2271,7 +2291,7 @@
             const activeMid=r.active_meeting_id||'';
             const allMsgs=messagesOf(p.id,c.id);
             let mMsgs=activeMid?allMsgs.filter(x=>x.mode==='meeting'&&x.meeting_id===activeMid):[];
-            if(!mMsgs.length){
+            if(!activeMid&&!mMsgs.length){
               for(let i=allMsgs.length-1;i>=0;i--){
                 if(allMsgs[i].mode==='meeting')mMsgs.unshift(allMsgs[i]);
                 else break;
@@ -2449,6 +2469,8 @@
     request,
     stripProtocolTags,
     cleanChatBubbleText,
+    storedChatText,
+    isChatArtifact,
     cleanMeetingNovelText,
     splitChatBubbles,
     sanitizeStoredData,

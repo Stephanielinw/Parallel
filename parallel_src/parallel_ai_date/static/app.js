@@ -292,7 +292,7 @@ function findOrBuildMeetingRecord(block,c){
 function renderChatMessagesHtml(c){
   const pendingSet=new Set(state.queue?.pendingIds||[]);
   const charTyping=isCharacterTyping();
-  const visibleMsgs=state.messages.filter(m=>!(state.hiddenReplyIds&&state.hiddenReplyIds.has(m.id)));
+  const visibleMsgs=state.messages.filter(m=>!(state.hiddenReplyIds&&state.hiddenReplyIds.has(m.id))&&!(m.sender==='ai'&&m.mode!=='meeting'&&m.engine!=='recalled'&&!m.recalled&&/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(cleanBodyText(m.text,m.sender))));
   const pName=activeProfile()?.name||'你';
   if(state.chatMode==='meeting'){
     let sessionMsgs=[];

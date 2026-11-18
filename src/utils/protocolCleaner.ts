@@ -116,20 +116,30 @@ export function cleanMeetingNovelText(raw: string): string {
 /**
  * Splits raw model chat output into 1–4 clean SMS bubbles.
  */
+  const isBareChatDivider=(raw: string)=>/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(String(raw??''));
+  const pipeChatParts=(line: string)=>{
+    if(isBareChatDivider(line))return [];
+    const result: string[]=[];let start=0;
+    for(const match of line.matchAll(/[|｜]{2,}/g)){
+      const i=match.index!,before=line.slice(0,i),after=line.slice(i+match[0].length);
+      // Preserve literal separators inside quotes, code spans and escaped text.
+      if(hasUnclosedQuoteBefore(before)||((before.match(/\x60/g)||[]).length%2)||/\\$/.test(before))continue;
+      // A simple Boolean expression is not a chat separator.
+      if(match[0]==='||'&&/^[\s(]*[a-z_$0-9][\w.$]*\s*$/.test(before)&&/^\s*[a-z_$0-9][\w.$]*[\s)]*$/.test(after))continue;
+      result.push(line.slice(start,i));start=i+match[0].length;
+    }
+    result.push(line.slice(start));return result;
+  };
+  const explicitChatParts=(raw: string)=>String(raw??'').replace(/\r\n?/g,'\n').split('\n')
+    .flatMap(line=>pipeChatParts(splitInlineProtocolLine(line))).map(s=>cleanChatBubbleText(s)).filter(s=>s&&!isBareChatDivider(s));
+  const storedChatText=(raw: string)=>explicitChatParts(raw).join('\n');
+
 export function splitChatBubbles(raw: string): string[] {
   const rawStr = String(raw ?? '').trim();
   if (!rawStr) return ['…'];
 
-  const preSplit = rawStr
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .map((line) => splitInlineProtocolLine(line))
-    .join('\n');
-
-  let parts = preSplit
-    .split(/\s*\|\|\|\s*|\r?\n+/)
-    .map((s) => cleanChatBubbleText(s))
-    .filter(Boolean);
+  let parts = explicitChatParts(rawStr);
+  if (!parts.length && isBareChatDivider(rawStr.replace(PROTOCOL_LEADING_TAG_RE,''))) return [];
 
   if (parts.length === 1 && parts[0].length >= 32) {
     const sentences =
@@ -219,7 +229,7 @@ export function serializeWorkingHistory(
         ? String(m.text ?? '')
         : m.mode === 'meeting'
           ? cleanMeetingNovelText(m.text)
-          : cleanChatBubbleText(m.text) || '…';
+          : storedChatText(m.text) || m.text;
 
     turns.push({
       role,

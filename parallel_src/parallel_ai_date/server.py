@@ -298,11 +298,36 @@ def sanitize_stored_db(db):
         if cs != r['summary'] or cas != r['ai_summary'] or ent_changed:
             db.execute('UPDATE meetings SET summary=?,ai_summary=?,entries=? WHERE id=?', (cs, cas, js(entries), r['id']))
 
+def _is_bare_chat_divider(raw):
+    return bool(re.fullmatch(r'[\s|｜]*[|｜]{2,}[\s|｜]*',str(raw or '')))
+
+def _pipe_chat_parts(line):
+    if _is_bare_chat_divider(line):return []
+    result=[];start=0
+    for match in re.finditer(r'[|｜]{2,}',line):
+        i=match.start();before=line[:i];after=line[match.end():]
+        if _has_unclosed_quote_before(before) or before.count(chr(96)) % 2 or before.endswith(chr(92)):continue
+        if match.group()=='||' and re.fullmatch(r'[\s(]*[a-z_$0-9][\w.$]*\s*',before,re.ASCII) and re.fullmatch(r'\s*[a-z_$0-9][\w.$]*[\s)]*',after,re.ASCII):continue
+        result.append(line[start:i]);start=match.end()
+    result.append(line[start:])
+    return result
+
+def _explicit_chat_parts(raw):
+    parts=[]
+    for line in re.sub(r'\r\n?','\n',str(raw or '')).split('\n'):
+        for piece in _pipe_chat_parts(_split_inline_protocol_line(line)):
+            cleaned=clean_chat_bubble_text(piece)
+            if cleaned and not _is_bare_chat_divider(cleaned):parts.append(cleaned)
+    return parts
+
+def _is_chat_artifact(m):
+    return m.get('sender')=='ai' and m.get('mode')!='meeting' and m.get('engine')!='recalled' and _is_bare_chat_divider(clean_chat_bubble_text(m.get('text')))
+
 def split_chat_bubbles(raw):
     raw_str=str(raw or '').strip()
     if not raw_str:return ['…']
-    pre_split='\n'.join(_split_inline_protocol_line(ln) for ln in re.sub(r'\r\n?','\n',raw_str).split('\n'))
-    parts=[clean_chat_bubble_text(s) for s in re.split(r'\s*\|\|\|\s*|\r?\n+',pre_split) if clean_chat_bubble_text(s)]
+    parts=_explicit_chat_parts(raw_str)
+    if not parts and _is_bare_chat_divider(PROTOCOL_LEADING_TAG_RE.sub('',raw_str)):return []
     if len(parts)==1 and len(parts[0])>=32:
         sentences=[clean_chat_bubble_text(s) for s in re.findall(r'[^。！？!?]+[。！？!?]+|[^。！？!?]+$',parts[0]) if clean_chat_bubble_text(s)]
         if len(sentences)>=2:
@@ -1327,7 +1352,7 @@ def select_working_history(db,pid,cid,mode='chat',through_rowid=None):
         rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND rowid<=? ORDER BY rowid DESC LIMIT 48',(pid,cid,through_rowid)).fetchall()
     else:
         rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 48',(pid,cid)).fetchall()
-    chron=list(reversed([dict(r) for r in rows]))
+    chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m)]
     if not chron:return []
     if mode=='meeting':
         active_streak=[]
@@ -1490,6 +1515,7 @@ def completion(messages,*,json_mode=False,max_tokens=None,log_meta=None):
         reasoning_content=str(msg_obj.get('reasoning_content') or msg_obj.get('reasoning') or '')
         if isinstance(content,list):content=''.join(x.get('text','') for x in content if isinstance(x,dict))
         raw_trimmed=content.strip() if isinstance(content,str) else ''
+        if req_mode=='chat' and raw_trimmed and not split_chat_bubbles(raw_trimmed):raw_trimmed=''
         if not raw_trimmed:
             record_system_log({
                 'profile_id':(meta.get('profile') or {}).get('id',''),
