@@ -1048,7 +1048,7 @@ async function changeMode(){
 }
 function confirmUnmatch(){const t=state.threads.find(x=>x.character.id===state.threadId);if(!t)return;modal(`<h2>要解除与 ${esc(t.character.name)} 的匹配吗？</h2><p>这会把对方从消息列表移除，但不会删除你们的聊天记录或角色的记忆。以后再次匹配时还会认得你。</p>`,`<button class="btn soft" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-unmatch">解除匹配</button>`)}
 // Terminal
-async function loadTerminal(){const [a,b,c]=await Promise.all([api('/settings'),api('/presets'),api('/system-logs').catch(()=>({logs:[]}))]);state.settings=a;state.presets=b.entries||[];state.presetDiagnostics=b.diagnostics||{};state.systemLogs=c?.logs||[];renderChrome();renderTerminal()}
+async function loadTerminal(){const [a,b,c]=await Promise.all([api('/settings'),api('/presets'),api('/system-logs').catch(()=>({logs:[]}))]);state.settings=a;state.presets=b.entries||[];state.presetDiagnostics=b.diagnostics||{};state.systemLogs=c?.logs||[];state.logEnabled=c?.enabled!==false;state.logStorage=c?.storage||'session';renderChrome();renderTerminal()}
 function renderTerminal(){$('topbar-actions').innerHTML=`<span class="status-pill ${state.settings.mode==='live'?'live':''}">${state.settings.mode==='live'?'LIVE API':(state.settings.mode==='normal'?'NORMAL · 未连接 API':'DEMO MODE')}</span>`;const tabBody=state.terminalTab==='api'?renderApiSettings():(state.terminalTab==='presets'?renderPresets():renderSystemLogs());$('view').innerHTML=`<div class="terminal-screen"><div class="terminal-tabs"><button class="terminal-tab ${state.terminalTab==='api'?'active':''}" data-action="term-tab" data-tab="api">${I('link')} 连接与模型</button><button class="terminal-tab ${state.terminalTab==='presets'?'active':''}" data-action="term-tab" data-tab="presets">${I('book')} 文字预设</button><button class="terminal-tab ${state.terminalTab==='logs'?'active':''}" data-action="term-tab" data-tab="logs">${I('monitor')} 生成日志${state.systemLogs.length?` (${state.systemLogs.length})`:''}</button></div>${tabBody}${globalThis.ParallelOffline&&state.terminalTab==='api'?renderPortableBackup():''}</div>`;if(state.terminalTab==='api'){const form=$('api-settings-form');form.addEventListener('submit',saveSettings);$('api-temperature').addEventListener('input',e=>$('temp-output').textContent=e.target.value);$('api-top-p').addEventListener('input',e=>$('topp-output').textContent=e.target.value)} }
 function renderPortableBackup(){return `<div class="terminal-card"><div class="kicker">LOCAL DATA</div><h3>存档备份</h3><p class="caption">单 HTML 版把聊天和 Profile 存在当前浏览器中。移动文件或清理浏览器数据可能导致存档丢失。建议定期导出备份。导出的 JSON 不包含 API Key 與生成日志。</p>${globalThis.ParallelOffline.storageAvailable?'':`<div class="notice" style="margin:12px 0">当前浏览器禁止本地持久化，刷新页面后存档可能消失。请在结束前导出备份。</div>`}<div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="export-backup">${I('book')} 导出存档 JSON</button><label class="btn soft file-upload">${I('refresh')} 恢复存档<input type="file" id="portable-restore" accept=".json,application/json"></label></div></div>`}
 function exportBackup(){const raw=globalThis.ParallelOffline.exportData(),blob=new Blob([raw],{type:'application/json'}),href=URL.createObjectURL(blob),a=document.createElement('a');a.href=href;a.download='Parallel_Backup_'+new Date().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),2000);toast('存档已导出（不包含 API Key）')}
@@ -1101,9 +1101,10 @@ function renderSystemLogs(){
     <div class="preset-diag-head" style="margin-bottom:8px">
       <div>
         <h3>模型调用与预设注入日志</h3>
-        <p class="caption">完整记录每次模型请求的实际发送 Payload、生效预设条目、模型与采样参数、Token 消耗、finish_reason 及原始/解析后正文对比。仅保存在本地，脱敏隐藏 API Key，绝不混入角色记忆或导出包。</p>
+        <p class="caption">记录实际请求与模型回复，仅用于本地调试，不参与角色记忆。日志与正式存档隔离，最多40条且不超过4 MiB。${state.logStorage==='indexeddb'?'独立 IndexedDB 存储。':'当前为会话内存存储，刷新或重启后可能清空。'}</p>
       </div>
       <div class="inline-row">
+        <button type="button" class="btn ${state.logEnabled===false?'soft':'primary'}" data-action="toggle-system-logs">${state.logEnabled===false?'开启调试记录':'关闭调试记录'}</button>
         <button type="button" class="btn soft" data-action="refresh-system-logs">${I('refresh')} 刷新</button>
         <button type="button" class="btn danger" data-action="clear-system-logs" ${allLogs.length?'':'disabled'}>${I('trash')} 清空日志</button>
       </div>
@@ -1135,6 +1136,7 @@ function renderSystemLogs(){
             <button type="button" class="icon-btn" title="删除此条日志" data-action="delete-system-log" data-id="${esc(log.id)}">${I('trash')}</button>
           </div>
         </div>
+        ${log.storage_warning?`<div class="preset-diag-warn">${esc(log.storage_warning)}</div>`:''}
         ${log.truncation_warning?`<div class="preset-diag-warn" style="margin:8px 0"><span>${esc(log.truncation_warning)}</span></div>`:''}
         ${log.error?`<div class="preset-diag-warn" style="margin:8px 0"><span>错误信息：${esc(log.error)}</span></div>`:''}
         <div class="syslog-meta-grid">
@@ -1181,7 +1183,7 @@ function renderSystemLogs(){
 }
 async function refreshSystemLogs(){
   const d=await api('/system-logs').catch(()=>({logs:[]}));
-  state.systemLogs=d.logs||[];
+  state.systemLogs=d.logs||[];state.logEnabled=d.enabled!==false;state.logStorage=d.storage||'session';
   if(state.tab==='terminal')renderTerminal();
 }
 function makePresetPackage(scope){
@@ -1400,6 +1402,7 @@ if(a==='term-tab'){state.terminalTab=el.dataset.tab;if(state.terminalTab==='logs
 if(a==='preset-mode'){state.presetMode=el.dataset.mode;return renderTerminal()}
 if(a==='preset-disable-defaults'){await api('/preset',{action:'disable_defaults',mode:state.presetMode});await refreshPresets();return toast('已停用默认保底条目，仅保留自定义预设')}
 if(a==='preset-deduplicate'){const r=await api('/preset',{action:'deduplicate',mode:state.presetMode});await refreshPresets();return toast(`已清理 ${r.removed||0} 条重复预设`)}
+if(a==='toggle-system-logs'){await api('/system-logs-settings',{enabled:state.logEnabled===false});await refreshSystemLogs();return toast(state.logEnabled?'调试记录已开启':'调试记录已关闭')}
 if(a==='refresh-system-logs'){await refreshSystemLogs();return toast('生成日志已刷新')}
 if(a==='filter-system-logs'){state.logFilterMode=el.dataset.mode||'all';return renderTerminal()}
 if(a==='clear-system-logs'){return modal('<h2>清空所有生成日志？</h2><p>这将清空本地保存的模型生成诊断日志（不影响聊天记录、记忆或预设）。</p>','<button class="btn ghost" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-clear-system-logs">确认清空</button>')}

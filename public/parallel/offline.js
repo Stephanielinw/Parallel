@@ -19,8 +19,8 @@
   const uid=()=>typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'p'+Math.random().toString(36).slice(2)+Date.now().toString(36);
   const pairKey=(p,c)=>p+'|'+c;
   const DEFAULT_PRESET_IDS=new Set(DEFAULT_PRESETS.map(x=>x.id));
-  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},systemLogs:[],presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,auto_portraits:false,proactive_mode:'daily'}});
-  let db;let storageAvailable=true;
+  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,auto_portraits:false,proactive_mode:'daily'}});
+  let db;let storageAvailable=true;let mainStoreReadable=true;
   const PROTOCOL_LEADING_TAG_RE=/^(?:[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)[ \t]*)+/gm;
   const INLINE_TIMED_TAG_SEQ_RE=/(?:(?:\[|【)\s*(?:短信|见面)[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?\s*(?:\]|】)[ \t]*)+/g;
   const PROSE_CONTINUATION_AFTER_TAG_RE=/^(?:[”"』」）》】\]，,。！？!?；;、：:]|那条|这条|该条|一条|哪条|每条|那段|这段|那个|这个|那封|这封|的|里|中|上|后|前|内|外|记录|消息|内容|截图|气泡|通知|提醒|历史|存档|文本|字样|标记|标签)/;
@@ -173,7 +173,6 @@
     target.diaries ||= {};
     target.meetings ||= [];
     target.episodicMemories ||= [];
-    target.systemLogs ||= [];
     if(target.connection){
       target.connection.image_base_url ||= '';
       target.connection.image_api_key ||= '';
@@ -197,10 +196,92 @@
     }
     sanitizeStoredData(target);
   };
-  try { const raw=localStorage.getItem(STORE_KEY); db=raw?JSON.parse(raw):empty(); if(!db || !Array.isArray(db.profiles))throw Error('broken'); ensureDbFields(db); localStorage.setItem(STORE_KEY,JSON.stringify(db)); }
-  catch(err) { db=empty();storageAvailable=false; }
-  ensureDbFields(db);
-  const save=()=>{if(!storageAvailable)return;try{localStorage.setItem(STORE_KEY,JSON.stringify(db));}catch(err){storageAvailable=false;throw Error('浏览器本地空间不足或禁止保存。当前会话可继续，但刷新可能丢失数据。建议改用 Chrome / Safari 普通窗口。')}};
+  let legacySystemLogs=[];
+  try {
+    const raw=localStorage.getItem(STORE_KEY);
+    db=raw?JSON.parse(raw):empty();
+    if(!db||!Array.isArray(db.profiles))throw Error('broken');
+    legacySystemLogs=Array.isArray(db.systemLogs)?db.systemLogs:[];
+    delete db.systemLogs;
+    ensureDbFields(db);
+  }catch(err){db=empty();storageAvailable=false;mainStoreReadable=false;}
+  const save=()=>{
+    if(!mainStoreReadable)throw Error('无法安全读取原存档，已停止覆盖；请先导出备份。');
+    try{localStorage.setItem(STORE_KEY,JSON.stringify(db));storageAvailable=true;}
+    catch(err){storageAvailable=false;throw Error('浏览器本地空间不足或禁止保存。请先导出备份并释放空间。后续保存会继续尝试，不会静默跳过。');}
+  };
+  // Diagnostics never share the authoritative save or its failure state.
+  const LOG_MAX_COUNT=40,LOG_MAX_BYTES=4*1024*1024;
+  const logByteSize=x=>{const s=JSON.stringify(x);return typeof TextEncoder==='function'?new TextEncoder().encode(s).length:s.length*3;};
+  const boundedLogs=entries=>{
+    const out=[],seen=new Set();let bytes=0;
+    for(const row of entries){
+      if(!row||typeof row!=='object'||!row.id||seen.has(row.id))continue;
+      let item=row,n=logByteSize(item)+64;
+      if(n>LOG_MAX_BYTES){
+        item={...row,request_payload:null,raw_response:null,raw_content:'',parsed_content:'',reasoning_content:'',active_presets:[],disabled_presets:[],storage_warning:'本条日志超过独立存储容量，仅保留元数据。'};
+        n=logByteSize(item)+64;
+      }
+      if(out.length>=LOG_MAX_COUNT||bytes+n>LOG_MAX_BYTES)continue;
+      seen.add(item.id);out.push(item);bytes+=n;
+    }
+    return out;
+  };
+  const safeLog=entry=>{
+    let serialized=JSON.stringify(entry);
+    for(const secret of [db.connection.api_key,db.connection.image_api_key]){
+      if(secret&&secret.length>=8)serialized=serialized.split(JSON.stringify(secret).slice(1,-1)).join('***REDACTED***');
+    }
+    return JSON.parse(serialized);
+  };
+  let logState={enabled:true,logs:boundedLogs(legacySystemLogs.map(safeLog))},logDb=null,logStorage='session',logSettled=false,logPending=[],logWrites=Promise.resolve();
+  legacySystemLogs=[];
+  const openLogDb=()=>new Promise(resolve=>{
+    if(typeof indexedDB==='undefined'){resolve(null);return;}
+    let settled=false;
+    const finish=value=>{if(settled){try{value?.close();}catch{}return;}settled=true;resolve(value);};
+    try{
+      const req=indexedDB.open('parallel-generation-logs-v1',1);
+      req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains('logs'))req.result.createObjectStore('logs');};
+      req.onsuccess=()=>finish(req.result);req.onerror=()=>finish(null);req.onblocked=()=>finish(null);
+      if(typeof setTimeout==='function')setTimeout(()=>{if(!settled)finish(null);},1500);
+    }catch{finish(null);}
+  });
+  const readLogState=()=>new Promise((resolve,reject)=>{
+    try{const tx=logDb.transaction('logs','readonly'),req=tx.objectStore('logs').get('state');
+      req.onsuccess=()=>resolve(req.result||null);req.onerror=()=>reject(req.error);tx.onabort=()=>reject(tx.error);}
+    catch(e){reject(e);}
+  });
+  const writeLogState=()=>new Promise((resolve,reject)=>{
+    if(!logDb){resolve();return;}
+    try{const tx=logDb.transaction('logs','readwrite');tx.objectStore('logs').put({enabled:logState.enabled,logs:logState.logs},'state');
+      tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);}
+    catch(e){reject(e);}
+  });
+  const disableLogPersistence=()=>{try{logDb?.close();}catch{}logDb=null;logStorage='session';};
+  const persistLogState=()=>{
+    logWrites=logWrites.then(()=>writeLogState()).catch(()=>{disableLogPersistence();});
+    return logWrites;
+  };
+  const logReady=(async()=>{
+    try{
+      logDb=await openLogDb();
+      if(logDb){
+        const prior=await readLogState();
+        if(prior){
+          logState.enabled=prior.enabled!==false;
+          logState.logs=boundedLogs([...logState.logs,...(Array.isArray(prior.logs)?prior.logs:[])].sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||''))));
+        }
+        logStorage='indexeddb';
+      }
+    }catch{disableLogPersistence();}
+    logSettled=true;
+    if(logState.enabled)logState.logs=boundedLogs([...logPending,...logState.logs]);
+    logPending=[];
+    await persistLogState();
+  })();
+  // Keep the authoritative in-memory save if the first write fails.
+  if(mainStoreReadable){try{save();}catch{}}
   const bodyErr=s=>{throw Error(s)};
   const validatePresetPackage=(pack)=>{
     if(pack&&pack.format==='elsewhere-preset'){
@@ -1575,12 +1656,12 @@
     return s.slice(0,4)+'***REDACTED***'+s.slice(-3);
   };
   const recordSystemLog=entry=>{
-    db.systemLogs ||= [];
-    db.systemLogs.unshift(entry);
-    if(db.systemLogs.length>40){
-      db.systemLogs=db.systemLogs.slice(0,40);
-    }
-    try{save();}catch(e){}
+    try{
+      if(logSettled&&!logState.enabled)return entry;
+      const safe=safeLog(entry);
+      if(!logSettled)logPending=boundedLogs([safe,...logPending]);
+      else{logState.logs=boundedLogs([safe,...logState.logs]);void persistLogState();}
+    }catch{}
     return entry;
   };
   async function llm(messages,options={}){
@@ -1685,7 +1766,7 @@
     const msgObj=choice.message||{};
     let result=msgObj.content;
     if(Array.isArray(result))result=result.map(x=>x.text||'').join('');
-    const reasoningRaw=typeof msgObj.reasoning_content==='string'?msgObj.reasoning_content:(typeof choice.reasoning==='string'?choice.reasoning:'');
+    const reasoningRaw=[msgObj.reasoning_content,msgObj.reasoning,choice.reasoning].find(x=>typeof x==='string'&&x.length)||'';
     const finishReason=choice.finish_reason||data?.finish_reason||null;
     const usageRaw=data?.usage||null;
     const reasoningTokens=usageRaw?.completion_tokens_details?.reasoning_tokens??usageRaw?.reasoning_tokens??null;
@@ -1725,11 +1806,14 @@
     if(finishReason==='length'){
       truncWarnings.push('模型返回 finish_reason="length"，说明正文因达到 max_tokens 上限而被中途截断，建议在「终端 -> 连接与模型」调大 Max tokens。');
     }
-    if(reasoningTokens&&reqMaxTokens&&(reasoningTokens/reqMaxTokens)>0.6){
+    if(reasoningTokens&&reqMaxTokens&&(!Number.isFinite(usage?.completion_tokens)||reasoningTokens<=usage.completion_tokens)&&(reasoningTokens/reqMaxTokens)>0.6){
       truncWarnings.push(`推理/思维链消耗了 ${reasoningTokens} tokens（占 max_tokens ${reqMaxTokens} 的 ${Math.round(reasoningTokens*100/reqMaxTokens)}%），可能导致正文字数被压缩。`);
     }
-    if(parsedPreview.length<rawTrimmed.length){
-      truncWarnings.push(`协议标签清洗移除了 ${rawTrimmed.length-parsedPreview.length} 个字符（如行首 [见面/短信 HH:MM] 标签），未截断正文段落。`);
+    if(usage&&Number.isFinite(usage.reasoning_tokens)&&Number.isFinite(usage.completion_tokens)&&usage.reasoning_tokens>usage.completion_tokens){
+      truncWarnings.push('供应商返回的 reasoning_tokens 大于 completion_tokens，统计口径可能不一致；请查看原始 usage。');
+    }
+    if(mode==='meeting'&&finishReason!=='length'&&parsedPreview.length<rawTrimmed.length&&parsedPreview.replace(/\s/g,'')!==rawTrimmed.replace(/\s/g,'')){
+      truncWarnings.push('原始内容与解析正文存在非空白差异，请对照两者；不代表模型被截断。');
     }
     recordSystemLog({
       ...logBase,
@@ -2313,19 +2397,23 @@
         const mode=data.mode||'chat',role=data.role||'system';if(!['chat','meeting'].includes(mode)||!['system','user','assistant'].includes(role))bodyErr('预设模式不正确');const old=db.presets.find(x=>x.id===data.id),id=old?.id||uid();const nameStr=String(data.name||'新条目').slice(0,100);const groupStr=String(data.group??old?.group??inferPresetGroup({name:nameStr})??'').trim().slice(0,70);const obj={id,mode,name:nameStr,group:groupStr,source_id:old?.source_id||'',origin:old?.origin||'parallel',role,content:String(data.content||'').slice(0,60000),enabled:!!data.enabled,sort_order:old?.sort_order??(Math.max(-1,...db.presets.filter(x=>x.mode===mode).map(x=>x.sort_order))+1)};if(old)Object.assign(old,obj);else db.presets.push(obj);save();return {ok:true,id,diagnostics:{chat:diagnosePresets('chat'),meeting:diagnosePresets('meeting')}};
       }
       case '/system-logs':{
+        await logReady;
         const modeFilter=String(params.get('mode')||data.mode||'').trim();
-        const logs=(db.systemLogs||[]).filter(l=>!modeFilter||l.mode===modeFilter);
-        return {logs};
+        return {logs:logState.logs.filter(l=>!modeFilter||l.mode===modeFilter),enabled:logState.enabled,storage:logStorage};
+      }
+      case '/system-logs-settings':{
+        await logReady;
+        if(!('enabled' in data))return {enabled:logState.enabled,storage:logStorage};
+        logState.enabled=Boolean(data.enabled);
+        await persistLogState();
+        return {ok:true,enabled:logState.enabled,storage:logStorage};
       }
       case '/system-logs-clear':{
+        await logReady;
         const logId=String(data.id||'').trim();
-        if(logId){
-          db.systemLogs=(db.systemLogs||[]).filter(l=>l.id!==logId);
-        }else{
-          db.systemLogs=[];
-        }
-        save();
-        return {ok:true,count:(db.systemLogs||[]).length};
+        logState.logs=logId?logState.logs.filter(l=>l.id!==logId):[];
+        await persistLogState();
+        return {ok:true,count:logState.logs.length};
       }
       case '/portrait':{
         const c=getC(data.characterId||params.get('characterId'));
@@ -2365,7 +2453,7 @@
     splitChatBubbles,
     sanitizeStoredData,
     diagnosePresets,
-    getSystemLogs:()=>db.systemLogs.slice(),
+    getSystemLogs:()=>logState.logs.slice(),
     buildPromptPreview:(pid,cid,mode='chat',opts={})=>prompt(getP(pid),getC(cid),mode,[],opts),
     get storageAvailable(){return storageAvailable},
     exportData:()=>{const copy=JSON.parse(JSON.stringify(db));copy.connection.api_key='';copy.connection.image_api_key='';delete copy.systemLogs;return JSON.stringify({format:'parallel-portable-backup',schemaVersion:1,createdAt:stamp(),data:copy},null,2)},
@@ -2377,8 +2465,10 @@
       if(!Array.isArray(loaded.profiles)||!Array.isArray(loaded.messages)||!Array.isArray(loaded.events)||!Array.isArray(loaded.presets)||!loaded.connection||typeof loaded.relations!=='object'||!loaded.swipes||typeof loaded.swipes!=='object')bodyErr('备份数据缺少必要字段');
       loaded.connection.api_key='';
       loaded.connection.image_api_key='';
+      delete loaded.systemLogs;
       ensureDbFields(loaded);
-      db=loaded;save();return {profiles:db.profiles.length,messages:db.messages.length};
+      const previous=db;
+      db=loaded;try{save();}catch(e){db=previous;throw e;}return {profiles:db.profiles.length,messages:db.messages.length};
     }
   };
 })();

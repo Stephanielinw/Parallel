@@ -1386,6 +1386,8 @@ def latest_memory(db,cid,pid):
     return current_clean, other_clean
 
 SYSTEM_LOGS=[]
+SYSTEM_LOGS_ENABLED=True
+SYSTEM_LOGS_MAX_BYTES=4*1024*1024
 
 def mask_api_key(k=''):
     s=str(k or '').strip()
@@ -1394,6 +1396,7 @@ def mask_api_key(k=''):
     return f"{s[:4]}...{s[-4:]}"
 
 def record_system_log(entry):
+    if not SYSTEM_LOGS_ENABLED:return entry
     log_item={
         'id':entry.get('id') or ('log_'+uid()),
         'created_at':entry.get('created_at') or utc(),
@@ -1425,9 +1428,19 @@ def record_system_log(entry):
         'error':entry.get('error',''),
         'http_status':entry.get('http_status',0),
     }
-    SYSTEM_LOGS.insert(0,log_item)
-    if len(SYSTEM_LOGS)>80:
-        del SYSTEM_LOGS[80:]
+    try:
+        size=lambda x:len(js(x).encode('utf8'))+64
+        if size(log_item)>SYSTEM_LOGS_MAX_BYTES:
+            log_item.update(request_payload=None,raw_response=None,raw_content='',parsed_content='',reasoning_content='',active_presets=[],disabled_presets=[],storage_warning='本条日志超过容量，仅保留元数据。')
+        candidates=[log_item]+SYSTEM_LOGS
+        kept=[];used=0
+        for x in candidates:
+            n=size(x)
+            if len(kept)<40 and used+n<=SYSTEM_LOGS_MAX_BYTES:
+                kept.append(x);used+=n
+        SYSTEM_LOGS[:]=kept
+    except Exception:
+        pass
     return log_item
 
 def completion(messages,*,json_mode=False,max_tokens=None,log_meta=None):
@@ -1890,7 +1903,7 @@ class Handler(BaseHTTPRequestHandler):
                 if route=='/api/presets':
                     return self.respond({'entries':[preset_row_dict(x) for x in db.execute('SELECT * FROM presets ORDER BY mode,sort_order,id').fetchall()],'diagnostics':{'chat':diagnose_presets(db,'chat'),'meeting':diagnose_presets(db,'meeting')}})
                 if route=='/api/system-logs':
-                    return self.respond({'logs':SYSTEM_LOGS})
+                    return self.respond({'logs':SYSTEM_LOGS,'enabled':SYSTEM_LOGS_ENABLED,'storage':'session'})
                 if route=='/api/settings':return self.respond(public_connection())
                 if route=='/api/models':
                     settings=load_connection()
@@ -1915,6 +1928,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:self.respond({'error':str(e)},400)
         except Exception as e:print('GET error',str(e),file=sys.stderr);self.respond({'error':str(e)[:250]},500)
     def do_POST(self):
+        global SYSTEM_LOGS_ENABLED
         origin=self.headers.get('Origin','');allowed={f'http://{HOST}:{PORT}',f'http://localhost:{PORT}'}
         if origin and origin not in allowed:return self.respond({'error':'跨站请求不允许'},403)
         ln=int(self.headers.get('Content-Length','0'))
@@ -2308,7 +2322,10 @@ class Handler(BaseHTTPRequestHandler):
                     except urllib.error.HTTPError as e:raise ValueError('图片生成请求失败：HTTP '+str(e.code))
                     except urllib.error.URLError as e:raise ValueError('无法连接图片生成接口：'+str(e.reason)[:120])
                 if route=='/api/system-logs':
-                    return self.respond({'logs':SYSTEM_LOGS})
+                    return self.respond({'logs':SYSTEM_LOGS,'enabled':SYSTEM_LOGS_ENABLED,'storage':'session'})
+                if route=='/api/system-logs-settings':
+                    if 'enabled' in data:SYSTEM_LOGS_ENABLED=bool(data['enabled'])
+                    return self.respond({'ok':True,'enabled':SYSTEM_LOGS_ENABLED,'storage':'session'})
                 if route=='/api/system-logs-clear':
                     target_id=str(data.get('id','')).strip()
                     if target_id:

@@ -460,8 +460,8 @@
   const uid=()=>typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'p'+Math.random().toString(36).slice(2)+Date.now().toString(36);
   const pairKey=(p,c)=>p+'|'+c;
   const DEFAULT_PRESET_IDS=new Set(DEFAULT_PRESETS.map(x=>x.id));
-  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},systemLogs:[],presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,auto_portraits:false,proactive_mode:'daily'}});
-  let db;let storageAvailable=true;
+  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,auto_portraits:false,proactive_mode:'daily'}});
+  let db;let storageAvailable=true;let mainStoreReadable=true;
   const PROTOCOL_LEADING_TAG_RE=/^(?:[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)[ \t]*)+/gm;
   const INLINE_TIMED_TAG_SEQ_RE=/(?:(?:\[|【)\s*(?:短信|见面)[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?\s*(?:\]|】)[ \t]*)+/g;
   const PROSE_CONTINUATION_AFTER_TAG_RE=/^(?:[”"』」）》】\]，,。！？!?；;、：:]|那条|这条|该条|一条|哪条|每条|那段|这段|那个|这个|那封|这封|的|里|中|上|后|前|内|外|记录|消息|内容|截图|气泡|通知|提醒|历史|存档|文本|字样|标记|标签)/;
@@ -614,7 +614,6 @@
     target.diaries ||= {};
     target.meetings ||= [];
     target.episodicMemories ||= [];
-    target.systemLogs ||= [];
     if(target.connection){
       target.connection.image_base_url ||= '';
       target.connection.image_api_key ||= '';
@@ -638,10 +637,92 @@
     }
     sanitizeStoredData(target);
   };
-  try { const raw=localStorage.getItem(STORE_KEY); db=raw?JSON.parse(raw):empty(); if(!db || !Array.isArray(db.profiles))throw Error('broken'); ensureDbFields(db); localStorage.setItem(STORE_KEY,JSON.stringify(db)); }
-  catch(err) { db=empty();storageAvailable=false; }
-  ensureDbFields(db);
-  const save=()=>{if(!storageAvailable)return;try{localStorage.setItem(STORE_KEY,JSON.stringify(db));}catch(err){storageAvailable=false;throw Error('浏览器本地空间不足或禁止保存。当前会话可继续，但刷新可能丢失数据。建议改用 Chrome / Safari 普通窗口。')}};
+  let legacySystemLogs=[];
+  try {
+    const raw=localStorage.getItem(STORE_KEY);
+    db=raw?JSON.parse(raw):empty();
+    if(!db||!Array.isArray(db.profiles))throw Error('broken');
+    legacySystemLogs=Array.isArray(db.systemLogs)?db.systemLogs:[];
+    delete db.systemLogs;
+    ensureDbFields(db);
+  }catch(err){db=empty();storageAvailable=false;mainStoreReadable=false;}
+  const save=()=>{
+    if(!mainStoreReadable)throw Error('无法安全读取原存档，已停止覆盖；请先导出备份。');
+    try{localStorage.setItem(STORE_KEY,JSON.stringify(db));storageAvailable=true;}
+    catch(err){storageAvailable=false;throw Error('浏览器本地空间不足或禁止保存。请先导出备份并释放空间。后续保存会继续尝试，不会静默跳过。');}
+  };
+  // Diagnostics never share the authoritative save or its failure state.
+  const LOG_MAX_COUNT=40,LOG_MAX_BYTES=4*1024*1024;
+  const logByteSize=x=>{const s=JSON.stringify(x);return typeof TextEncoder==='function'?new TextEncoder().encode(s).length:s.length*3;};
+  const boundedLogs=entries=>{
+    const out=[],seen=new Set();let bytes=0;
+    for(const row of entries){
+      if(!row||typeof row!=='object'||!row.id||seen.has(row.id))continue;
+      let item=row,n=logByteSize(item)+64;
+      if(n>LOG_MAX_BYTES){
+        item={...row,request_payload:null,raw_response:null,raw_content:'',parsed_content:'',reasoning_content:'',active_presets:[],disabled_presets:[],storage_warning:'本条日志超过独立存储容量，仅保留元数据。'};
+        n=logByteSize(item)+64;
+      }
+      if(out.length>=LOG_MAX_COUNT||bytes+n>LOG_MAX_BYTES)continue;
+      seen.add(item.id);out.push(item);bytes+=n;
+    }
+    return out;
+  };
+  const safeLog=entry=>{
+    let serialized=JSON.stringify(entry);
+    for(const secret of [db.connection.api_key,db.connection.image_api_key]){
+      if(secret&&secret.length>=8)serialized=serialized.split(JSON.stringify(secret).slice(1,-1)).join('***REDACTED***');
+    }
+    return JSON.parse(serialized);
+  };
+  let logState={enabled:true,logs:boundedLogs(legacySystemLogs.map(safeLog))},logDb=null,logStorage='session',logSettled=false,logPending=[],logWrites=Promise.resolve();
+  legacySystemLogs=[];
+  const openLogDb=()=>new Promise(resolve=>{
+    if(typeof indexedDB==='undefined'){resolve(null);return;}
+    let settled=false;
+    const finish=value=>{if(settled){try{value?.close();}catch{}return;}settled=true;resolve(value);};
+    try{
+      const req=indexedDB.open('parallel-generation-logs-v1',1);
+      req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains('logs'))req.result.createObjectStore('logs');};
+      req.onsuccess=()=>finish(req.result);req.onerror=()=>finish(null);req.onblocked=()=>finish(null);
+      if(typeof setTimeout==='function')setTimeout(()=>{if(!settled)finish(null);},1500);
+    }catch{finish(null);}
+  });
+  const readLogState=()=>new Promise((resolve,reject)=>{
+    try{const tx=logDb.transaction('logs','readonly'),req=tx.objectStore('logs').get('state');
+      req.onsuccess=()=>resolve(req.result||null);req.onerror=()=>reject(req.error);tx.onabort=()=>reject(tx.error);}
+    catch(e){reject(e);}
+  });
+  const writeLogState=()=>new Promise((resolve,reject)=>{
+    if(!logDb){resolve();return;}
+    try{const tx=logDb.transaction('logs','readwrite');tx.objectStore('logs').put({enabled:logState.enabled,logs:logState.logs},'state');
+      tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);}
+    catch(e){reject(e);}
+  });
+  const disableLogPersistence=()=>{try{logDb?.close();}catch{}logDb=null;logStorage='session';};
+  const persistLogState=()=>{
+    logWrites=logWrites.then(()=>writeLogState()).catch(()=>{disableLogPersistence();});
+    return logWrites;
+  };
+  const logReady=(async()=>{
+    try{
+      logDb=await openLogDb();
+      if(logDb){
+        const prior=await readLogState();
+        if(prior){
+          logState.enabled=prior.enabled!==false;
+          logState.logs=boundedLogs([...logState.logs,...(Array.isArray(prior.logs)?prior.logs:[])].sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||''))));
+        }
+        logStorage='indexeddb';
+      }
+    }catch{disableLogPersistence();}
+    logSettled=true;
+    if(logState.enabled)logState.logs=boundedLogs([...logPending,...logState.logs]);
+    logPending=[];
+    await persistLogState();
+  })();
+  // Keep the authoritative in-memory save if the first write fails.
+  if(mainStoreReadable){try{save();}catch{}}
   const bodyErr=s=>{throw Error(s)};
   const validatePresetPackage=(pack)=>{
     if(pack&&pack.format==='elsewhere-preset'){
@@ -2016,12 +2097,12 @@
     return s.slice(0,4)+'***REDACTED***'+s.slice(-3);
   };
   const recordSystemLog=entry=>{
-    db.systemLogs ||= [];
-    db.systemLogs.unshift(entry);
-    if(db.systemLogs.length>40){
-      db.systemLogs=db.systemLogs.slice(0,40);
-    }
-    try{save();}catch(e){}
+    try{
+      if(logSettled&&!logState.enabled)return entry;
+      const safe=safeLog(entry);
+      if(!logSettled)logPending=boundedLogs([safe,...logPending]);
+      else{logState.logs=boundedLogs([safe,...logState.logs]);void persistLogState();}
+    }catch{}
     return entry;
   };
   async function llm(messages,options={}){
@@ -2126,7 +2207,7 @@
     const msgObj=choice.message||{};
     let result=msgObj.content;
     if(Array.isArray(result))result=result.map(x=>x.text||'').join('');
-    const reasoningRaw=typeof msgObj.reasoning_content==='string'?msgObj.reasoning_content:(typeof choice.reasoning==='string'?choice.reasoning:'');
+    const reasoningRaw=[msgObj.reasoning_content,msgObj.reasoning,choice.reasoning].find(x=>typeof x==='string'&&x.length)||'';
     const finishReason=choice.finish_reason||data?.finish_reason||null;
     const usageRaw=data?.usage||null;
     const reasoningTokens=usageRaw?.completion_tokens_details?.reasoning_tokens??usageRaw?.reasoning_tokens??null;
@@ -2166,11 +2247,14 @@
     if(finishReason==='length'){
       truncWarnings.push('模型返回 finish_reason="length"，说明正文因达到 max_tokens 上限而被中途截断，建议在「终端 -> 连接与模型」调大 Max tokens。');
     }
-    if(reasoningTokens&&reqMaxTokens&&(reasoningTokens/reqMaxTokens)>0.6){
+    if(reasoningTokens&&reqMaxTokens&&(!Number.isFinite(usage?.completion_tokens)||reasoningTokens<=usage.completion_tokens)&&(reasoningTokens/reqMaxTokens)>0.6){
       truncWarnings.push(`推理/思维链消耗了 ${reasoningTokens} tokens（占 max_tokens ${reqMaxTokens} 的 ${Math.round(reasoningTokens*100/reqMaxTokens)}%），可能导致正文字数被压缩。`);
     }
-    if(parsedPreview.length<rawTrimmed.length){
-      truncWarnings.push(`协议标签清洗移除了 ${rawTrimmed.length-parsedPreview.length} 个字符（如行首 [见面/短信 HH:MM] 标签），未截断正文段落。`);
+    if(usage&&Number.isFinite(usage.reasoning_tokens)&&Number.isFinite(usage.completion_tokens)&&usage.reasoning_tokens>usage.completion_tokens){
+      truncWarnings.push('供应商返回的 reasoning_tokens 大于 completion_tokens，统计口径可能不一致；请查看原始 usage。');
+    }
+    if(mode==='meeting'&&finishReason!=='length'&&parsedPreview.length<rawTrimmed.length&&parsedPreview.replace(/\s/g,'')!==rawTrimmed.replace(/\s/g,'')){
+      truncWarnings.push('原始内容与解析正文存在非空白差异，请对照两者；不代表模型被截断。');
     }
     recordSystemLog({
       ...logBase,
@@ -2754,19 +2838,23 @@
         const mode=data.mode||'chat',role=data.role||'system';if(!['chat','meeting'].includes(mode)||!['system','user','assistant'].includes(role))bodyErr('预设模式不正确');const old=db.presets.find(x=>x.id===data.id),id=old?.id||uid();const nameStr=String(data.name||'新条目').slice(0,100);const groupStr=String(data.group??old?.group??inferPresetGroup({name:nameStr})??'').trim().slice(0,70);const obj={id,mode,name:nameStr,group:groupStr,source_id:old?.source_id||'',origin:old?.origin||'parallel',role,content:String(data.content||'').slice(0,60000),enabled:!!data.enabled,sort_order:old?.sort_order??(Math.max(-1,...db.presets.filter(x=>x.mode===mode).map(x=>x.sort_order))+1)};if(old)Object.assign(old,obj);else db.presets.push(obj);save();return {ok:true,id,diagnostics:{chat:diagnosePresets('chat'),meeting:diagnosePresets('meeting')}};
       }
       case '/system-logs':{
+        await logReady;
         const modeFilter=String(params.get('mode')||data.mode||'').trim();
-        const logs=(db.systemLogs||[]).filter(l=>!modeFilter||l.mode===modeFilter);
-        return {logs};
+        return {logs:logState.logs.filter(l=>!modeFilter||l.mode===modeFilter),enabled:logState.enabled,storage:logStorage};
+      }
+      case '/system-logs-settings':{
+        await logReady;
+        if(!('enabled' in data))return {enabled:logState.enabled,storage:logStorage};
+        logState.enabled=Boolean(data.enabled);
+        await persistLogState();
+        return {ok:true,enabled:logState.enabled,storage:logStorage};
       }
       case '/system-logs-clear':{
+        await logReady;
         const logId=String(data.id||'').trim();
-        if(logId){
-          db.systemLogs=(db.systemLogs||[]).filter(l=>l.id!==logId);
-        }else{
-          db.systemLogs=[];
-        }
-        save();
-        return {ok:true,count:(db.systemLogs||[]).length};
+        logState.logs=logId?logState.logs.filter(l=>l.id!==logId):[];
+        await persistLogState();
+        return {ok:true,count:logState.logs.length};
       }
       case '/portrait':{
         const c=getC(data.characterId||params.get('characterId'));
@@ -2806,7 +2894,7 @@
     splitChatBubbles,
     sanitizeStoredData,
     diagnosePresets,
-    getSystemLogs:()=>db.systemLogs.slice(),
+    getSystemLogs:()=>logState.logs.slice(),
     buildPromptPreview:(pid,cid,mode='chat',opts={})=>prompt(getP(pid),getC(cid),mode,[],opts),
     get storageAvailable(){return storageAvailable},
     exportData:()=>{const copy=JSON.parse(JSON.stringify(db));copy.connection.api_key='';copy.connection.image_api_key='';delete copy.systemLogs;return JSON.stringify({format:'parallel-portable-backup',schemaVersion:1,createdAt:stamp(),data:copy},null,2)},
@@ -2818,8 +2906,10 @@
       if(!Array.isArray(loaded.profiles)||!Array.isArray(loaded.messages)||!Array.isArray(loaded.events)||!Array.isArray(loaded.presets)||!loaded.connection||typeof loaded.relations!=='object'||!loaded.swipes||typeof loaded.swipes!=='object')bodyErr('备份数据缺少必要字段');
       loaded.connection.api_key='';
       loaded.connection.image_api_key='';
+      delete loaded.systemLogs;
       ensureDbFields(loaded);
-      db=loaded;save();return {profiles:db.profiles.length,messages:db.messages.length};
+      const previous=db;
+      db=loaded;try{save();}catch(e){db=previous;throw e;}return {profiles:db.profiles.length,messages:db.messages.length};
     }
   };
 })();
@@ -3873,7 +3963,7 @@ async function changeMode(){
 }
 function confirmUnmatch(){const t=state.threads.find(x=>x.character.id===state.threadId);if(!t)return;modal(`<h2>要解除与 ${esc(t.character.name)} 的匹配吗？</h2><p>这会把对方从消息列表移除，但不会删除你们的聊天记录或角色的记忆。以后再次匹配时还会认得你。</p>`,`<button class="btn soft" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-unmatch">解除匹配</button>`)}
 // Terminal
-async function loadTerminal(){const [a,b,c]=await Promise.all([api('/settings'),api('/presets'),api('/system-logs').catch(()=>({logs:[]}))]);state.settings=a;state.presets=b.entries||[];state.presetDiagnostics=b.diagnostics||{};state.systemLogs=c?.logs||[];renderChrome();renderTerminal()}
+async function loadTerminal(){const [a,b,c]=await Promise.all([api('/settings'),api('/presets'),api('/system-logs').catch(()=>({logs:[]}))]);state.settings=a;state.presets=b.entries||[];state.presetDiagnostics=b.diagnostics||{};state.systemLogs=c?.logs||[];state.logEnabled=c?.enabled!==false;state.logStorage=c?.storage||'session';renderChrome();renderTerminal()}
 function renderTerminal(){$('topbar-actions').innerHTML=`<span class="status-pill ${state.settings.mode==='live'?'live':''}">${state.settings.mode==='live'?'LIVE API':(state.settings.mode==='normal'?'NORMAL · 未连接 API':'DEMO MODE')}</span>`;const tabBody=state.terminalTab==='api'?renderApiSettings():(state.terminalTab==='presets'?renderPresets():renderSystemLogs());$('view').innerHTML=`<div class="terminal-screen"><div class="terminal-tabs"><button class="terminal-tab ${state.terminalTab==='api'?'active':''}" data-action="term-tab" data-tab="api">${I('link')} 连接与模型</button><button class="terminal-tab ${state.terminalTab==='presets'?'active':''}" data-action="term-tab" data-tab="presets">${I('book')} 文字预设</button><button class="terminal-tab ${state.terminalTab==='logs'?'active':''}" data-action="term-tab" data-tab="logs">${I('monitor')} 生成日志${state.systemLogs.length?` (${state.systemLogs.length})`:''}</button></div>${tabBody}${globalThis.ParallelOffline&&state.terminalTab==='api'?renderPortableBackup():''}</div>`;if(state.terminalTab==='api'){const form=$('api-settings-form');form.addEventListener('submit',saveSettings);$('api-temperature').addEventListener('input',e=>$('temp-output').textContent=e.target.value);$('api-top-p').addEventListener('input',e=>$('topp-output').textContent=e.target.value)} }
 function renderPortableBackup(){return `<div class="terminal-card"><div class="kicker">LOCAL DATA</div><h3>存档备份</h3><p class="caption">单 HTML 版把聊天和 Profile 存在当前浏览器中。移动文件或清理浏览器数据可能导致存档丢失。建议定期导出备份。导出的 JSON 不包含 API Key 與生成日志。</p>${globalThis.ParallelOffline.storageAvailable?'':`<div class="notice" style="margin:12px 0">当前浏览器禁止本地持久化，刷新页面后存档可能消失。请在结束前导出备份。</div>`}<div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="export-backup">${I('book')} 导出存档 JSON</button><label class="btn soft file-upload">${I('refresh')} 恢复存档<input type="file" id="portable-restore" accept=".json,application/json"></label></div></div>`}
 function exportBackup(){const raw=globalThis.ParallelOffline.exportData(),blob=new Blob([raw],{type:'application/json'}),href=URL.createObjectURL(blob),a=document.createElement('a');a.href=href;a.download='Parallel_Backup_'+new Date().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),2000);toast('存档已导出（不包含 API Key）')}
@@ -3926,9 +4016,10 @@ function renderSystemLogs(){
     <div class="preset-diag-head" style="margin-bottom:8px">
       <div>
         <h3>模型调用与预设注入日志</h3>
-        <p class="caption">完整记录每次模型请求的实际发送 Payload、生效预设条目、模型与采样参数、Token 消耗、finish_reason 及原始/解析后正文对比。仅保存在本地，脱敏隐藏 API Key，绝不混入角色记忆或导出包。</p>
+        <p class="caption">记录实际请求与模型回复，仅用于本地调试，不参与角色记忆。日志与正式存档隔离，最多40条且不超过4 MiB。${state.logStorage==='indexeddb'?'独立 IndexedDB 存储。':'当前为会话内存存储，刷新或重启后可能清空。'}</p>
       </div>
       <div class="inline-row">
+        <button type="button" class="btn ${state.logEnabled===false?'soft':'primary'}" data-action="toggle-system-logs">${state.logEnabled===false?'开启调试记录':'关闭调试记录'}</button>
         <button type="button" class="btn soft" data-action="refresh-system-logs">${I('refresh')} 刷新</button>
         <button type="button" class="btn danger" data-action="clear-system-logs" ${allLogs.length?'':'disabled'}>${I('trash')} 清空日志</button>
       </div>
@@ -3960,6 +4051,7 @@ function renderSystemLogs(){
             <button type="button" class="icon-btn" title="删除此条日志" data-action="delete-system-log" data-id="${esc(log.id)}">${I('trash')}</button>
           </div>
         </div>
+        ${log.storage_warning?`<div class="preset-diag-warn">${esc(log.storage_warning)}</div>`:''}
         ${log.truncation_warning?`<div class="preset-diag-warn" style="margin:8px 0"><span>${esc(log.truncation_warning)}</span></div>`:''}
         ${log.error?`<div class="preset-diag-warn" style="margin:8px 0"><span>错误信息：${esc(log.error)}</span></div>`:''}
         <div class="syslog-meta-grid">
@@ -4006,7 +4098,7 @@ function renderSystemLogs(){
 }
 async function refreshSystemLogs(){
   const d=await api('/system-logs').catch(()=>({logs:[]}));
-  state.systemLogs=d.logs||[];
+  state.systemLogs=d.logs||[];state.logEnabled=d.enabled!==false;state.logStorage=d.storage||'session';
   if(state.tab==='terminal')renderTerminal();
 }
 function makePresetPackage(scope){
@@ -4225,6 +4317,7 @@ if(a==='term-tab'){state.terminalTab=el.dataset.tab;if(state.terminalTab==='logs
 if(a==='preset-mode'){state.presetMode=el.dataset.mode;return renderTerminal()}
 if(a==='preset-disable-defaults'){await api('/preset',{action:'disable_defaults',mode:state.presetMode});await refreshPresets();return toast('已停用默认保底条目，仅保留自定义预设')}
 if(a==='preset-deduplicate'){const r=await api('/preset',{action:'deduplicate',mode:state.presetMode});await refreshPresets();return toast(`已清理 ${r.removed||0} 条重复预设`)}
+if(a==='toggle-system-logs'){await api('/system-logs-settings',{enabled:state.logEnabled===false});await refreshSystemLogs();return toast(state.logEnabled?'调试记录已开启':'调试记录已关闭')}
 if(a==='refresh-system-logs'){await refreshSystemLogs();return toast('生成日志已刷新')}
 if(a==='filter-system-logs'){state.logFilterMode=el.dataset.mode||'all';return renderTerminal()}
 if(a==='clear-system-logs'){return modal('<h2>清空所有生成日志？</h2><p>这将清空本地保存的模型生成诊断日志（不影响聊天记录、记忆或预设）。</p>','<button class="btn ghost" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-clear-system-logs">确认清空</button>')}
