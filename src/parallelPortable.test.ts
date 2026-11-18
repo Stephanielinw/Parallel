@@ -784,8 +784,8 @@ function load26EntryPresetFixture() {
       id: `entry-${i + 1}`,
       name: isDisabledStyle
         ? i === 22
-          ? '毛姆式冷眼世故'
-          : '白水烹鲜温润白描'
+          ? '古典散文观察视角'
+          : '清淡日常白描视角'
         : isEnabledStyle
           ? '高饱和度感官电影流'
           : isCot
@@ -1056,15 +1056,16 @@ test('ROUND-02: Complete 26-entry Elsewhere preset lifecycle, compilation order,
       !fullStr.includes('只输出角色实际发出的消息正文'),
       'Meeting payload must never include chat-main SMS bubble preset'
     );
-    // Scenario 2: Disabled entries (毛姆式冷眼世故, 白水烹鲜温润白描) must NEVER enter payload
-    assert.ok(!fullStr.includes('毛姆式冷眼世故'), 'Disabled style 1 must not enter payload');
-    assert.ok(!fullStr.includes('白水烹鲜温润白描'), 'Disabled style 2 must not enter payload');
-    assert.ok(!fullStr.includes('克制冷感的第三方观察者'), 'Disabled style 1 body must not enter payload');
-    assert.ok(!fullStr.includes('像温水煮鲜汤'), 'Disabled style 2 body must not enter payload');
+    // Scenario 2: Disabled entries (古典散文观察视角, 清淡日常白描视角) must NEVER enter payload
+    assert.ok(!fullStr.includes('古典散文观察视角'), 'Disabled style 1 must not enter payload');
+    assert.ok(!fullStr.includes('清淡日常白描视角'), 'Disabled style 2 must not enter payload');
     // Enabled style card IS present
     const enabledStyle = meetingEntries.find((x: any) => x.enabled && String(x.group || x.name).includes('文风（单选）'));
     if (enabledStyle) {
-      const snippet = enabledStyle.content.slice(0, 18).replace(/\{\{user\}\}/g, expectedUserName).replace(/\{\{char\}\}/g, expectedCharName);
+      const snippet = enabledStyle.content
+        .replace(/\{\{user\}\}/g, expectedUserName)
+        .replace(/\{\{char\}\}/g, expectedCharName)
+        .slice(0, 18);
       assert.ok(fullStr.includes(snippet), 'Enabled style card content is present in meeting payload');
     }
     // Scenario 6: Macro replacement ({{user}} and {{char}} completely replaced)
@@ -1284,6 +1285,17 @@ test('ROUND-02: Complete 26-entry Elsewhere preset lifecycle, compilation order,
   assert.equal(conflictDiag.defaultAndCustomCoexist, true, 'Detects default + custom preset coexistence after append');
   assert.ok(conflictDiag.duplicateCount >= 26, 'Detects duplicate entries after repeated append');
 
+  // Scenario 8.5b: Verify 2nd meeting opening did NOT pull 1st meeting's dialogue turns into its active history
+  const enter2Call = capturedCalls.find(
+    (c) => JSON.stringify(c.body.messages).includes('老城区唱片行')
+  );
+  assert.ok(enter2Call, 'Found 2nd meeting opening API call');
+  assert.equal(
+    enter2Call.body.messages.length,
+    4,
+    '2nd meeting opening contains only [core system, post-history system, assistant pledge, user opening] and zero turns from 1st meeting'
+  );
+
   await engine.request('/preset', { action: 'disable_defaults', mode: 'meeting' });
   const afterDisableDef = await engine.request('/preset', { action: 'deduplicate', mode: 'meeting' });
   const finalMeetDiag = afterDisableDef.diagnostics.meeting || afterDisableDef.diagnostics;
@@ -1291,4 +1303,206 @@ test('ROUND-02: Complete 26-entry Elsewhere preset lifecycle, compilation order,
   assert.equal(finalMeetDiag.duplicateCount, 0);
   assert.equal(finalMeetDiag.enabledCount, 24);
 });
+
+test('ROUND-02a: System Log isolation from localStorage, legacy migration, log toggle/delete/clear, dual capacity limits, and localStorage quota exhaustion resilience', async () => {
+  const store = new Map<string, string>();
+  let quotaExhausted = false;
+
+  // Seed legacy database in localStorage containing old db.systemLogs to test automatic migration & cleanup
+  const STORE_KEY = 'parallel-portable-v2';
+  const baseEngine = createPortableEngine();
+  const baseBackup = JSON.parse(baseEngine.engine.exportData()).data;
+  store.set(
+    STORE_KEY,
+    JSON.stringify({
+      ...baseBackup,
+      systemLogs: [
+        {
+          id: 'legacy-log-1',
+          created_at: '2026-11-18T10:00:00Z',
+          mode: 'meeting',
+          entry_point: 'meeting-opening',
+          model: 'legacy-model',
+          char_count_raw: 680,
+          char_count_parsed: 680,
+          finish_reason: 'stop',
+        },
+      ],
+    })
+  );
+
+  const src = fs.readFileSync(
+    path.resolve(process.cwd(), 'public/parallel/offline.js'),
+    'utf8'
+  );
+  const localStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      if (quotaExhausted && k === STORE_KEY) {
+        const err = new Error('QuotaExceededError: The quota has been exceeded.');
+        err.name = 'QuotaExceededError';
+        throw err;
+      }
+      store.set(k, v);
+    },
+  };
+  const win: Record<string, unknown> = {};
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      id: 'chatcmpl-r02a',
+      choices: [
+        {
+          index: 0,
+          finish_reason: 'stop',
+          message: {
+            role: 'assistant',
+            content: '这是一段正常生成的测试回复，用于验证日志与正式存档彻底隔离。'.repeat(12),
+          },
+        },
+      ],
+      usage: { prompt_tokens: 500, completion_tokens: 240, total_tokens: 740 },
+    }),
+  });
+
+  const context = {
+    window: win,
+    localStorage,
+    crypto: webcrypto,
+    URLSearchParams,
+    Date,
+    JSON,
+    Math,
+    TextEncoder,
+    console,
+    fetch: fetchImpl,
+  };
+  vm.createContext(context);
+  vm.runInContext(src, context);
+  const engine = win.ParallelOffline as any;
+
+  // 1. Legacy systemLogs migrated out of parallel-portable-v2 in localStorage
+  const logsInit = await engine.request('/system-logs');
+  assert.ok(
+    logsInit.logs.some((l: any) => l.id === 'legacy-log-1'),
+    'Legacy systemLogs from localStorage are migrated into isolated log store'
+  );
+  const rawSavedAfterMigration = JSON.parse(store.get(STORE_KEY) || '{}');
+  assert.equal(
+    'systemLogs' in rawSavedAfterMigration,
+    false,
+    'Formal localStorage save (parallel-portable-v2) no longer contains systemLogs'
+  );
+  assert.equal(logsInit.enabled, true, 'Generation logging is enabled by default');
+  assert.ok(['indexeddb', 'session'].includes(logsInit.storage), 'Reports isolated log storage backend');
+
+  // 2. Configure live API and generate logs; verify formal localStorage never stores systemLogs
+  await engine.request('/settings', {
+    base_url: 'https://api.example.org/v1',
+    api_key: 'sk-r02a-secret-key-123456',
+    model: 'gpt-4.1',
+  });
+  const p = (
+    await engine.request('/profile', {
+      name: '林雾',
+      age: 24,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 60,
+      intent: '认真恋爱',
+      sources: ['生化危机 · 游戏'],
+      bio: '测试存档与日志隔离',
+      interests: ['阅读'],
+    })
+  ).profile;
+  const cid = 're-game:leon:re2';
+  for (let i = 0; i < 15; i++) {
+    const sw = await engine.request('/swipe', { profileId: p.id, characterId: cid, direction: 'right' });
+    if (sw.matched) break;
+  }
+
+  await engine.request('/mode', {
+    profileId: p.id,
+    characterId: cid,
+    mode: 'meeting',
+    triggerOpening: true,
+    location: '钟楼露台',
+  });
+
+  const rawFormalSave = store.get(STORE_KEY) || '';
+  assert.ok(!rawFormalSave.includes('chatcmpl-r02a'), 'Raw API response never enters formal localStorage save');
+  assert.equal('systemLogs' in JSON.parse(rawFormalSave), false, 'systemLogs key is completely absent from formal localStorage save');
+
+  // 3. Test deleting single log, toggling log recording off, and clearing logs
+  const logsBeforeDel = (await engine.request('/system-logs')).logs;
+  assert.ok(logsBeforeDel.length >= 2);
+  const targetDelId = logsBeforeDel[0].id;
+  await engine.request('/system-logs-clear', { id: targetDelId });
+  const afterSingleDel = await engine.request('/system-logs');
+  assert.ok(!afterSingleDel.logs.some((l: any) => l.id === targetDelId), 'Single log deleted cleanly');
+
+  // Disable log recording
+  const toggleOff = await engine.request('/system-logs-settings', { enabled: false });
+  assert.equal(toggleOff.enabled, false);
+  const countWhileOff = (await engine.request('/system-logs')).logs.length;
+  await engine.request('/message', {
+    profileId: p.id,
+    characterId: cid,
+    text: '关闭日志期间发送的见面消息。',
+  });
+  const countAfterOffMsg = (await engine.request('/system-logs')).logs.length;
+  assert.equal(countAfterOffMsg, countWhileOff, 'No generation logs recorded while logging is disabled');
+
+  // Re-enable log recording and test eviction over 40 entries
+  await engine.request('/system-logs-settings', { enabled: true });
+  for (let i = 0; i < 45; i++) {
+    await engine.request('/message', {
+      profileId: p.id,
+      characterId: cid,
+      text: `第 ${i + 1} 轮压力测试消息`,
+    });
+  }
+  const cappedLogs = await engine.request('/system-logs');
+  assert.ok(cappedLogs.logs.length <= 40, 'Log count strictly capped at 40 entries with automatic FIFO eviction');
+  const approxTotalBytes = new TextEncoder().encode(JSON.stringify(cappedLogs.logs)).length;
+  assert.ok(approxTotalBytes <= 4 * 1024 * 1024, 'Log total bytes strictly capped within 4 MiB');
+
+  // 4. Simulate browser localStorage quota exhaustion, then verify formal chat and memory saves still work when quota frees up
+  quotaExhausted = true;
+  await assert.rejects(
+    () =>
+      engine.request('/message', {
+        profileId: p.id,
+        characterId: cid,
+        text: '配额暂时耗尽时的消息（保存在内存中）',
+      }),
+    /浏览器本地空间不足/
+  );
+  // Now restore quota (or user clears space) and save a new memory + message
+  quotaExhausted = false;
+  await engine.request('/memory-action', {
+    profileId: p.id,
+    characterId: cid,
+    action: 'add',
+    summary: '配额恢复后写入的重要记忆：在钟楼露台看夜景',
+  });
+  await engine.request('/message', {
+    profileId: p.id,
+    characterId: cid,
+    text: '配额恢复后的正式消息持久化验证',
+  });
+
+  const persistedDb = JSON.parse(store.get(STORE_KEY) || '{}');
+  assert.ok(
+    persistedDb.messages.some((m: any) => m.text === '配额恢复后的正式消息持久化验证'),
+    'Formal chat messages persist to localStorage even after prior QuotaExceededError'
+  );
+  assert.ok(
+    persistedDb.episodicMemories.some((m: any) => m.summary.includes('在钟楼露台看夜景')),
+    'Formal episodic memories persist to localStorage even after prior QuotaExceededError'
+  );
+});
+
 

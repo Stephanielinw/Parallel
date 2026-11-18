@@ -26,13 +26,15 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Build
         run: npm run build -- --base=/Parallel/
-      - name: Check required browser assets
+      - name: Check required browser assets and privacy guard
         run: |
           test -f dist/index.html
           test -f dist/parallel/offline.js
           test -f dist/parallel/app.js
           test -f dist/parallel/style.css
           test -f dist/assets/aistudio/image_0cf832e3.png
+          test ! -f public/assets/aistudio/_____685745cf.json
+          test ! -f dist/assets/aistudio/_____685745cf.json
           grep -q '/Parallel/' dist/index.html
       - uses: actions/upload-pages-artifact@v3
         with:

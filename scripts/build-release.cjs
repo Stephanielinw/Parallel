@@ -1,41 +1,79 @@
-// Rebuild public downloads exclusively from the maintained project sources.
-// The explicit allowlist excludes private imports, local data and debug logs.
-const fs = require('node:fs');
-const path = require('node:path');
-const zlib = require('node:zlib');
+#!/usr/bin/env node
+/**
+ * Rebuilds the downloadable source & portable HTML release archive:
+ *   public/Parallel_v0.5_HTML与源码_修复版.zip
+ *
+ * Also enforces ROUND-02a privacy guardrails:
+ *   - Verifies no private preset JSON exists in public/ or parallel_src/
+ *   - Verifies neither the portable HTML nor the generated ZIP contains private preset fingerprints
+ */
+const fs = require('fs');
+const path = require('path');
+const { execFileSync } = require('child_process');
+
 const root = path.resolve(__dirname, '..');
-const src = 'parallel_src/parallel_ai_date/';
-const allowed = [
-  'PRODUCT_BLUEPRINT.md','README.md','build_portable.cjs','catalog.py','server.py',
-  'static/app.js','static/apple-touch-icon.png','static/index.html','static/manifest.json',
-  'static/offline.js','static/parallel-icon.png','static/style.css',
-  'tests/test_api.py','tests/test_portable.cjs'
+const zipOut = path.join(root, 'public', 'Parallel_v0.5_HTML与源码_修复版.zip');
+const legacyAssetZip = path.join(
+  root,
+  'public',
+  'assets',
+  'aistudio',
+  'Parallel_v0.5_HTML_E4_B8_8E_E6_BA_90_E7_A0_81_7af0ab2c.zip'
+);
+
+const FORBIDDEN_PATTERNS = [
+  '_____685745cf',
+  'HIGH_TENSION_DIRTY_TALK',
+  'STYLE_CARD_CINEMATIC_CRISP',
+  '造梦犬',
 ];
-const files = [
-  ['Parallel_v0.5_直接打开.html','parallel_src/Parallel_v0.5_直接打开.html'],
-  ...allowed.map(p=>['parallel_ai_date/'+p,src+p])
-];
-const table=Array.from({length:256},(_,i)=>{let c=i;for(let j=0;j<8;j++)c=(c&1)?(0xedb88320^(c>>>1)):(c>>>1);return c>>>0});
-const crc32=b=>{let c=0xffffffff;for(const v of b)c=table[(c^v)&255]^(c>>>8);return (c^0xffffffff)>>>0};
-const local=[],central=[];let offset=0;
-for(const [name,rel] of files){
-  const n=Buffer.from(name,'utf8'),raw=fs.readFileSync(path.join(root,rel)),packed=zlib.deflateRawSync(raw),crc=crc32(raw);
-  const h=Buffer.alloc(30),d=Buffer.alloc(46);
-  h.writeUInt32LE(0x04034b50,0);h.writeUInt16LE(20,4);h.writeUInt16LE(0x800,6);h.writeUInt16LE(8,8);h.writeUInt16LE(0x21,12);
-  h.writeUInt32LE(crc,14);h.writeUInt32LE(packed.length,18);h.writeUInt32LE(raw.length,22);h.writeUInt16LE(n.length,26);
-  d.writeUInt32LE(0x02014b50,0);d.writeUInt16LE(20,4);d.writeUInt16LE(20,6);d.writeUInt16LE(0x800,8);d.writeUInt16LE(8,10);d.writeUInt16LE(0x21,14);
-  d.writeUInt32LE(crc,16);d.writeUInt32LE(packed.length,20);d.writeUInt32LE(raw.length,24);d.writeUInt16LE(n.length,28);d.writeUInt32LE(offset,42);
-  local.push(h,n,packed);central.push(d,n);offset+=h.length+n.length+packed.length;
+
+function assertNoPrivatePresetLeak(filePath, label) {
+  if (!fs.existsSync(filePath)) return;
+  const content = fs.readFileSync(filePath, 'utf8');
+  for (const pat of FORBIDDEN_PATTERNS) {
+    if (content.includes(pat)) {
+      throw new Error(`[Privacy Guard] Forbidden private preset fingerprint "${pat}" found in ${label} (${filePath})`);
+    }
+  }
 }
-const directory=Buffer.concat(central),end=Buffer.alloc(22);
-end.writeUInt32LE(0x06054b50,0);end.writeUInt16LE(files.length,8);end.writeUInt16LE(files.length,10);end.writeUInt32LE(directory.length,12);end.writeUInt32LE(offset,16);
-const zip=Buffer.concat([...local,directory,end]);
-const out='public/Parallel_v0.5_HTML与源码_修复版.zip';
-fs.writeFileSync(path.join(root,out),zip);
-// Never publish arbitrary JSON uploaded to the AI Studio asset folder.
-const uploads=path.join(root,'public/assets/aistudio');
-if(fs.existsSync(uploads)){
-  const unexpected=fs.readdirSync(uploads).filter(p=>/\.json$/i.test(p));
-  if(unexpected.length)throw Error('Private preset risk: remove JSON uploads from public/assets/aistudio before build: '+unexpected.join(', '));
+
+// 1. Remove any accidentally uploaded private preset JSON or stale duplicate zip in public/assets/aistudio
+const leakedJson = path.join(root, 'public', 'assets', 'aistudio', '_____685745cf.json');
+if (fs.existsSync(leakedJson)) {
+  fs.unlinkSync(leakedJson);
 }
-console.log('Built release archive from '+files.length+' allowlisted files');
+if (fs.existsSync(legacyAssetZip)) {
+  fs.unlinkSync(legacyAssetZip);
+}
+
+// 2. Scan portable HTML and offline.js for private preset fingerprints
+assertNoPrivatePresetLeak(path.join(root, 'public', 'Parallel_v0.5_直接打开.html'), 'public portable HTML');
+assertNoPrivatePresetLeak(path.join(root, 'public', 'parallel', 'offline.js'), 'public offline.js');
+assertNoPrivatePresetLeak(path.join(root, 'parallel_src', 'Parallel_v0.5_直接打开.html'), 'parallel_src portable HTML');
+
+// 3. Rebuild public/Parallel_v0.5_HTML与源码_修复版.zip from parallel_src/ using python3 zipfile
+const pyScript = `
+import os, zipfile
+
+root = ${JSON.stringify(root)}
+src_dir = os.path.join(root, 'parallel_src')
+zip_out = ${JSON.stringify(zipOut)}
+
+skip_dirs = {'__pycache__', '.git', '.pytest_cache', 'data', 'node_modules'}
+skip_exts = {'.pyc', '.pyo', '.sqlite3', '.db'}
+
+with zipfile.ZipFile(zip_out, 'w', zipfile.ZIP_DEFLATED) as zf:
+    for dirpath, dirnames, filenames in os.walk(src_dir):
+        dirnames[:] = [d for d in sorted(dirnames) if d not in skip_dirs]
+        for fname in sorted(filenames):
+            _, ext = os.path.splitext(fname)
+            if ext in skip_exts or fname == '.DS_Store':
+                continue
+            full_path = os.path.join(dirpath, fname)
+            arcname = os.path.relpath(full_path, src_dir)
+            zf.write(full_path, arcname)
+`;
+
+execFileSync('python3', ['-c', pyScript], { stdio: 'inherit' });
+console.log('Rebuilt release archive:', path.relative(root, zipOut));

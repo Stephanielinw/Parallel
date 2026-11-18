@@ -124,9 +124,9 @@ function start(){const win={};const context={window:win,localStorage,crypto:requ
 
  // 7. ROUND-02: Meeting prompt compilation structure (core system -> history -> COT + Layer 4 -> assistant bottom pledge -> trailing user turn) & diagnostics
  const r2Pack={format:'elsewhere-preset',schemaVersion:1,entries:[
-   {id:'e1',name:'入园与选角仪式',group:'核心定位',role:'system',enabled:true,content:'核心扮演：{{char}} 与 {{user}}'},
+   {id:'e1',name:'核心扮演锚点',group:'核心定位',role:'system',enabled:true,content:'核心扮演：{{char}} 与 {{user}}'},
    {id:'e2',name:'高饱和度感官电影流',group:'文风（单选）',role:'system',enabled:true,content:'电影感镜头'},
-   {id:'e3',name:'毛姆式冷眼世故',group:'文风（单选）',role:'system',enabled:false,content:'冷眼旁观禁用测试'},
+   {id:'e3',name:'古典散文观察视角',group:'文风（单选）',role:'system',enabled:false,content:'冷眼旁观禁用测试'},
    {id:'e4',name:'动笔前连续性检查',group:'COT',role:'system',enabled:true,content:'COT自检：先承接 {{user}} 的动作'},
    {id:'e5',name:'底部誓约与状态确认',group:'收尾',role:'assistant',enabled:true,content:'我已完全进入 {{char}} 并锁定 {{user}}'}
  ]};

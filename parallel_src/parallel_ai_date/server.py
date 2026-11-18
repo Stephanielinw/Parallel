@@ -1349,22 +1349,24 @@ def relationship_baseline_summary(db,pid,cid,p_name):
 
 def select_working_history(db,pid,cid,mode='chat',through_rowid=None):
     if through_rowid is not None:
-        rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND rowid<=? ORDER BY rowid DESC LIMIT 48',(pid,cid,through_rowid)).fetchall()
+        rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND rowid<=? ORDER BY rowid DESC LIMIT 48',(pid,cid,through_rowid)).fetchall()
     else:
-        rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 48',(pid,cid)).fetchall()
+        rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid DESC LIMIT 48',(pid,cid)).fetchall()
     chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m)]
     if not chron:return []
     if mode=='meeting':
+        m_state=MEETING_STATE.get((pid,cid),{})
+        started_after=m_state.get('started_after_rowid')
+        if started_after is not None:
+            cur_meet=[m for m in chron if m['mode']=='meeting' and int(m.get('rowid',0))>int(started_after)]
+            return cur_meet[-16:]
         active_streak=[]
         for m in reversed(chron):
             if m['mode']=='meeting':
                 active_streak.insert(0,m)
-            elif active_streak:
+            else:
                 break
-        if active_streak:
-            return active_streak[-16:]
-        all_meet=[m for m in chron if m['mode']=='meeting']
-        return all_meet[-16:]
+        return active_streak[-16:]
     win_limit=10
     today_prefix=chron[-1]['created_at'][:10]
     today_msgs=[m for m in chron if str(m['created_at'])[:10]==today_prefix]
@@ -1652,7 +1654,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     core_presets=[x for x in ordered if x['role']=='system' and not is_post_history_system_preset(x)] if mode=='meeting' else [x for x in ordered if x['role']=='system']
     post_presets=[x for x in ordered if is_post_history_system_preset(x) or x['role']!='system'] if mode=='meeting' else [x for x in ordered if x['role']!='system']
     core_sys_parts=[macros(x['content']) for x in core_presets]
-    working_history=select_working_history(db,p['id'],c['id'],mode=mode,through_rowid=through_rowid)
+    working_history=[] if (mode=='meeting' and trigger_opening) else select_working_history(db,p['id'],c['id'],mode=mode,through_rowid=through_rowid)
     working_ids={m['id'] for m in working_history}
     ensure_daily_summaries(db,p,c,working_ids)
     query_seed=latest or ' '.join(str(m['text'] or '').strip() for m in working_history[-3:] if m['sender']=='user') or (' '.join((str(m['text'] or '').strip() if m['sender']=='user' else clean_chat_bubble_text(m['text'])) for m in working_history[-2:]))
@@ -2151,6 +2153,8 @@ class Handler(BaseHTTPRequestHandler):
                         with CHAT_LOCK:queue_cancel(db,p['id'],cid)
                         if mode=='meeting':
                             db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
+                            max_row=db.execute('SELECT COALESCE(MAX(rowid),0) FROM messages WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()[0]
+                            m_state['started_after_rowid']=int(max_row or 0)
                             m_state['active_meeting_id']='meet_'+uid()
                             m_state['meeting_location']=infer_meeting_location(db,p['id'],cid,loc_input)
                             sync_surveillance_on_meeting_start(db,p,c,m_state['meeting_location'],m_state['active_meeting_id'])
@@ -2167,13 +2171,17 @@ class Handler(BaseHTTPRequestHandler):
                                     log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply_txt[:180])
                                 meeting_record=upsert_meeting_record(db,p,c,m_state['active_meeting_id'],[opening_reply],m_state['meeting_location'])
                         else:
-                            all_rows=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at,id',(p['id'],cid)).fetchall()
+                            started_after=m_state.get('started_after_rowid')
+                            all_rows=db.execute('SELECT rowid,* FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid',(p['id'],cid)).fetchall()
                             m_msgs=[]
-                            for row in reversed(all_rows):
-                                if row['mode']=='meeting':m_msgs.insert(0,dict(row))
-                                else:break
+                            if started_after is not None:
+                                m_msgs=[dict(row) for row in all_rows if row['mode']=='meeting' and int(row['rowid'])>int(started_after)]
+                            else:
+                                for row in reversed(all_rows):
+                                    if row['mode']=='meeting':m_msgs.insert(0,dict(row))
+                                    else:break
                             if m_msgs:
-                                mid='meet_'+m_msgs[0]['id']
+                                mid=m_state.get('active_meeting_id') or ('meet_'+m_msgs[0]['id'])
                                 ai_sum='';ai_loc=loc_input or m_state.get('meeting_location','')
                                 if data.get('finalizeMeeting') is True and public_connection()['mode']=='live':
                                     try:
@@ -2191,6 +2199,7 @@ class Handler(BaseHTTPRequestHandler):
                                     sync_surveillance_on_meeting_end(db,p,c,meeting_record)
                             db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
                             m_state['active_meeting_id']=''
+                            m_state.pop('started_after_rowid',None)
                             log_event(db,p['id'],cid,'return','与 '+p['name']+' 返回手机消息')
                     elif mode=='meeting':
                         if loc_input:

@@ -183,8 +183,8 @@ class ParallelAPITest(unittest.TestCase):
         self.assertEqual(next(x for x in final if x['mode']=='chat')['content'],pack['entries'][0]['content'])
 
     def test_06_elsewhere_owned_meeting_preset(self):
-        pack={'format':'elsewhere-preset','schemaVersion':1,'id':'test-owned','name':'小狗乐园测试版','entries':[
-            {'id':'a','name':'人物规则','role':'system','enabled':True,'group':'入园仪式','content':'你是 {{char}}，对方是 {{user}}。'},
+        pack={'format':'elsewhere-preset','schemaVersion':1,'id':'test-owned','name':'结构等价模拟预设','entries':[
+            {'id':'a','name':'人物规则','role':'system','enabled':True,'group':'核心定位','content':'你是 {{char}}，对方是 {{user}}。'},
             {'id':'b','name':'文风备选','role':'system','enabled':False,'group':'文风','content':'只在启用后生效'},
             {'id':'c','name':'确认','role':'assistant','enabled':True,'group':'收尾','content':'我记得 {{char}} 与 {{user}}。'}]}
         untouched=json.dumps(pack,ensure_ascii=False)
@@ -315,11 +315,11 @@ class ParallelAPITest(unittest.TestCase):
 
     def test_10_round02_preset_lifecycle_and_system_logs(self):
         pid=self.__class__.steph['id'];cid='re-game:leon:re2'
-        pack={'format':'elsewhere-preset','schemaVersion':1,'id':'r02-test','name':'小狗乐园结构验证','entries':[
-            {'id':'e1','name':'入园与选角仪式','role':'system','enabled':True,'group':'核心定位','content':'你是 {{char}}，唯一对手是 {{user}}。'},
+        pack={'format':'elsewhere-preset','schemaVersion':1,'id':'r02-test','name':'Elsewhere结构验证预设','entries':[
+            {'id':'e1','name':'核心扮演锚点','role':'system','enabled':True,'group':'核心定位','content':'你是 {{char}}，唯一对手是 {{user}}。'},
             {'id':'e2','name':'高饱和度感官电影流','role':'system','enabled':True,'group':'文风（单选）','content':'高饱和感官描写，围绕 {{char}} 与 {{user}}'},
-            {'id':'e3','name':'毛姆式冷眼世故','role':'system','enabled':False,'group':'文风（单选）','content':'冷眼旁观禁用内容'},
-            {'id':'e4','name':'白水烹鲜温润白描','role':'system','enabled':False,'group':'文风（单选）','content':'温润白描禁用内容'},
+            {'id':'e3','name':'古典散文观察视角','role':'system','enabled':False,'group':'文风（单选）','content':'冷眼旁观禁用内容'},
+            {'id':'e4','name':'清淡日常白描视角','role':'system','enabled':False,'group':'文风（单选）','content':'温润白描禁用内容'},
             {'id':'e5','name':'动笔前连续性检查','role':'system','enabled':True,'group':'COT','content':'动笔前检查：先承接 {{user}} 的动作，检查 {{char}} 认知边界'},
             {'id':'e6','name':'底部誓约与状态确认','role':'assistant','enabled':True,'group':'收尾','content':'【已完整读取】我已进入 {{char}} 并锁定 {{user}}'}
         ]}
@@ -348,6 +348,8 @@ class ParallelAPITest(unittest.TestCase):
         self.assertIn('我已进入 Leon S. Kennedy 并锁定 Stephanie',msgs[-2]['content'])
         self.assertEqual(msgs[-1]['role'],'user')
         self.assertIn('【场景开启】',msgs[-1]['content'])
+        # Ensure new meeting opening does not pull old meeting turns into active dialogue history
+        self.assertEqual(len(msgs),4,'New meeting opening has only [core system, post-history system, assistant pledge, user scene opening]')
 
         # Test max_tokens up to 32768 and system logs endpoints
         s_res=self.call('/settings',{'max_tokens':8192})['settings']
