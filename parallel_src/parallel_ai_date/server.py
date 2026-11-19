@@ -1388,8 +1388,6 @@ def record_dialogue_episode(db,p,c,user_msgs,ai_msg,mode):
 # Same local, conservative scene rules as the browser version.
 SCENE_RULES={
     'cancel':re.compile("^(?:不去了|取消(?:见面|约会|计划)?|改天(?:吧|再见)?|算了(?:吧)?|我(?:不能|没法|不想)去|(?:let['’]s )?cancel|not coming|can['’]t make it|rain check|another day)",re.I),
-    'confirm':re.compile("^(?:好(?:啊|呀|的|吧|哦|，|,|。|！|!|$)|行(?:啊|呀|，|。|$)|可以(?:啊|呀|，|。|$)|没问题|就这么定了|不见不散|我会到|我会去|一言为定|okay\\b|ok\\b|sure\\b|deal\\b|sounds good\\b|see you there\\b|i['’]ll be there\\b|agreed\\b)",re.I),
-    'arrival':re.compile("^(?:我(?:已经|刚刚?)?(?:到了|到啦|抵达了)|(?:已经|刚刚?)?到(?:了|啦)|我到啦|i['’]m here|i am here|i(?:['’]ve| have| just)? arrived|made it)(?:[！!。.,，\\s…~～]*(?:你在哪(?:儿)?[？?]?|where are you[?]?|$))$",re.I),
     'proposalZh':re.compile("(?:在|去|到|约在)\\s*[「『“\"]?([^，。！？；、\\n「」『』“”\"]{1,40}?)[」』”\"]?\\s*(?:见面|碰面|见吧|见你|等你|汇合)",re.I),
     'proposalEn':re.compile("\\b(?:let['’]s meet|meet me|we (?:can|could|should) meet|shall we meet|how about meeting)\\s+(?:at|in|on|by|outside|inside)\\s+([^.!?;,\\n]{1,100})",re.I),
     'stateZh':re.compile("^(?:我(?:现在|此刻|目前)?(?:正)?在|我(?:刚刚?|已经)?(?:抵达|到了|到达|回到|登上|来到)|(?:刚刚?|已经)(?:到了|抵达|回到|登上|来到)|(?:我)?正(?:坐|站|躺)在)\\s*[「『“\"]?([^，。！？；、\\n「」『』“”\"]{1,48})",re.I),
@@ -1435,47 +1433,10 @@ def proposal_location(raw):
     zh=SCENE_RULES['proposalZh'].search(text)
     return clean_scene_place(zh.group(1)) if zh else ''
 
-def same_scene_place(a,b):
-    def key(s):
-        return re.sub(r'''\s|[「」『』“”'".。]''','',re.sub(r'^(?:the|a|an|my|your)\s+','',normalize_scene_text(s).lower()))
-    return bool(a and b and key(a)==key(b))
-
-def confirmed_arrival(rows,arrival_id,now=None):
-    now=datetime.now().astimezone() if now is None else now
-    if not rows or rows[-1]['id']!=arrival_id or rows[-1]['sender']!='user':return None
-    text=normalize_scene_text(rows[-1]['text'])
-    if SCENE_RULES['uncertain'].search(text) or re.match(r'^[「『“"*>]',text):return None
-    arrived_at=explicit_arrival_place(text) or location_from_report(text)
-    if not SCENE_RULES['arrival'].search(text) and not arrived_at:return None
-    plan=None
-    for i,m in enumerate(rows[:-1][-40:]):
-        s=normalize_scene_text(m['text'])
-        try:t=datetime.fromisoformat(m['created_at'].replace('Z','+00:00')).astimezone()
-        except (ValueError,TypeError,AttributeError):continue
-        if (now-t).total_seconds()>7*86400:continue
-        if SCENE_RULES['cancel'].search(s):plan=None;continue
-        loc=proposal_location(s)
-        if loc:
-            plan={'location':loc,'from':m['sender'],'proposal_id':m['id'],'proposal_text':s,'created_at':t,'index':i,'accepted':False}
-            continue
-        if plan and m['sender']!=plan['from'] and i-plan['index']<=4 and SCENE_RULES['confirm'].search(s) and not SCENE_RULES['uncertain'].search(s):
-            plan['accepted']=True;plan['agreement_id']=m['id']
-    if not plan or not plan['accepted']:return None
-    if arrived_at and not same_scene_place(arrived_at,plan['location']):return None
-    if re.search(r'下周|下个月|\bnext week\b|\bnext month\b',plan['proposal_text'],re.I):return None
-    if re.search(r'明天|\btomorrow\b',plan['proposal_text'],re.I) and plan['created_at'].date()==now.date():return None
-    return {'location':plan['location'],'proposal_id':plan['proposal_id'],'agreement_id':plan['agreement_id'],'arrival_id':arrival_id}
-
 def current_plan_rows(db,pid,cid):
     cutoff=db.execute("SELECT MAX(created_at) FROM events WHERE profile_id=? AND character_id=? AND type IN ('matched','unmatched','return','meeting')",(pid,cid)).fetchone()[0] or ''
     rows=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='chat' AND created_at>=? ORDER BY rowid DESC LIMIT 41",(pid,cid,cutoff)).fetchall()
     return [m for m in reversed([dict(r) for r in rows]) if m['engine']!='recalled' and not _is_chat_artifact(m) and not is_legacy_error_artifact(m)]
-
-def auto_meeting_candidate(db,pid,cid,arrival_id):
-    q=queue_view(db,pid,cid)
-    r=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
-    if q.get('paused') or q.get('blocked') or q.get('status')=='inflight' or not r or r['mode']!='chat':return None
-    return confirmed_arrival(current_plan_rows(db,pid,cid),arrival_id)
 
 def infer_meeting_location(db,pid,cid,custom_loc=''):
     clean_custom=str(custom_loc or '').strip()
@@ -2646,11 +2607,9 @@ class Handler(BaseHTTPRequestHandler):
                     r=db.execute('SELECT * FROM relations WHERE profile_id=? AND character_id=? AND status=?',(p['id'],cid,'matched')).fetchone()
                     if not r:raise ValueError('未匹配')
                     m_state=MEETING_STATE.setdefault((p['id'],cid),{})
+                    # Reject automatic transitions from cached legacy clients.
+                    if 'autoArrivalId' in data:return self.respond({'mode':r['mode'],'autoRejected':True})
                     loc_input=str(data.get('location') or data.get('meetingLocation') or '').strip()[:40]
-                    if data.get('autoArrivalId'):
-                        plan=auto_meeting_candidate(db,p['id'],cid,str(data['autoArrivalId'])) if mode=='meeting' else None
-                        if not plan:return self.respond({'mode':r['mode'],'autoRejected':True})
-                        loc_input=plan['location']
                     if loc_input:
                         m_state['meeting_location']=loc_input
                     meeting_record=None;opening_reply=None;warning=''
@@ -2990,9 +2949,8 @@ class Handler(BaseHTTPRequestHandler):
                         log_event(db,p['id'],cid,'user_message','与 '+p['name']+' 的聊天：'+txt[:180])
                         with CHAT_LOCK:
                             qv=queue_add(db,p['id'],cid,user_msg['id'],txt)
-                            auto_plan=auto_meeting_candidate(db,p['id'],cid,user_msg['id'])
                         db.commit()
-                        return self.respond({'user':user_msg,'reply':None,'replies':[],'queued':True,'paused':bool(qv.get('paused')),'mode':'chat','queue':qv,'autoMeeting':auto_plan})
+                        return self.respond({'user':user_msg,'reply':None,'replies':[],'queued':True,'paused':bool(qv.get('paused')),'mode':'chat','queue':qv,'autoMeeting':None,'auto_meeting':False})
                     log_event(db,p['id'],cid,'user_message','与 '+p['name']+' 的'+('见面' if mode=='meeting' else '聊天')+'：'+txt[:180])
                     t_state=get_task_state(p['id'],cid,'meeting')
                     if t_state.get('paused'):

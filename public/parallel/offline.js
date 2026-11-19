@@ -1736,7 +1736,7 @@
       apiError:apiErr
     };
   };
-  // High-precision local recognition: only confirmed plans and factual location reports.
+  // Location recognition is advisory only; the user chooses when to enter meeting mode.
   const SCENE_RULES={cancel:new RegExp("^(?:不去了|取消(?:见面|约会|计划)?|改天(?:吧|再见)?|算了(?:吧)?|我(?:不能|没法|不想)去|(?:let['’]s )?cancel|not coming|can['’]t make it|rain check|another day)",'i'),confirm:new RegExp("^(?:好(?:啊|呀|的|吧|哦|，|,|。|！|!|$)|行(?:啊|呀|，|。|$)|可以(?:啊|呀|，|。|$)|没问题|就这么定了|不见不散|我会到|我会去|一言为定|okay\\b|ok\\b|sure\\b|deal\\b|sounds good\\b|see you there\\b|i['’]ll be there\\b|agreed\\b)",'i'),arrival:new RegExp("^(?:我(?:已经|刚刚?)?(?:到了|到啦|抵达了)|(?:已经|刚刚?)?到(?:了|啦)|我到啦|i['’]m here|i am here|i(?:['’]ve| have| just)? arrived|made it)(?:[！!。.,，\\s…~～]*(?:你在哪(?:儿)?[？?]?|where are you[?]?|$))$",'i'),proposalZh:new RegExp("(?:在|去|到|约在)\\s*[「『“\"]?([^，。！？；、\\n「」『』“”\"]{1,40}?)[」』”\"]?\\s*(?:见面|碰面|见吧|见你|等你|汇合)",'i'),proposalEn:new RegExp("\\b(?:let['’]s meet|meet me|we (?:can|could|should) meet|shall we meet|how about meeting)\\s+(?:at|in|on|by|outside|inside)\\s+([^.!?;,\\n]{1,100})",'i'),stateZh:new RegExp("^(?:我(?:现在|此刻|目前)?(?:正)?在|我(?:刚刚?|已经)?(?:抵达|到了|到达|回到|登上|来到)|(?:刚刚?|已经)(?:到了|抵达|回到|登上|来到)|(?:我)?正(?:坐|站|躺)在)\\s*[「『“\"]?([^，。！？；、\\n「」『』“”\"]{1,48})",'i'),stateEn:new RegExp("^(?:i(?:['’]m| am)\\s+(?:(?:currently|right now|already)\\s+)?(?:at|in|on|inside|outside|by)|i\\s+(?:(?:just|already)\\s+)?(?:arrived at|got to|reached|returned to))\\s+([^.!?;,\\n]{1,100})",'i'),reject:new RegExp("^(?:想|考虑|思考|打算|准备|计划|担心|等你|等着|忙|工作|吃|喝|睡|看|说|做|跟|和你|给|想象|这里|那里|这儿|那儿|路上|发消息|开玩笑|生气|等一下|trouble\\b|love\\b|a loss\\b|a hurry\\b|the mood\\b|it\\b|my way\\b|your side\\b|the middle of\\b|pain\\b|shock\\b|a good mood\\b|a bad mood\\b|need\\b|doubt\\b|denial\\b|tears\\b|danger\\b|the phone\\b|a call\\b|touch\\b|charge\\b|a position\\b)",'i'),uncertain:new RegExp("(?:如果|假如|可能|也许|假设|还没|没有到|没到|不是|不在|打算|准备去|等会儿|待会|(?:\\bif\\b|\\bmaybe\\b|\\bprobably\\b|\\bnot yet\\b|\\bwould\\b|\\bwill be\\b|\\bgoing to\\b))",'i')};
   const normalizeSceneText=t=>String(t??'').trim().replace(/’/g,"'");
   function cleanScenePlace(raw,isEnglish=false){
@@ -1772,43 +1772,10 @@
     const en=text.match(SCENE_RULES.proposalEn);if(en)return cleanScenePlace(en[1],true);
     const zh=text.match(SCENE_RULES.proposalZh);return zh?cleanScenePlace(zh[1],false):'';
   }
-  function sameScenePlace(a,b){
-    const key=s=>normalizeSceneText(s).toLowerCase().replace(/^(?:the|a|an|my|your)\s+/,'').replace(/[\s「」『』“”'".。]/g,'');
-    return Boolean(a&&b&&key(a)===key(b));
-  }
-  function confirmedArrival(rows,arrivalId,now=Date.now()){
-    const last=rows[rows.length-1];
-    if(!last||last.id!==arrivalId||last.sender!=='user')return null;
-    const txt=normalizeSceneText(last.text);
-    if(SCENE_RULES.uncertain.test(txt)||/^[「『“"*>]/.test(txt))return null;
-    const arrivedAt=explicitArrivalPlace(txt)||locationFromReport(txt);
-    if(!SCENE_RULES.arrival.test(txt)&&!arrivedAt)return null;
-    let plan=null;
-    const recent=rows.slice(0,-1).slice(-40);
-    for(let i=0;i<recent.length;i++){
-      const m=recent[i],s=normalizeSceneText(m.text);
-      const t=Date.parse(m.created_at||'');if(!Number.isFinite(t)||now-t>7*86400000)continue;
-      if(SCENE_RULES.cancel.test(s)){plan=null;continue;}
-      const loc=proposalLocation(s);
-      if(loc){plan={location:loc,from:m.sender,proposal_id:m.id,proposal_text:s,created_at:m.created_at,index:i,accepted:false};continue;}
-      if(plan&&m.sender!==plan.from&&i-plan.index<=4&&SCENE_RULES.confirm.test(s)&&!SCENE_RULES.uncertain.test(s)){plan.accepted=true;plan.agreement_id=m.id;}
-    }
-    if(!plan?.accepted)return null;
-    if(arrivedAt&&!sameScenePlace(arrivedAt,plan.location))return null;
-    // Vague future plans are not treated as a completed arrival.
-    if(/下周|下个月|\bnext week\b|\bnext month\b/i.test(plan.proposal_text))return null;
-    if(/明天|\btomorrow\b/i.test(plan.proposal_text)&&new Date(plan.created_at).toDateString()===new Date(now).toDateString())return null;
-    return {location:plan.location,proposal_id:plan.proposal_id,agreement_id:plan.agreement_id,arrival_id:arrivalId};
-  }
   function currentPlanRows(pid,cid){
     const boundary=(db.events||[]).filter(e=>e.profile_id===pid&&e.character_id===cid&&['matched','unmatched','return','meeting'].includes(e.type)).at(-1);
     const cutoff=boundary?Date.parse(boundary.created_at):0;
     return messagesOf(pid,cid).filter(m=>m.mode==='chat'&&!isChatArtifact(m)&&m.engine!=='recalled'&&!m.recalled&&Date.parse(m.created_at)>=cutoff).slice(-41);
-  }
-  function autoMeetingCandidate(pid,cid,arrivalId){
-    const q=queueInfo(pid,cid);
-    if(q.paused||q.blocked||q.status==='inflight'||relation(pid,cid)?.mode!=='chat')return null;
-    return confirmedArrival(currentPlanRows(pid,cid),arrivalId);
   }
   const inferMeetingLocation=(pid,cid,customLoc='')=>{
     const cleanCustom=String(customLoc||'').trim();
@@ -3630,12 +3597,9 @@
       case '/mode':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id),m=data.mode;
         if(!['chat','meeting'].includes(m))bodyErr('无效模式');
-        let locInput=String(data.location||data.meetingLocation||'').trim().slice(0,40);
-        if(data.autoArrivalId){
-          const plan=m==='meeting'?autoMeetingCandidate(p.id,c.id,String(data.autoArrivalId)):null;
-          if(!plan)return {mode:r.mode,autoRejected:true};
-          locInput=plan.location;
-        }
+        // Reject old automatic-transition requests from cached frontends.
+        if(Object.prototype.hasOwnProperty.call(data,'autoArrivalId'))return {mode:r.mode,autoRejected:true};
+        const locInput=String(data.location||data.meetingLocation||'').trim().slice(0,40);
         if(locInput){
           r.meeting_location=locInput;
         }
@@ -3968,9 +3932,8 @@
           event(p.id,c.id,'user_message','与 '+p.name+' 的'+(mode==='meeting'?'见面':'聊天')+'：'+txt.slice(0,180));
           if(mode==='chat'){
             const queue=enqueue(p.id,c.id,user.id,txt);
-            const autoMeeting=autoMeetingCandidate(p.id,c.id,user.id);
             save();
-            return {user,reply:null,replies:[],queued:true,paused:Boolean(queue.paused),taskState:getTaskState(p.id,c.id,'chat'),mode,queue,autoMeeting};
+            return {user,reply:null,replies:[],queued:true,paused:Boolean(queue.paused),taskState:getTaskState(p.id,c.id,'chat'),mode,queue,autoMeeting:null,auto_meeting:false};
           }
           const meetTs=getTaskState(p.id,c.id,'meeting');
           if(meetTs&&meetTs.status==='paused'&&!data.forceResume){

@@ -547,7 +547,7 @@ class ParallelAPITest(unittest.TestCase):
             server.urllib.request.urlopen=orig_urlopen
             self.call('/settings',{'demo_mode':True,'auto_translate':True,'character_language_pref':'natural','character_language_custom':''})
 
-    def test_13_confirmed_arrival_transition(self):
+    def test_13_manual_only_meeting_transition(self):
         self.call('/settings',{'clear_key':True,'demo_enabled':True})
         p=self.create('Auto arrival test');pid=p['id'];cid='re-game:leon:re4'
         for i in range(15):
@@ -558,10 +558,13 @@ class ParallelAPITest(unittest.TestCase):
         ack=self.call('/message',dict(pair,text='好的'))
         self.assertIsNone(ack['autoMeeting'])
         arr=self.call('/message',dict(pair,text='我到了'))
-        self.assertEqual(arr['autoMeeting']['location'],'屋顶')
-        invalid=self.call('/mode',dict(pair,mode='meeting',autoArrivalId='wrong',triggerOpening=True))
+        self.assertIsNone(arr['autoMeeting'])
+        self.assertEqual(arr['mode'],'chat')
+        self.assertIsNone(arr['reply'])
+        invalid=self.call('/mode',dict(pair,mode='meeting',autoArrivalId=arr['user']['id'],triggerOpening=True))
         self.assertTrue(invalid['autoRejected'])
-        opened=self.call('/mode',dict(pair,mode='meeting',autoArrivalId=arr['user']['id'],triggerOpening=True))
+        self.assertEqual(invalid['mode'],'chat')
+        opened=self.call('/mode',dict(pair,mode='meeting',triggerOpening=True))
         self.assertEqual(opened['mode'],'meeting')
         self.assertEqual(opened['location'],'屋顶')
         self.assertIsNotNone(opened['openingReply'])
