@@ -19,7 +19,43 @@
   const uid=()=>typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'p'+Math.random().toString(36).slice(2)+Date.now().toString(36);
   const pairKey=(p,c)=>p+'|'+c;
   const DEFAULT_PRESET_IDS=new Set(DEFAULT_PRESETS.map(x=>x.id));
-  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},taskStates:{},bgErrors:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},translations:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,auto_portraits:false,proactive_mode:'daily',auto_translate:true,character_language_pref:'natural',character_language_custom:''}});
+  // Output budget is independent of prompt, provider and sampling. Only explicit user overrides are persisted.
+  const TASK_TOKEN_DEFAULTS=Object.freeze({"surveillance":4096,"diary":4096,"bio":2048,"match":1024,"first_message":1024,"proactive":1024,"meeting_summary":1024,"archive":4000,"photo":1024});
+  const TASK_TOKEN_KEYS=Object.freeze(["meeting","surveillance","diary","bio","match","first_message","proactive","meeting_summary","archive","photo","translation","chat_continue"]);
+  const validTokenBudget=v=>((typeof v==='number'||(typeof v==='string'&&/^\d+$/.test(v.trim())))&&Number.isInteger(Number(v))&&Number(v)>=100&&Number(v)<=32768)?Number(v):null;
+  function taskTokenOverrides(raw,strict=false){
+    if(raw==null&&!strict)return {};
+    if(!raw||typeof raw!=='object'||Array.isArray(raw)){if(strict)throw Error('任务 Token 设置格式无效');return {};}
+    const result={};
+    for(const k of TASK_TOKEN_KEYS){
+      if(!Object.prototype.hasOwnProperty.call(raw,k))continue;
+      const v=raw[k];if(v===null||v==='')continue;
+      const n=validTokenBudget(v);
+      if(n===null){if(strict)throw Error('任务 '+k+' 的 Token 上限必须为 100–32768 的整数');continue;}
+      result[k]=n;
+    }
+    return result;
+  }
+  function mergeTaskTokenOverrides(existing,patch){
+    taskTokenOverrides(patch,true);
+    const result=taskTokenOverrides(existing);
+    for(const k of TASK_TOKEN_KEYS)if(Object.prototype.hasOwnProperty.call(patch,k)){
+      if(patch[k]===null||patch[k]==='')delete result[k];else result[k]=validTokenBudget(patch[k]);
+    }
+    return result;
+  }
+  function resolveTaskMaxTokens(settings,mode,entryPoint,explicit){
+    const entry=String(entryPoint||'').replace(/-/g,'_');
+    const task=({chat_first_message:'first_message',first_message:'first_message',chat_proactive:'proactive',chat_continue:'chat_continue',chat_regenerate:'chat_continue'})[entry]||mode;
+    const main=validTokenBudget(settings.max_tokens)||4096;
+    const own=taskTokenOverrides(settings.task_max_tokens)[task];
+    if(own!==undefined)return own;
+    if(task==='meeting')return main;
+    if(Object.prototype.hasOwnProperty.call(TASK_TOKEN_DEFAULTS,task))return TASK_TOKEN_DEFAULTS[task];
+    // Keep the existing adaptive translation/continuation budgets unless explicitly overridden.
+    return validTokenBudget(explicit)||main;
+  }
+  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},taskStates:{},bgErrors:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},translations:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,task_max_tokens:{},auto_portraits:false,proactive_mode:'daily',auto_translate:true,character_language_pref:'natural',character_language_custom:''}});
   let db;let storageAvailable=true;let mainStoreReadable=true;
   const LEGACY_ERROR_BUBBLE_RE=/^(?:（模型连接失败，历史已保存。请检查终端设置，再尝试角色回复。）|（模型连接失败，请检查终端设置后重试。）)$/;
   const PROXY_ERROR_SIGNATURE_RE=/(?:所有\s*API\s*密钥均请求失败|具体错误请查看轮询日志|所有(?:渠道|密钥|节点|令牌|账号)(?:均|都)?(?:请求|调用|连接)?失败[\s\S]{0,80}(?:轮询日志|配额|额度|重试|失败))/i;
@@ -300,9 +336,8 @@
       if(target.connection.auto_translate===undefined)target.connection.auto_translate=true;
       if(!['natural','zh','en','custom'].includes(target.connection.character_language_pref))target.connection.character_language_pref='natural';
       if(typeof target.connection.character_language_custom!=='string')target.connection.character_language_custom='';
-      if(!target.connection.max_tokens||target.connection.max_tokens<100){
-        target.connection.max_tokens=4096;
-      }
+      target.connection.max_tokens=validTokenBudget(target.connection.max_tokens)||4096;
+      target.connection.task_max_tokens=taskTokenOverrides(target.connection.task_max_tokens);
     }
     if(Array.isArray(target.presets)){
       const cm=target.presets.find(x=>x.id==='chat-main');
@@ -1444,7 +1479,7 @@
 1. 严密贴合 ${c.name} 的原作职业、性格与独立生活习惯，角色有自己的工作、同伴与日常，不要整天围着 ${p.name} 转（当前关系：${relSummary}）。
 2. 每个时间段包含：start ("HH:MM"), end ("HH:MM"), location (具体地点，不超过14字), status (简短状态标签，4-6字), activity (正在做的事，不超过16字), scene (极具画面感的第三人称现场微描写，35-70字，描写环境光影、小动作或神态，严禁使用任何 emoji)。
 3. 只输出 JSON 对象，格式严格为：{"slots":[{"start":"00:00","end":"07:00","location":"...","status":"...","activity":"...","scene":"..."}]}`;
-      const out=await llm([{role:'system',content:sys},{role:'user',content:`请生成 ${c.name} 在 ${dStr} 的全天足迹 JSON。`}],{json_mode:true,max_tokens:1200,profile:p,character:c,mode:'surveillance',entry_point:'surveillance',background:!forceRefresh});
+      const out=await llm([{role:'system',content:sys},{role:'user',content:`请生成 ${c.name} 在 ${dStr} 的全天足迹 JSON。`}],{json_mode:true,profile:p,character:c,mode:'surveillance',entry_point:'surveillance',background:!forceRefresh});
       const parsed=JSON.parse(out);
       if(Array.isArray(parsed?.slots)&&parsed.slots.length>=5){
         const preserved=rec.slots.filter(s=>s.source==='meeting'||s.source==='chat_update');
@@ -1648,7 +1683,7 @@
    - 只有当阶段为 deep_love（爱到不行了）时，才会在记录日常之余流露出对 ${p.name} 浓烈的爱意与反复回味。
 3. 严禁使用任何 emoji 表情符号！文风必须符合 ${c.name} 的性格（第一人称“我”，分 3 个自然段，段与段之间用 \\n\\n 分隔）。
 4. 只输出 JSON 对象，格式为：{"title":"《...》","weather":"纯文字天气（如：夜风微凉）","mood":"纯文字心情（如：平静专注）","content":"第一人称日记正文（3段）"}`;
-      const out=await llm([{role:'system',content:sys},{role:'user',content:`【${dStr} 你的全天监控行踪】：\n${slotsTxt}\n\n【${dStr} 与 ${p.name} 的互动记录】：\n${chatTxt}\n\n请生成该日日记 JSON。`}],{json_mode:true,max_tokens:900,profile:p,character:c,mode:'diary',entry_point:'diary',background:!forceRefresh});
+      const out=await llm([{role:'system',content:sys},{role:'user',content:`【${dStr} 你的全天监控行踪】：\n${slotsTxt}\n\n【${dStr} 与 ${p.name} 的互动记录】：\n${chatTxt}\n\n请生成该日日记 JSON。`}],{json_mode:true,profile:p,character:c,mode:'diary',entry_point:'diary',background:!forceRefresh});
       const parsed=JSON.parse(out);
       if(parsed&&parsed.content&&String(parsed.content).trim().length>=30){
         entry.title=String(parsed.title||entry.title).trim().slice(0,40);
@@ -1924,7 +1959,7 @@
         const chunks=episodeChunks(rows),ids=fresh.raw_msg_ids;
         const controller=typeof AbortController==='function'?new AbortController():null;
         if(controller&&typeof setTimeout==='function')abortTimer=setTimeout(()=>controller.abort(),120000);
-        const options={json_mode:true,max_tokens:4000,profile:p,character:c,mode:'archive',entry_point:'episode_archive',background:true,connection:cfg,temperature:0.3,signal:controller?.signal};
+        const options={json_mode:true,profile:p,character:c,mode:'archive',entry_point:'episode_archive',background:true,connection:cfg,temperature:0.3,signal:controller?.signal};
         const ask=async(data,allowed)=>parseEpisodeResult(await llm([{role:'system',content:ARCHIVE_SYSTEM+'\n归档角色：'+c.name+'；直接互动对象：'+p.name},{role:'user',content:JSON.stringify(data)}],options),allowed);
         const parts=[];
         for(const chunk of chunks){
@@ -2439,7 +2474,7 @@
     const pObj=options.profile||null;
     const cObj=options.character||null;
     const entryPoint=options.entry_point||mode;
-    const reqMaxTokens=Number(options.max_tokens||s.max_tokens||4096);
+    const reqMaxTokens=resolveTaskMaxTokens(db.connection,mode,entryPoint,options.max_tokens);
     const payload={model:s.model,messages,temperature:options.temperature??s.temperature,top_p:s.top_p,max_tokens:reqMaxTokens};
     if(options.json_mode)payload.response_format={type:'json_object'};
     const presetMode=(mode==='meeting'||mode==='chat')?mode:null;
@@ -2795,7 +2830,7 @@
     const compact=pending.map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,canon:c.canon,current_bio:db.bios[c.id]||c.bio,tags:c.tags}));
     const rules='根据给定的、已收录的原作人物身份，为他们各写一条符合当下性格与心境的约会软件公开档案（包含一句自然独特的个人简介 bio，以及 2–3 个个性标签 tags）。不得编造新的角色、错误时间线或伪造重要原作事实；若是刷新，请换一个贴合人设的新角度描写。每条中文 bio 不超过80字，真实自然。只输出 JSON 对象，形如 {"profiles":[{"id":"exact-id","bio":"...","tags":["标签1","标签2"]}]}，只用输入中的ID。';
     try{
-      const out=await llm([{role:'system',content:rules},{role:'user',content:JSON.stringify(compact)}],{json_mode:true,max_tokens:950,mode:'bio',entry_point:'discover_bios',background:!forceRefresh});
+      const out=await llm([{role:'system',content:rules},{role:'user',content:JSON.stringify(compact)}],{json_mode:true,mode:'bio',entry_point:'discover_bios',background:!forceRefresh});
       const val=JSON.parse(out);
       const valid=new Set(pending.map(c=>c.id));let count=0;
       for(const x of (val?.profiles||[])){
@@ -2954,7 +2989,7 @@
         const text=await llm([
           {role:'system',content:`你是 ${c.name}（${c.source} ${c.version}）。原作身份：${c.canon}。对方 ${p.name}，${p.age}岁，交友目的：${intentStr}，兴趣爱好：${interestsStr}，简介 ${p.bio}。你有自己的择偶标准，可自由决定是否右滑同意匹配。只输出 JSON 对象 {"match":true/false}。`},
           {role:'user',content:'你是否想匹配？'}
-        ],{json_mode:true,skip_json_gateway:true,max_tokens:70,profile:p,character:c,mode:'match',entry_point:'match_decision'});
+        ],{json_mode:true,skip_json_gateway:true,profile:p,character:c,mode:'match',entry_point:'match_decision'});
         return {matched:!!JSON.parse(text).match,engine:'live'};
       }catch(e){/* fallback for match decision boolean */}
     }
@@ -2975,7 +3010,7 @@
       try{
         const ms=prompt(p,c,'chat',[],{entry_point:'chat_first_message'});
         ms.push({role:'user',content:again?`【系统事件：重逢匹配】你刚刚和 ${p.name} 重新匹配上了，你记得你们之前的经历。请根据你的性格与过往记忆，主动发 1～2 条有真实重逢感的手机开场消息（多条气泡之间用 ||| 分隔，绝不要用生硬套话）。`:`【系统事件：首次匹配】你刚刚在约会软件上与 ${p.name} 互相右滑匹配成功。请结合你的原作性格、所处境遇以及对方的公开资料（简介：${p.bio||'无'}；兴趣：${(p.interests||[]).join('、')||'无'}），主动给对方发 1～2 条自然、有个人特色的第一条手机消息（多条气泡之间用 ||| 分隔，绝对不要说“看来我们匹配上了”这种千篇一律的套话）。`});
-        const raw=await llm(ms,{max_tokens:220,profile:p,character:c,mode:'chat',entry_point:'chat_first_message',task_id:taskId,retry_of_task_id:retryOfTaskId,attempt});
+        const raw=await llm(ms,{profile:p,character:c,mode:'chat',entry_point:'chat_first_message',task_id:taskId,retry_of_task_id:retryOfTaskId,attempt});
         clearTaskState(p.id,c.id,'chat');
         return {bubbles:splitChatBubbles(raw),engine:'live'};
       }catch(e){
@@ -3024,7 +3059,7 @@
         const ms=prompt(p,c,'chat',[],{entry_point:'chat_proactive'});
         const memHint=unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
         ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
-        txt=await llm(ms,{max_tokens:220,profile:p,character:c,mode:'chat',entry_point:'chat_proactive',background:isBackground});
+        txt=await llm(ms,{profile:p,character:c,mode:'chat',entry_point:'chat_proactive',background:isBackground});
         engine='live';
         clearBgError(p.id,c.id,'chat_proactive');
       }catch(e){
@@ -3073,6 +3108,8 @@
       case '/settings':{
         if(!arguments[1])return pub();
         const s=db.connection;
+        const nextTaskTokens='task_max_tokens' in data?mergeTaskTokenOverrides(s.task_max_tokens,data.task_max_tokens):null;
+        if('max_tokens' in data&&validTokenBudget(data.max_tokens)===null)bodyErr('Max tokens 必须为 100–32768 的整数');
         if(data.clear_key)s.api_key='';
         if('archive_enabled' in data)s.archive_enabled=Boolean(data.archive_enabled);
         if(['inherit','custom'].includes(data.archive_mode))s.archive_mode=data.archive_mode;
@@ -3092,7 +3129,7 @@
         if(data.image_api_key)s.image_api_key=String(data.image_api_key).slice(0,1000);
         for(const k of ['model','image_model'])if(k in data)s[k]=String(data[k]||'').slice(0,200);
         for(const k of ['temperature','top_p','max_tokens'])if(k in data)s[k]=Number(data[k]);
-        if(s.max_tokens)s.max_tokens=Math.max(100,Math.min(32768,Math.round(s.max_tokens)));
+        if(nextTaskTokens!==null)s.task_max_tokens=nextTaskTokens;
         save();return {settings:pub()};
       }
       case '/models':{
@@ -3554,7 +3591,7 @@
                   const sumJson=await llm([
                     {role:'system',content:`请根据以下 ${c.name} 与 ${p.name} 的见面互动记录，提取见面地点与一句温暖简练的见面梗概（如：和${p.name}在街角咖啡馆见面，聊了近况并度过了安静的傍晚）。只输出 JSON 对象：{"location":"地点（不超过12字）","summary":"见面梗概（不超过65字）"}`},
                     {role:'user',content:transcript}
-                  ],{json_mode:true,max_tokens:160,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true});
+                  ],{json_mode:true,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true});
                   const parsed=JSON.parse(sumJson);
                   if(parsed.location&&!locInput)aiLoc=String(parsed.location).trim().slice(0,32);
                   if(parsed.summary)aiSum=String(parsed.summary).trim().slice(0,150);
@@ -3999,7 +4036,7 @@
         let description=photoText(c),engine='curated-demo';
         if(data.regenerate&&pub().mode==='live'){
           const instructions=`描述一张交友软件上虚构原作角色上传的照片（80至150个简体汉字），只描写画面中的外貌、姿态、光影、服饰和场景，保持人设与时期准确，不公开秘密，不编造重大剧情。${c.name}，${c.source}，${c.version}，设定：${c.canon}`;
-          description=(await llm([{role:'system',content:instructions},{role:'user',content:'描述这张照片。'}],{max_tokens:350,character:c,mode:'photo',entry_point:'photo_description'})).slice(0,1200);engine='live-text';
+          description=(await llm([{role:'system',content:instructions},{role:'user',content:'描述这张照片。'}],{character:c,mode:'photo',entry_point:'photo_description'})).slice(0,1200);engine='live-text';
         }
         db.photoDescriptions[c.id]={description,engine};save();return {description,engine};
       }

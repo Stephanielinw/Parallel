@@ -24,6 +24,10 @@ jobs:
           node-version: 22
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+      - name: Test task-specific generation budgets (offline mocks)
+        run: |
+          node tests/task-token-budgets.test.cjs
+          python3 parallel_src/parallel_ai_date/tests/test_task_token_budgets.py
       - name: Build
         run: npm run build -- --base=/Parallel/
       - name: Check required browser assets and privacy guard

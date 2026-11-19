@@ -196,6 +196,51 @@ def load_connection():
     try:return json.loads(SECRETFILE.read_text('utf8'))
     except Exception:return {'base_url':'','api_key':'','model':'','image_base_url':'','image_api_key':'','image_model':'','temperature':0.85,'top_p':1,'max_tokens':4096,'auto_portraits':False}
 
+# Task-specific output budgets; keep the existing chat value as the meeting fallback.
+TASK_TOKEN_DEFAULTS = {"surveillance":4096,"diary":4096,"bio":2048,"match":1024,"first_message":1024,"proactive":1024,"meeting_summary":1024,"archive":4000,"photo":1024}
+TASK_TOKEN_KEYS = ["meeting","surveillance","diary","bio","match","first_message","proactive","meeting_summary","archive","photo","translation","chat_continue"]
+
+def valid_token_budget(v):
+    if isinstance(v,bool) or not isinstance(v,(int,float,str)):return None
+    if isinstance(v,str) and not re.fullmatch(r'[0-9]+',v.strip()):return None
+    try:
+        n=int(v)
+        return n if float(v)==n and 100<=n<=32768 else None
+    except (ValueError,TypeError,OverflowError):return None
+
+def task_token_overrides(raw,strict=False):
+    if not isinstance(raw,dict):
+        if strict:raise ValueError('任务 Token 设置格式无效')
+        return {}
+    result={}
+    for k in TASK_TOKEN_KEYS:
+        if k not in raw or raw[k] is None or raw[k]=='':continue
+        n=valid_token_budget(raw[k])
+        if n is None:
+            if strict:raise ValueError('任务 '+k+' 的 Token 上限必须为 100–32768 的整数')
+            continue
+        result[k]=n
+    return result
+
+def merge_task_token_overrides(existing,patch):
+    task_token_overrides(patch,True)
+    result=task_token_overrides(existing)
+    for k in TASK_TOKEN_KEYS:
+        if k in patch:
+            if patch[k] is None or patch[k]=='':result.pop(k,None)
+            else:result[k]=valid_token_budget(patch[k])
+    return result
+
+def resolve_task_max_tokens(settings,mode,entry_point,explicit=None):
+    entry=str(entry_point or '').replace('-','_')
+    task={'chat_first_message':'first_message','first_message':'first_message','chat_proactive':'proactive','chat_continue':'chat_continue','chat_regenerate':'chat_continue'}.get(entry,mode)
+    main=valid_token_budget(settings.get('max_tokens')) or 4096
+    own=task_token_overrides(settings.get('task_max_tokens'))
+    if task in own:return own[task]
+    if task=='meeting':return main
+    if task in TASK_TOKEN_DEFAULTS:return TASK_TOKEN_DEFAULTS[task]
+    return valid_token_budget(explicit) or main
+
 def public_connection():
     d=load_connection()
     has_api=bool(d.get('api_key') and d.get('base_url') and d.get('model'))
@@ -204,6 +249,7 @@ def public_connection():
     lang_pref=d.get('character_language_pref','natural')
     if lang_pref not in ('natural','zh','en','custom'):lang_pref='natural'
     return {k:v for k,v in d.items() if k not in ('api_key','image_api_key')} | {
+        'task_max_tokens':task_token_overrides(d.get('task_max_tokens')),
         'proactive_mode':d.get('proactive_mode','daily'),
         'auto_translate':d.get('auto_translate',True) is not False,
         'character_language_pref':lang_pref,
@@ -1126,7 +1172,7 @@ def ensure_live_surveillance(db,p,c,force=False,target_date=''):
         meet_rows=db.execute('SELECT location,time,summary FROM meetings WHERE profile_id=? AND character_id=? ORDER BY started_at DESC LIMIT 2',(p['id'],c['id'])).fetchall()
         recent_meet='；'.join(f"{m['time']}在{m['location']}：{str(m['summary'] or '')[:50]}" for m in meet_rows)
         sys_prompt=f"你是 {c['name']}（来自《{c['source']}》· {c['version']}，背景：{c['canon']}）。请生成你在 {d_str} 从 00:00 到 23:59 的 7 个连续时间段作息与行踪表（用于角色专属空间的实时生活监控）。必须严格贴合你的原作身份、独立职业习惯以及与 {p['name']} 的近期互动（近期聊天：{recent_chat or '刚建立匹配'}；近期见面：{recent_meet or '暂无'}）。禁止使用任何 emoji 表情符号。只输出 JSON 对象，格式为：{{\"slots\":[{{\"start\":\"00:00\",\"end\":\"06:30\",\"location\":\"具体地点（15字内）\",\"status\":\"四字状态\",\"activity\":\"正在做的事（38字内）\",\"scene\":\"监控镜头下的细腻画面感描写（55字内）\"}}]}}，7个时间段首尾相连覆盖全天。"
-        out=completion([{'role':'system','content':sys_prompt},{'role':'user','content':f'请生成 {d_str} 全天 7 个时段的作息与实时监控画面 JSON。'}],json_mode=True,max_tokens=900)
+        out=completion([{'role':'system','content':sys_prompt},{'role':'user','content':f'请生成 {d_str} 全天 7 个时段的作息与实时监控画面 JSON。'}],json_mode=True,log_meta={'mode':'surveillance','entryPoint':'surveillance','profile':p,'character':c})
         parsed=parse_json(out,{})
         if isinstance(parsed.get('slots'),list) and len(parsed['slots'])>=5:
             cleaned=[]
@@ -1262,7 +1308,7 @@ def ensure_live_diary(db,p,c,target_date='',force=False):
         intimacy=compute_intimacy_info(db,p,c)
         slots_txt='\n'.join(f"{s['start']}-{s['end']} 在【{s['location']}】{s['activity']}（{s['scene']}）" for s in (surv_rec.get('slots') or []))
         sys_p=f"你是 {c['name']}（来自《{c['source']}》· {c['version']}，设定：{c['canon']}）。请根据你 {d_str} 全天的监控行踪写一篇第一人称私密日记。记住：角色有自己独立的生活，并不是以用户（{p['name']}）为生活核心（除非当前感情阶段为 deep_love，当前阶段：{intimacy['stage']} · {intimacy['label']}）。严禁使用任何 emoji。只输出 JSON：{{\"title\":\"《...》\",\"weather\":\"纯文字天气\",\"mood\":\"纯文字心情\",\"content\":\"第一人称日记正文（3段，用\\\\n\\\\n分隔）\"}}"
-        out=completion([{'role':'system','content':sys_p},{'role':'user','content':slots_txt}],json_mode=True,max_tokens=900)
+        out=completion([{'role':'system','content':sys_p},{'role':'user','content':slots_txt}],json_mode=True,log_meta={'mode':'diary','entryPoint':'diary','profile':p,'character':c})
         parsed=parse_json(out,{})
         if parsed.get('content'):
             entry['title']=str(parsed.get('title') or entry['title']).strip()[:40]
@@ -1758,7 +1804,7 @@ def completion(messages,*,json_mode=False,max_tokens=None,temperature=None,log_m
     task_id=meta.get('task_id') or ('task_'+uid())
     attempt=int(meta.get('attempt') or 1)
     retry_of_task_id=meta.get('retry_of_task_id') or ''
-    max_tok=int(max_tokens or settings.get('max_tokens') or 4096)
+    max_tok=resolve_task_max_tokens(settings,req_mode,meta.get('entryPoint',req_mode),max_tokens)
     temp=float(temperature if temperature is not None else settings.get('temperature',0.85))
     top_p_val=float(settings.get('top_p',1))
     payload={'model':model,'messages':messages,'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok}
@@ -2106,7 +2152,7 @@ def match_reply(db,p,c,again=False):
             else:
                 interests_str='、'.join(p.get('interests') or []) or '无'
                 prompt.append({'role':'user','content':f"【系统事件：首次匹配】你刚刚在约会软件上与 {p['name']} 互相右滑匹配成功。请结合你的原作性格、所处境遇以及对方的公开资料（简介：{p.get('bio') or '无'}；兴趣：{interests_str}），主动给对方发 1～2 条自然、有个人特色的第一条手机消息（多条气泡之间用 ||| 分隔，绝对不要说“看来我们匹配上了”这种千篇一律的套话）。"})
-            raw=completion(prompt,max_tokens=220,log_meta={'mode':'chat','task_type':'match','entryPoint':'first-message','profile':p,'character':c})
+            raw=completion(prompt,log_meta={'mode':'chat','task_type':'match','entryPoint':'first-message','profile':p,'character':c})
             return split_chat_bubbles(raw),'live'
         except Exception:
             return [],'error'
@@ -2120,7 +2166,7 @@ def match_decision(db,p,c,attempt):
             interests_str='、'.join(p.get('interests') or []) or '未填写'
             intent_str=p.get('intent') or '未填写'
             prompt=[{'role':'system','content':f"你是 {c['name']}，来自 {c['source']} {c['version']}。设定：{c['canon']}。使用约会 App 时，对方 {p['name']}，{p['age']} 岁，交友目的：{intent_str}，兴趣爱好：{interests_str}，简介：{p['bio']}。你可以自由决定是否右滑匹配，不要默认喜欢每个人。只返回JSON对象 {{\"match\":true/false}}。"},{'role':'user','content':'你会匹配吗？'}]
-            result=completion(prompt,json_mode=True,max_tokens=60)
+            result=completion(prompt,json_mode=True,log_meta={'mode':'match','entryPoint':'match_decision','profile':p,'character':c})
             try:return bool(json.loads(result).get('match')), 'live'
             except ValueError:return 'true' in result.lower()[:60],'live'
         except Exception:pass
@@ -2135,7 +2181,7 @@ def generate_bios(db,characters,force_refresh=False):
     compact=[{'id':c['id'],'name':c['name'],'source':c['source'],'version':c['version'],'canon':c['canon'],'example':c['bio']} for c in pending]
     rules='根据给定的、已收录的原作人物身份，为他们各写一条符合当下性格与心境的约会软件公开简介。不得编造新的角色、错误时间线或伪造重要原作事实；若是刷新，请换一个贴合人设的新角度描写。每条中文不超过80字，真实自然。只输出 JSON 对象，形如 {"profiles":[{"id":"exact-id","bio":"..."}]}，只用输入中的ID。'
     try:
-        out=completion([{'role':'system','content':rules},{'role':'user','content':js(compact)}],json_mode=True,max_tokens=950)
+        out=completion([{'role':'system','content':rules},{'role':'user','content':js(compact)}],json_mode=True,log_meta={'mode':'bio','entryPoint':'discover_bios'})
         value=parse_json(out,{})
         valid={c['id'] for c in pending};count=0
         for x in value.get('profiles',[]):
@@ -2456,7 +2502,7 @@ class Handler(BaseHTTPRequestHandler):
                                 ms=compile_messages(db,p,c,'chat')
                                 mem_hint=f"你翻看手机时，想起你们之前未聊完的话题或约定：「{unres['summary']}」。" if unres else "你在自己的世界里刚忙完手头的事，突然想起了对方。"
                                 ms.append({'role':'user','content':f"【系统事件：角色主动发消息】距离你们上次联系已经过了一段时间，{p['name']} 还没有发来新消息。{mem_hint}请以完全符合 {c['name']} 原作性格与当前关系状态的方式，主动给 {p['name']} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白）。"})
-                                txt=completion(ms,max_tokens=220);engine='live'
+                                txt=completion(ms,log_meta={'mode':'chat','entryPoint':'chat_proactive','profile':p,'character':c});engine='live'
                             except Exception:continue
                         else:
                             txt=f"对了，{p['name']}。|||之前我们聊到的那件事，我刚才突然想起来了。|||你现在有空吗？" if unres else f"今天怎么这么安静？|||刚忙完手头的事，顺便看看你在不在。"
@@ -2534,7 +2580,7 @@ class Handler(BaseHTTPRequestHandler):
                                         sum_json=completion([
                                             {'role':'system','content':f"请根据以下 {c['name']} 与 {p['name']} 的见面互动记录，提取见面地点与一句温暖简练的见面梗概（如：和{p['name']}在街角咖啡馆见面，聊了近况并度过了安静的傍晚）。只输出 JSON 对象：{{\"location\":\"地点（不超过12字）\",\"summary\":\"见面梗概（不超过65字）\"}}"},
                                             {'role':'user','content':transcript}
-                                        ],json_mode=True,max_tokens=160)
+                                        ],json_mode=True,log_meta={'mode':'meeting_summary','entryPoint':'meeting_finalize','profile':p,'character':c})
                                         parsed=parse_json(sum_json,{})
                                         if parsed.get('location') and not loc_input:ai_loc=str(parsed['location']).strip()[:32]
                                         if parsed.get('summary'):ai_sum=str(parsed['summary']).strip()[:150]
@@ -2872,7 +2918,11 @@ class Handler(BaseHTTPRequestHandler):
                     if 'image_model' in data:d['image_model']=str(data['image_model']).strip()[:200]
                     if 'temperature' in data:d['temperature']=max(0,min(2,float(data['temperature'])))
                     if 'top_p' in data:d['top_p']=max(0.01,min(1,float(data['top_p'])))
-                    if 'max_tokens' in data:d['max_tokens']=max(100,min(32768,int(data['max_tokens'])))
+                    if 'max_tokens' in data:
+                        n=valid_token_budget(data['max_tokens'])
+                        if n is None:raise ValueError('Max tokens 必须为 100–32768 的整数')
+                        d['max_tokens']=n
+                    if 'task_max_tokens' in data:d['task_max_tokens']=merge_task_token_overrides(d.get('task_max_tokens'),data['task_max_tokens'])
                     save_connection(d);return self.respond({'settings':public_connection()})
                 if route=='/api/portrait':
                     cid=data.get('characterId');c=BY_ID.get(cid)
@@ -2962,7 +3012,7 @@ class Handler(BaseHTTPRequestHandler):
                         if all(cfg.get(k) for k in ('base_url','api_key','model')):
                             try:
                                 instruction=f'请用自然简体中文描述一张虚构人物在交友 App 上传的照片，80到150字。仅描述镜头可见的服装、姿态、表情、构图和背景，不透露秘密，不写旁白外的剧情。角色：{c["name"]}，作品：{c["source"]}，阶段：{c["version"]}，原作背景：{c["canon"]}。不能创造新的人物身份。'
-                                description=completion([{'role':'system','content':instruction},{'role':'user','content':'请描述这张虚构照片。'}],max_tokens=350)[:1200];engine='live-text'
+                                description=completion([{'role':'system','content':instruction},{'role':'user','content':'请描述这张虚构照片。'}],log_meta={'mode':'photo','entryPoint':'photo_description','character':c})[:1200];engine='live-text'
                             except Exception as e:raise ValueError('文字照片描述请求失败：'+str(e))
                     db.execute('INSERT OR REPLACE INTO photo_descriptions VALUES (?,?,?)',(cid,description,engine));db.commit()
                     return self.respond({'description':description,'engine':engine})
