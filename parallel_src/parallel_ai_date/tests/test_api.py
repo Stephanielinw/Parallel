@@ -32,6 +32,37 @@ class ParallelAPITest(unittest.TestCase):
     def create(self,name,role='',sources=None):
         return self.call('/profile',{'name':name,'age':26,'gender':'male','interested_in':['all'],'min_age':18,'max_age':65,'intent':'认识新朋友','bio':'喜欢咖啡','interests':['咖啡'],'sources':sources or [],'avatar':'','role_character_id':role,'role_hint':''})['profile']
 
+    def test_chat_reasoning_output_guard(self):
+        leak='思维过程：\n\n1. **分析当前情境与对话背景**：\n* 方案A：候选台词|||候选二。\n4. **符合规范**：\n* 语气自然。真实台词。|||第二句。'
+        self.assertIsNone(server.guard_chat_reasoning(leak))
+        self.assertIsNone(server.guard_chat_reasoning('Analysis:\n1. draft|||candidate'))
+        self.assertIsNone(server.guard_chat_reasoning('<think>draft'))
+        self.assertEqual(server.guard_chat_reasoning('<think>draft|||candidate</think>Hi.|||Bye.'),'Hi.|||Bye.')
+        self.assertEqual(server.guard_chat_reasoning('你能说说你的思维过程吗？'),'你能说说你的思维过程吗？')
+        self.assertEqual(server.guard_chat_reasoning('Analysis: I saw that movie.'),'Analysis: I saw that movie.')
+
+    def test_chat_reasoning_gateway(self):
+        from unittest.mock import patch, MagicMock
+        leak='思维过程：\n\n1. **分析当前情境与对话背景**：\n* 方案A：候选台词|||候选二。\n4. **符合规范**：\n* 语气自然。真实台词。|||第二句。'
+        settings={'base_url':'https://example.com/v1','api_key':'fake','model':'mock'}
+        def response(content, reasoning=''):
+            resp=MagicMock()
+            resp.status=200
+            resp.__enter__.return_value=resp
+            resp.read.return_value=json.dumps({'choices':[{'message':{'content':content,'reasoning_content':reasoning},'finish_reason':'stop'}]}).encode()
+            return resp
+        messages=[{'role':'user','content':'hello'}]
+        with patch.object(server,'load_connection',return_value=settings), patch.object(server,'record_system_log',return_value={'id':'mock-log'}) as logs, patch.object(server.urllib.request,'urlopen') as urlopen:
+            urlopen.return_value=response(leak)
+            with self.assertRaises(server.ApiGatewayError) as cm:
+                server.completion(messages,log_meta={'mode':'chat'})
+            self.assertEqual(cm.exception.api_error['error_type'],'REASONING_LEAK')
+            self.assertEqual(logs.call_args.args[0]['raw_content'],leak)
+            self.assertEqual(logs.call_args.args[0]['parsed_content'],'')
+            urlopen.return_value=response('<think>draft|||candidate</think>Hi.|||Bye.','separate reasoning')
+            self.assertEqual(server.completion(messages,log_meta={'mode':'chat'}),'Hi.|||Bye.')
+            self.assertEqual(logs.call_args.args[0]['parsed_content'],'Hi. / Bye.')
+
     def test_01_identity_and_parallel_version(self):
         self.assertEqual(self.call('/health')['ok'],True)
         self.assertGreaterEqual(len(self.call('/identify?name=Leon')['matches']),3)
