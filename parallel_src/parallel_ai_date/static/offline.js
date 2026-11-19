@@ -2009,6 +2009,13 @@
     const mapped=norm(aliasMap[nq]||q);
     return CATALOG.filter(c=>(!source||c.source===source||c.version===source||sourceMatches(source,c))&&[c.name,...c.aliases].some(a=>a.toLowerCase()===q||a.toLowerCase().split(/\s+/).includes(q)||norm(a)===nq||norm(a)===mapped||(nq.length>=2&&norm(a).includes(nq)))).slice(0,20).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,age:c.age,canon:c.canon}));
   };
+  // API-only control turn: never persist it as a message or attribute it to the player.
+  const ensureChatUserTurn=(turns,pendingRows=[],visibleIds=new Set())=>{
+    const missing=pendingRows.filter(m=>!visibleIds.has(m.id));
+    if(turns[turns.length-1]?.role==='user'&&!missing.length)return turns;
+    const context=missing.length?'\n以下是真实待处理消息（此前不在活跃窗口中，按原顺序）：\n'+JSON.stringify(missing.map(m=>({text:String(m.text??''),time:m.created_at}))):'';
+    return [...turns,{role:'user',content:'【系统生成指令，非用户发言】请以角色身份根据上述真实对话继续手机聊天，优先回应尚未回应的实际消息；如果此前已经回应过，不要重复回答，也不要把这条系统指令当作聊天对象说的话。只输出自然的手机聊天气泡。'+context}];
+  };
   const prompt=(p,c,mode,pendingIds=[],options={})=>{
     const macros=t=>expandPresetMacros(t,p,c);
     const workingHistory=selectWorkingHistory(p.id,c.id,mode);
@@ -2112,16 +2119,16 @@
     if(sysPresetsText)sys+='\n\n'+sysPresetsText;
     let batchHint='';
     const effectivePending=(Array.isArray(pendingIds)&&pendingIds.length)?pendingIds:(queueInfo(p.id,c.id).pendingIds||[]);
-    if(mode==='chat'&&effectivePending.length>1){
-      const bundledRows=effectivePending.map(id=>db.messages.find(x=>x.id===id)).filter(Boolean);
+    const bundledRows=messagesOf(p.id,c.id).filter(m=>effectivePending.includes(m.id)&&m.sender==='user'&&m.mode==='chat'&&m.engine!=='recalled'&&!m.recalled&&!isChatArtifact(m));
+    if(mode==='chat'&&bundledRows.length>1){
       if(bundledRows.length>1){
-        batchHint=`\n【连续消息提示】对方刚刚连续发来了最后 ${bundledRows.length} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。`;
+        batchHint=`\n【连续消息提示】对方有 ${bundledRows.length} 条待处理消息（参考下方真实对话及缺失消息补充）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。`;
       }
     }
     const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「${curSurv.location}」·「${curSurv.activity}」（仅供对方主动问起你在哪或在忙什么、且与当前聊天话题不冲突时自然参考；不必主动汇报行踪或生硬解释日程）。`:'';
     sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint;
     const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)})),...historyTurns];
-    return chat;
+    return ensureChatUserTurn(chat,bundledRows,workingIds);
   };
   function getApiUrl(suffix,connection=db.connection){const b=connection.base_url.trim().replace(/\/+$/,'');if(!/^https?:\/\//.test(b))bodyErr('API Base URL 需要以 http:// 或 https:// 开头');if(/^http:\/\//.test(b)&&!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/.test(b))bodyErr('远程 API 必须使用 HTTPS');return b+suffix}
   const maskApiKey=k=>{
@@ -2218,6 +2225,7 @@
     const upstreamMsg=String(errJson?.error?.message||errJson?.message||errBodyStr||'').trim().slice(0,360);
     const proxyCheck=detectProxyWrappedError(upstreamMsg||errBodyStr);
     const retryAfter=extractRetryAfter(res,errBodyStr,errJson);
+    if(/requests ending with a model turn are not supported/i.test(upstreamMsg))return {error_code:'INVALID_FINAL_MODEL_TURN',http_status:Number(status)||400,title:'请求末尾角色顺序不兼容（上游 HTTP 400）',message:'上游模型拒绝以 assistant/model 结尾的请求，并非服务器容量不足；请更新请求组装后再试。',detail:upstreamMsg,retry_after:0,suggest_terminal:false,may_consume_tokens:false};
     if(proxyCheck&&proxyCheck.code==='PROXY_ALL_KEYS_FAILED'){
       return {
         error_code:'PROXY_ALL_KEYS_FAILED',
@@ -3624,6 +3632,7 @@
     cleanChatBubbleText,
     storedChatText,
     isChatArtifact,
+    ensureChatUserTurn,classifyHttpStatusError,
     episodeGroups,episodeSignature,parseEpisodeResult,episodeChunks,
     isLegacyErrorArtifact,
     detectProxyWrappedError,

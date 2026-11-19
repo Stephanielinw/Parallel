@@ -1,0 +1,17 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const src=fs.readFileSync(require('path').join(__dirname,'../static/offline.js'),'utf8');
+const window={},store=new Map();
+vm.runInNewContext(src,{window,localStorage:{getItem:k=>store.get(k)||null,setItem:(k,v)=>store.set(k,v)},crypto:require('crypto').webcrypto,URLSearchParams,Date,JSON,Math,TextEncoder,console,fetch:async()=>{throw Error('No paid API')}});
+const {ensureChatUserTurn,classifyHttpStatusError}=window.ParallelOffline;
+const sys={role:'system',content:'prompt'},u={role:'user',content:'晚安'},a={role:'assistant',content:'晚安。'};
+const normal=[sys,u];assert.equal(ensureChatUserTurn(normal),normal);
+const ending=[sys,u,a];const result=ensureChatUserTurn(ending);
+assert.equal(result.at(-1).role,'user');assert.equal(result.length,4);assert.equal(ending.length,3);
+assert.match(result.at(-1).content,/非用户发言/);assert.equal(result[2],a);
+const pending=[{id:'old',text:'只能见一次',created_at:'2026-11-19T12:00:00Z'}];
+assert.match(ensureChatUserTurn(normal,pending,new Set()).at(-1).content,/只能见一次/);
+assert.equal(ensureChatUserTurn(normal,pending,new Set(['old'])),normal);
+const e=classifyHttpStatusError(500,JSON.stringify({error:{message:'400 INVALID_ARGUMENT. Requests ending with a model turn are not supported.'}}));
+assert.equal(e.error_code,'INVALID_FINAL_MODEL_TURN');assert.equal(e.http_status,500);
+assert.equal(classifyHttpStatusError(500,'internal error').error_code,'HTTP_500');
+console.log('Chat terminal-turn regressions passed (no API calls).');
