@@ -15,7 +15,7 @@ function start(){
     const user=body.messages.find(m=>m.role==='user'&&String(m.content).startsWith('fixture:'))?.content||'';
     if(user==='fixture:failed'&&failOnce){failOnce=false;return {ok:false,status:503,text:async()=>JSON.stringify({error:{message:'mock unavailable'}})}}
     if(user==='fixture:failed'&&leakOnce){leakOnce=false;return {ok:true,status:200,json:async()=>({choices:[{message:{content:leak,reasoning_content:''},finish_reason:'stop'}]})};}
-    return {ok:true,status:200,json:async()=>({choices:[{message:{content:'Recovered reply.|||Second bubble.',reasoning_content:'private analysis'},finish_reason:'stop'}]})};
+    return {ok:true,status:200,json:async()=>({choices:[{message:{content:user==='fixture:due'?'<think>draft|||candidate</think>Recovered reply.|||Second bubble.':'Recovered reply.|||Second bubble.',reasoning_content:'private analysis'},finish_reason:'stop'}]})};
   }};
   vm.createContext(ctx);vm.runInContext(offline,ctx);return win.ParallelOffline;
 }
@@ -53,6 +53,7 @@ function start(){
   let saved=JSON.parse(e.exportData()).data;
   const replies=k=>saved.messages.filter(m=>m.profile_id+'|'+m.character_id===k&&m.sender==='ai');
   assert.deepEqual(replies(a).map(m=>Date.parse(m.created_at)),[due1,due1]);
+  assert.deepEqual(replies(a).map(m=>m.text),['Recovered reply.','Second bubble.']);
   assert.deepEqual(replies(b).map(m=>Date.parse(m.created_at)),[due2,due2]);
   assert.equal(replies(le)[0].created_at,new Date(now).toISOString());
   assert.equal(saved.queue[pa].pending.length,1);assert.equal(saved.queue[fu].pending.length,1);assert.equal(saved.queue[c].paused,true);
