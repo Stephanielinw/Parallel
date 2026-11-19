@@ -24,8 +24,8 @@ export default function App() {
 
     (async () => {
       // Never clear the current or legacy save on startup. The offline engine handles migration.
-      await loadScript(`${import.meta.env.BASE_URL}parallel/offline.js?v=episode-20261119b`);
-      await loadScript(`${import.meta.env.BASE_URL}parallel/app.js?v=episode-20261119a`);
+      await loadScript(`${import.meta.env.BASE_URL}parallel/offline.js?v=bilingual-20261119a`);
+      await loadScript(`${import.meta.env.BASE_URL}parallel/app.js?v=bilingual-20261119a`);
     })();
   }, []);
 

@@ -1,5 +1,5 @@
 """End-to-end state invariants for the local HTTP API, using a temporary database."""
-import json, tempfile, threading, unittest, urllib.error, urllib.request
+import io, json, tempfile, threading, unittest, urllib.error, urllib.request
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -412,7 +412,143 @@ class ParallelAPITest(unittest.TestCase):
         self.assertTrue(clear_res['ok'])
         self.assertIsNone(clear_res['taskState'])
 
+    def test_12_bilingual_chat_translation_and_lifecycle(self):
+        pid=self.__class__.steph['id'];cid='re-game:leon:re2'
+        self.call('/mode',{'profileId':pid,'characterId':cid,'mode':'chat'})
+        # 1. Settings defaults & persistence for bilingual chat
+        s0=self.call('/settings')
+        self.assertTrue(s0.get('auto_translate',True))
+        self.assertEqual(s0.get('character_language_pref','natural'),'natural')
+        s_upd=self.call('/settings',{
+            'base_url':'https://mock.parallel.local/v1',
+            'api_key':'sk-mock-py-bilingual',
+            'model':'mock-py-model',
+            'demo_mode':False,
+            'auto_translate':True,
+            'character_language_pref':'custom',
+            'character_language_custom':'日语',
+        })['settings']
+        self.assertTrue(s_upd['auto_translate'])
+        self.assertEqual(s_upd['character_language_pref'],'custom')
+        self.assertEqual(s_upd['character_language_custom'],'日语')
+
+        # Character language directive enters chat prompt ONLY, never meeting prompt
+        with server.connect() as db:
+            chat_prompt=server.compile_messages(db,server.profile_get(db,pid),server.BY_ID[cid],'chat')
+            meet_prompt=server.compile_messages(db,server.profile_get(db,pid),server.BY_ID[cid],'meeting')
+        self.assertIn('日语',chat_prompt[0]['content'])
+        self.assertNotIn('日语',json.dumps(meet_prompt,ensure_ascii=False))
+
+        # Insert test AI messages: English, Japanese, Pure Chinese, Mixed, Multi-bubble
+        with server.connect() as db:
+            m_en=server.write_message(db,pid,cid,'ai','chat',"Rain's still coming down hard.",'live')
+            m_ja=server.write_message(db,pid,cid,'ai','chat','お疲れ様、無理しないでね。','live')
+            m_zh=server.write_message(db,pid,cid,'ai','chat','外面下大雨了，早点休息。','live')
+            m_b1=server.write_message(db,pid,cid,'ai','chat','Hold on a second.','live')
+            m_b2=server.write_message(db,pid,cid,'ai','chat','Comms are back up now.','live')
+            db.commit()
+
+        api_calls=[]
+        fail_next={'value':False}
+        UNIQUE_MARKER='PY_UNIQUE_ZH_SUBTITLE_4242'
+
+        class MockResp:
+            def __init__(self,payload_dict):
+                self._raw=json.dumps(payload_dict,ensure_ascii=False).encode('utf-8')
+            def read(self,n=-1):return self._raw
+            def __enter__(self):return self
+            def __exit__(self,*a):return False
+
+        orig_urlopen=server.urllib.request.urlopen
+        def fake_urlopen(req,timeout=60):
+            url=req.full_url if hasattr(req,'full_url') else str(req)
+            if '127.0.0.1' in url:
+                return orig_urlopen(req,timeout=timeout)
+            body=json.loads(req.data.decode('utf-8'))
+            api_calls.append(body)
+            if fail_next['value']:
+                raise urllib.error.HTTPError(req.full_url,500,'Server Error',{},io.BytesIO(b'{"error":{"message":"mock 500"}}'))
+            sys_c=body['messages'][0]['content']
+            if '系统阅读辅助翻译器' in sys_c:
+                payload=json.loads(body['messages'][1]['content'])
+                items=payload['items']
+                tr_list=[]
+                for it in items:
+                    if it['id']==m_en['id']:tr_list.append({'id':it['id'],'zh':UNIQUE_MARKER})
+                    elif it['id']==m_ja['id']:tr_list.append({'id':it['id'],'zh':'辛苦了，别勉强自己。'})
+                    elif it['id']==m_b1['id']:tr_list.append({'id':it['id'],'zh':'等一下。'})
+                    elif it['id']==m_b2['id']:tr_list.append({'id':it['id'],'zh':'通讯恢复了。'})
+                    else:tr_list.append({'id':it['id'],'zh':f"译：{it['text']}"})
+                content=json.dumps({'translations':tr_list},ensure_ascii=False)
+            else:
+                content='Regenerated Python reply.'
+            return MockResp({'choices':[{'message':{'content':content},'finish_reason':'stop'}]})
+
+        server.urllib.request.urlopen=fake_urlopen
+        try:
+            # 2. Batch translate EN + JA + ZH + 2 multi-bubbles in ONE API call (ZH skipped)
+            res=self.call('/translate-messages',{
+                'profileId':pid,'characterId':cid,
+                'messageIds':[m_en['id'],m_ja['id'],m_zh['id'],m_b1['id'],m_b2['id']],
+            })
+            self.assertTrue(res['ok'])
+            self.assertTrue(res['calledApi'])
+            self.assertEqual(len(api_calls),1,'Batch of 4 non-Chinese bubbles must consume only 1 API call')
+            self.assertIn(m_zh['id'],res['skippedIds'])
+            self.assertNotIn(m_zh['id'],res['translations'])
+            self.assertEqual(res['translations'][m_en['id']]['translated_text'],UNIQUE_MARKER)
+            self.assertEqual(res['translations'][m_ja['id']]['translated_text'],'辛苦了，别勉强自己。')
+            self.assertEqual(res['translations'][m_b1['id']]['translated_text'],'等一下。')
+            self.assertEqual(res['translations'][m_b2['id']]['translated_text'],'通讯恢复了。')
+
+            # 3. Cache hit -> 0 API calls
+            res_cache=self.call('/translate-messages',{'profileId':pid,'characterId':cid,'messageIds':[m_en['id'],m_ja['id']]})
+            self.assertFalse(res_cache['calledApi'])
+            self.assertEqual(len(api_calls),1)
+
+            # 4. Zero prompt pollution
+            with server.connect() as db:
+                next_prompt=json.dumps(server.compile_messages(db,server.profile_get(db,pid),server.BY_ID[cid],'chat'),ensure_ascii=False)
+            self.assertNotIn(UNIQUE_MARKER,next_prompt)
+
+            # 5. Disabled auto-translate skips API
+            self.call('/settings',{'auto_translate':False})
+            res_off=self.call('/translate-messages',{'profileId':pid,'characterId':cid,'messageIds':[m_b1['id']]})
+            self.assertEqual(res_off.get('skipped'),'disabled')
+            self.assertEqual(len(api_calls),1)
+            self.call('/settings',{'auto_translate':True})
+
+            # 6. Edit invalidates stale translation
+            ed=self.call('/message-edit',{'profileId':pid,'characterId':cid,'messageId':m_en['id'],'text':'Edited line in English.'})
+            self.assertTrue(ed['ok'])
+            th_after_edit=self.call(f'/thread?profileId={pid}&characterId={urllib.parse.quote(cid)}')
+            self.assertNotIn(m_en['id'],th_after_edit['translations'])
+
+            # 7. Translation failure does not break chat + manual retry works
+            fail_next['value']=True
+            f_res=self.call('/translate-messages',{'profileId':pid,'characterId':cid,'messageIds':[m_en['id']],'force':True})
+            self.assertFalse(f_res['ok'])
+            self.assertEqual(f_res['translations'][m_en['id']]['status'],'error')
+            fail_next['value']=False
+            r_res=self.call('/translate-messages',{'profileId':pid,'characterId':cid,'messageIds':[m_en['id']],'force':True})
+            self.assertTrue(r_res['ok'])
+            self.assertEqual(r_res['translations'][m_en['id']]['status'],'ready')
+
+            # 8. Regenerate trailing AI turn invalidates old translations & Recall cleans up
+            regen=self.call('/message-regenerate',{'profileId':pid,'characterId':cid,'messageId':m_b2['id']})
+            self.assertTrue(regen['ok'])
+            self.assertIn(m_b2['id'],regen['removedIds'])
+            new_id=regen['replies'][0]['id']
+            self.call('/translate-messages',{'profileId':pid,'characterId':cid,'messageIds':[new_id]})
+            self.call('/message-delete',{'profileId':pid,'characterId':cid,'messageId':new_id})
+            th_final=self.call(f'/thread?profileId={pid}&characterId={urllib.parse.quote(cid)}')
+            self.assertNotIn(new_id,th_final['translations'])
+        finally:
+            server.urllib.request.urlopen=orig_urlopen
+            self.call('/settings',{'demo_mode':True,'auto_translate':True,'character_language_pref':'natural','character_language_custom':''})
+
 if __name__=='__main__':unittest.main()
+
 
 
 

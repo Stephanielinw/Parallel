@@ -529,4 +529,21 @@ html,body,#root{width:100%;height:100%;min-height:0;margin:0;overflow:hidden;ove
 .thread-paused-pill{display:inline-flex;align-items:center;margin-left:6px;padding:1px 7px;border-radius:6px;font-size:10.5px;font-weight:700;background:#FFF2D9;color:#9C5414;border:1px solid #E0B27B;vertical-align:middle}
 .msg-receipt.is-paused{color:#A85814;font-weight:600}
 .bg-error-inline-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px;padding:9px 12px;border-radius:10px;background:#FFF5F2;border:1.5px solid #E5B4A8;color:#7D2E1E;font-size:12.5px}
-
+/* Bilingual Mobile Chat Bubbles */
+.bubble-orig{color:inherit;font-size:inherit;line-height:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+.bubble-tr-divider{height:0;border-top:1px dashed #E5D6C3;margin:7px 0 6px}
+.bubble-tr-text{font-size:11.5px;line-height:1.55;color:#7C6759;white-space:pre-wrap;overflow-wrap:anywhere;font-weight:500}
+.bubble-tr-status{font-size:11px;line-height:1.45;color:#9A8577;font-style:italic}
+.bubble-tr-error{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11px;line-height:1.45;color:#A65E52}
+.bubble-tr-retry-btn{appearance:none;border:1.3px solid #D9B7AD;background:#FFF7F4;color:#8F3D32;padding:2px 8px;border-radius:7px;font-size:10.5px;font-weight:750;cursor:pointer;line-height:1.35;transition:background .14s,border-color .14s}
+.bubble-tr-retry-btn:hover{background:#FDEAE4;border-color:#B56D5B}
+.chat-time{flex-wrap:wrap;row-gap:3px}
+.msg-action-btn{border:0;background:transparent;color:#8E7B6D;padding:1px 5px;font-size:9.5px;font-weight:700;border-radius:4px;cursor:pointer;opacity:.72;transition:opacity .15s,color .15s,background .15s}
+.bubble-row:hover .msg-action-btn,.msg-action-btn:focus-visible{opacity:1}
+.msg-action-btn:hover{color:var(--ink);background:#F5EBDD}
+.checkbox-label,.field label.checkbox-label{display:flex;align-items:center;gap:9px;cursor:pointer;line-height:1.5;font-weight:700;color:var(--ink);font-size:12px}
+.checkbox-label input[type="checkbox"],.field label.checkbox-label input[type="checkbox"]{width:17px;height:17px;min-height:17px;padding:0;margin:0;flex-shrink:0;accent-color:#C96A76;border-radius:4px;cursor:pointer}
+@media(max-width:580px),(hover:none){
+  .msg-action-btn,.msg-del-btn{opacity:.82}
+  .bubble-tr-text{font-size:11px;line-height:1.5}
+}

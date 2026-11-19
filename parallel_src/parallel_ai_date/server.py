@@ -166,6 +166,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS episodic_memories (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, profile_id TEXT NOT NULL, source_type TEXT NOT NULL, source_key TEXT NOT NULL, knowledge_mode TEXT NOT NULL DEFAULT 'stated', summary TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', importance INTEGER NOT NULL DEFAULT 2, emotional_weight INTEGER NOT NULL DEFAULT 2, unresolved INTEGER NOT NULL DEFAULT 0, clarifies_id TEXT NOT NULL DEFAULT '', disputed INTEGER NOT NULL DEFAULT 0, raw_msg_ids TEXT NOT NULL DEFAULT '[]', event_at TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(owner_id, profile_id, source_key));
         CREATE INDEX IF NOT EXISTS episodic_owner_profile ON episodic_memories(owner_id, profile_id, event_at);
         CREATE TABLE IF NOT EXISTS meetings (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, character_id TEXT NOT NULL, location TEXT NOT NULL DEFAULT '', time TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, ended_at TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', ai_summary TEXT NOT NULL DEFAULT '', message_ids TEXT NOT NULL DEFAULT '[]', entries TEXT NOT NULL DEFAULT '[]');
+        CREATE TABLE IF NOT EXISTS message_translations (message_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, character_id TEXT NOT NULL, content_version TEXT NOT NULL, target_lang TEXT NOT NULL DEFAULT 'zh-CN', translated_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'ready', error_code TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT '', provider_model TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS msg_translations_thread ON message_translations(profile_id, character_id);
         ''')
         if db.execute('SELECT COUNT(*) FROM presets').fetchone()[0]==0:
             for i,p in enumerate(DEFAULT_PRESETS):
@@ -173,7 +175,7 @@ def init_db():
         sanitize_stored_db(db)
         db.commit()
     if not SECRETFILE.exists():
-        save_connection({'base_url':'','api_key':'','model':'','image_base_url':'','image_api_key':'','image_model':'','temperature':0.85,'top_p':1,'max_tokens':4096,'auto_portraits':False})
+        save_connection({'base_url':'','api_key':'','model':'','image_base_url':'','image_api_key':'','image_model':'','temperature':0.85,'top_p':1,'max_tokens':4096,'auto_portraits':False,'auto_translate':True,'character_language_pref':'natural','character_language_custom':''})
 
 def utc(): return datetime.now(timezone.utc).isoformat(timespec='microseconds')
 def uid(): return str(uuid.uuid4())
@@ -199,8 +201,13 @@ def public_connection():
     has_api=bool(d.get('api_key') and d.get('base_url') and d.get('model'))
     has_img=bool(d.get('image_api_key') and d.get('image_base_url') and d.get('image_model'))
     demo_enabled=d.get('demo_enabled',True) is not False
+    lang_pref=d.get('character_language_pref','natural')
+    if lang_pref not in ('natural','zh','en','custom'):lang_pref='natural'
     return {k:v for k,v in d.items() if k not in ('api_key','image_api_key')} | {
         'proactive_mode':d.get('proactive_mode','daily'),
+        'auto_translate':d.get('auto_translate',True) is not False,
+        'character_language_pref':lang_pref,
+        'character_language_custom':str(d.get('character_language_custom','') or ''),
         'has_key':bool(d.get('api_key')),
         'has_api_config':has_api,
         'demo_enabled':demo_enabled,
@@ -208,6 +215,152 @@ def public_connection():
         'mode':'live' if has_api else ('demo' if demo_enabled else 'normal'),
         'image_mode':'live' if has_img else 'text'
     }
+
+MINOR_ZH_CHAT_TOKENS={
+    'ok','okay','app','wifi','ai','id','ip','vip','bgm','npc','cp',
+    'ui','ux','api','vr','ar','pdf','gps','dna','mv','tv','cd',
+    'usb','gif','png','jpg','atm','diy','ktv','ceo','hr','pr','qa',
+    'pm','am','km','cm','kg','ml','mg','re','re0','re1','re2','re3',
+    're4','re5','re6','re7','re8','mcu','tva','bsaa','stars','ubcs',
+    'lol','omg','btw','vs','kfc','bmw','ps5','pc','ios','mac'
+}
+TR_URL_RE=re.compile(r'https?://\S+|www\.\S+',re.IGNORECASE)
+TR_HAN_RE=re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf]')
+TR_KANA_RE=re.compile(r'[\u3040-\u309f\u30a0-\u30ff\u31f0-\u31ff]')
+TR_HANGUL_RE=re.compile(r'[\uac00-\ud7af\u1100-\u11ff]')
+TR_OTHER_SCRIPT_RE=re.compile(r'[\u0400-\u04ff\u0370-\u03ff\u0600-\u06ff\u0e00-\u0e7f\u0590-\u05ff]')
+TR_LATIN_WORD_RE=re.compile(r"[A-Za-z\u00c0-\u024f]+(?:'[A-Za-z\u00c0-\u024f]+)*")
+
+def compute_content_version(text):
+    normalized=re.sub(r'\r\n?','\n',str(text if text is not None else '')).strip()
+    h1=0x811c9dc5
+    h2=0x01000193
+    for i,ch_s in enumerate(normalized):
+        ch=ord(ch_s)
+        h1=((h1 ^ ch) * 0x01000193) & 0xFFFFFFFF
+        h2=((h2 ^ (ch + (i & 0xFF))) * 0x85ebca6b) & 0xFFFFFFFF
+    return f"v1:{len(normalized)}:{h1:08x}{h2:08x}"
+
+def analyze_translation_need(raw_text,ignore_names=None):
+    stripped=TR_URL_RE.sub(' ',str(raw_text if raw_text is not None else '')).strip()
+    if not stripped:return {'needsTranslation':False,'reason':'empty','detectedScript':'none'}
+    han_count=len(TR_HAN_RE.findall(stripped))
+    kana_count=len(TR_KANA_RE.findall(stripped))
+    hangul_count=len(TR_HANGUL_RE.findall(stripped))
+    other_count=len(TR_OTHER_SCRIPT_RE.findall(stripped))
+    all_latin=TR_LATIN_WORD_RE.findall(stripped)
+    ignored=set()
+    for nm in (ignore_names or []):
+        for part in TR_LATIN_WORD_RE.findall(str(nm or '')):
+            lo=part.lower()
+            if len(lo)>=2:ignored.add(lo)
+    if kana_count>0:
+        return {'needsTranslation':True,'reason':'japanese_or_other_script','detectedScript':'mixed' if (han_count>0 and all_latin) else 'ja'}
+    if hangul_count>0:
+        return {'needsTranslation':True,'reason':'japanese_or_other_script','detectedScript':'ko'}
+    if other_count>0:
+        return {'needsTranslation':True,'reason':'japanese_or_other_script','detectedScript':'other'}
+    total_latin=sum(len(w) for w in all_latin)
+    if han_count==0 and total_latin==0:
+        return {'needsTranslation':False,'reason':'non_lexical','detectedScript':'none'}
+    if han_count==0 and total_latin>0:
+        substantive=[w for w in all_latin if (w.lower() not in MINOR_ZH_CHAT_TOKENS) or len(all_latin)>1]
+        if substantive or total_latin>=2:
+            if len(all_latin)==1 and all_latin[0].lower() in MINOR_ZH_CHAT_TOKENS:
+                return {'needsTranslation':False,'reason':'zh_with_minor_loanword','detectedScript':'en'}
+            return {'needsTranslation':True,'reason':'foreign_only','detectedScript':'en'}
+        return {'needsTranslation':False,'reason':'non_lexical','detectedScript':'none'}
+    if han_count>0 and total_latin==0:
+        return {'needsTranslation':False,'reason':'already_zh_cn','detectedScript':'zh'}
+    sub_latin=[w for w in all_latin if len(w)>1 and w.lower() not in MINOR_ZH_CHAT_TOKENS and w.lower() not in ignored]
+    sub_chars=sum(len(w) for w in sub_latin)
+    if len(sub_latin)>=2 or (len(sub_latin)==1 and sub_chars>=7):
+        return {'needsTranslation':True,'reason':'mixed_language','detectedScript':'mixed'}
+    return {'needsTranslation':False,'reason':'zh_with_minor_loanword','detectedScript':'zh'}
+
+def needs_chinese_translation(raw_text,ignore_names=None):
+    return analyze_translation_need(raw_text,ignore_names)['needsTranslation']
+
+def build_character_language_directive(pref='natural',custom_language=''):
+    mode=pref if pref in ('natural','zh','en','custom') else 'natural'
+    custom=str(custom_language or '').strip()[:40]
+    if mode=='zh':
+        return '【角色语言偏好：简体中文】本次手机聊天请优先使用自然、符合你原作性格与语气特色的简体中文回复（保留你原有的称呼习惯、幽默或克制感，不要翻译腔）。'
+    if mode=='en':
+        return '【角色语言偏好：英语】本次手机聊天请优先使用自然、地道的英语回复，完整保留你的原作性格、俚语、讽刺幽默与称呼习惯。'
+    if mode=='custom' and custom:
+        return f'【角色语言偏好：{custom}】本次手机聊天请优先使用「{custom}」自然回复，完整保留你的原作性格、情绪与说话方式。'
+    return '【角色语言策略：自然选择】请依据你自身的原作背景、母语、文化身份、个人语言能力与当前交流情境自然使用语言（例如欧美角色可用英语，日本角色可用日语，中国角色可用中文，多语言角色可根据情境自然切换），不强制统一语言，也绝不为了翻译功能改变原有性格或说话方式；用户可自由使用中文、英语或其他语言发消息。'
+
+def build_batch_translation_messages(items,character_name,character_cue=''):
+    cue=str(character_cue or '').strip()[:120]
+    lines=[
+        '你是 Parallel 手机聊天界面的系统阅读辅助翻译器。',
+        '任务：将输入数组中每条角色消息准确翻译为自然、地道的简体中文。',
+        '铁律：',
+        '1. 忠实保留原文的情绪、幽默、讽刺、俚语、称呼、停顿与人物说话风格，避免生硬翻译腔。',
+        '2. 严禁擅自添加任何解释、注释、旁白、动作描写、括号补充或改变角色原本表达的意思。',
+        '3. 若某条消息为中外文混合，请整理为通顺自然的完整简体中文句意，专有名词可自然保留。',
+        '4. 严格只输出一个 JSON 对象，格式为 {"translations":[{"id":"原id","zh":"对应简体中文译文"}]}，必须与输入 id 一一对应且数量完全一致。',
+    ]
+    if character_name:
+        lines.append(f"当前发言角色语气参考：{character_name}{f'（{cue}）' if cue else ''}。")
+    return [
+        {'role':'system','content':'\n'.join(lines)},
+        {'role':'user','content':js({'items':items})}
+    ]
+
+def parse_translation_batch_response(raw_content,expected_items):
+    candidate=str(raw_content if raw_content is not None else '').strip()
+    m=re.match(r'^```(?:json)?\s*([\s\S]*?)\s*```$',candidate,re.IGNORECASE)
+    if m:candidate=m.group(1).strip()
+    parsed=json.loads(candidate)
+    if isinstance(parsed,dict) and isinstance(parsed.get('translations'),list):
+        rows=parsed['translations']
+    elif isinstance(parsed,list):
+        rows=parsed
+    else:
+        raise ValueError('Translation JSON missing translations array')
+    expected_ids={x['id'] for x in expected_items}
+    out={}
+    for row in rows:
+        if not isinstance(row,dict):continue
+        rid=str(row.get('id') or '').strip()
+        zh=str(row.get('zh') if row.get('zh') is not None else (row.get('translation') if row.get('translation') is not None else (row.get('text') or ''))).strip()
+        if rid and rid in expected_ids and zh:
+            out[rid]=zh
+    if not out and len(rows)==len(expected_items):
+        for i,item in enumerate(expected_items):
+            row=rows[i]
+            zh=row.strip() if isinstance(row,str) else str((row or {}).get('zh') or (row or {}).get('translation') or '').strip()
+            if zh:out[item['id']]=zh
+    missing=[x['id'] for x in expected_items if x['id'] not in out]
+    return {'translations':out,'missingIds':missing}
+
+def invalidate_translation(db,mid):
+    if mid:
+        db.execute('DELETE FROM message_translations WHERE message_id=?',(mid,))
+
+def get_matched_translations_for_thread(db,pid,cid,msgs):
+    rows=db.execute('SELECT * FROM message_translations WHERE profile_id=? AND character_id=?',(pid,cid)).fetchall()
+    by_mid={r['message_id']:dict(r) for r in rows}
+    out={}
+    for m in (msgs or []):
+        if m.get('sender')!='ai' or m.get('mode')!='chat' or m.get('engine') in ('recalled','error'):continue
+        entry=by_mid.get(m['id'])
+        if not entry:continue
+        ver=compute_content_version(clean_chat_bubble_text(m.get('text','')))
+        if entry.get('content_version')==ver:
+            out[m['id']]=entry
+    return out
+
+def demo_translate_to_zh(raw):
+    s=str(raw or '').strip()
+    if re.search(r'just wrapped up|off duty',s,re.IGNORECASE):return '刚结束一轮漫长的值班，总算下班了。'
+    if re.search(r'coffee',s,re.IGNORECASE):return '先喝杯咖啡喘口气，有事随时说。'
+    if 'また後で' in s or '後で連絡' in s:return '晚点再联系你。'
+    if 'お疲れ' in s or 'おつかれ' in s:return '辛苦了。'
+    return f'（演示译文）{s}'
 
 PROTOCOL_LEADING_TAG_RE = re.compile(r'^(?:[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)[ \t]*)+', re.MULTILINE)
 INLINE_TIMED_TAG_SEQ_RE = re.compile(r'(?:(?:\[|【)\s*(?:短信|见面)[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?\s*(?:\]|】)[ \t]*)+')
@@ -1441,12 +1594,13 @@ def relationship_baseline_summary(db,pid,cid,p_name):
         parts.append(f"匹配记录：{recent_ms}")
     return '；'.join(parts)+'。'
 
-def select_working_history(db,pid,cid,mode='chat',through_rowid=None):
+def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids=None):
     if through_rowid is not None:
         rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND rowid<=? ORDER BY rowid DESC LIMIT 48',(pid,cid,through_rowid)).fetchall()
     else:
         rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid DESC LIMIT 48',(pid,cid)).fetchall()
-    chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m)]
+    excl=set(exclude_ids or [])
+    chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m) and m['id'] not in excl]
     if not chron:return []
     if mode=='meeting':
         m_state=MEETING_STATE.get((pid,cid),{})
@@ -1595,7 +1749,7 @@ def classify_http_status_error(status,detail_msg='',retry_after=0):
     if s==529:return _res('HTTP_529','服务商过载 (HTTP 529)',f"上游模型服务商当前负载过高 (Overloaded){suffix}。建议等待片刻后再重试。")
     return _res(f'HTTP_{s}',f'接口请求异常 (HTTP {s})',f"模型接口返回异常状态码 HTTP {s}{suffix}。请检查终端设置或查看系统日志。")
 
-def completion(messages,*,json_mode=False,max_tokens=None,log_meta=None):
+def completion(messages,*,json_mode=False,max_tokens=None,temperature=None,log_meta=None):
     settings=load_connection();base=settings.get('base_url');key=settings.get('api_key');model=settings.get('model')
     if not all((base,key,model)):raise RuntimeError('尚未配置可用的 API 地址、密钥及模型')
     meta=log_meta or {}
@@ -1605,7 +1759,7 @@ def completion(messages,*,json_mode=False,max_tokens=None,log_meta=None):
     attempt=int(meta.get('attempt') or 1)
     retry_of_task_id=meta.get('retry_of_task_id') or ''
     max_tok=int(max_tokens or settings.get('max_tokens') or 4096)
-    temp=float(settings.get('temperature',0.85))
+    temp=float(temperature if temperature is not None else settings.get('temperature',0.85))
     top_p_val=float(settings.get('top_p',1))
     payload={'model':model,'messages':messages,'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok}
     if json_mode:payload['response_format']={'type':'json_object'}
@@ -1808,13 +1962,13 @@ def is_post_history_system_preset(entry):
     grp=str(entry.get('group') or infer_preset_group(nm))
     return grp=='COT' or ('COT' in nm) or ('连续性检查' in nm) or ('动笔前' in nm) or ('自检' in nm)
 
-def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_ids=None,trigger_opening=False,is_continue=False):
+def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_ids=None,trigger_opening=False,is_continue=False,exclude_ids=None):
     ordered=[preset_row_dict(r) for r in db.execute('SELECT * FROM presets WHERE mode=? AND enabled=1 ORDER BY sort_order,id',(mode,)).fetchall()]
     macros=lambda t:expand_preset_macros(t,p,c)
     core_presets=[x for x in ordered if x['role']=='system' and not is_post_history_system_preset(x)] if mode=='meeting' else [x for x in ordered if x['role']=='system']
     post_presets=[x for x in ordered if is_post_history_system_preset(x) or x['role']!='system'] if mode=='meeting' else [x for x in ordered if x['role']!='system']
     core_sys_parts=[macros(x['content']) for x in core_presets]
-    working_history=[] if (mode=='meeting' and trigger_opening) else select_working_history(db,p['id'],c['id'],mode=mode,through_rowid=through_rowid)
+    working_history=[] if (mode=='meeting' and trigger_opening) else select_working_history(db,p['id'],c['id'],mode=mode,through_rowid=through_rowid,exclude_ids=exclude_ids)
     working_ids={m['id'] for m in working_history}
     ensure_daily_summaries(db,p,c,working_ids)
     query_seed=latest or ' '.join(str(m['text'] or '').strip() for m in working_history[-3:] if m['sender']=='user') or (' '.join((str(m['text'] or '').strip() if m['sender']=='user' else clean_chat_bubble_text(m['text'])) for m in working_history[-2:]))
@@ -1913,7 +2067,9 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         if len(bundled_rows)>1:
             batch_hint=f"\n【连续消息提示】对方刚刚连续发来了最后 {len(bundled_rows)} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。"
     surv_hint=f"\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「{cur_surv['location']}」·「{cur_surv['activity']}」（仅供对方主动问起你在哪或在忙什么、且与当前聊天话题不冲突时自然参考；不必主动汇报行踪或生硬解释日程）。" if cur_surv else ''
-    system+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+surv_hint+batch_hint
+    conn_cfg=load_connection()
+    lang_hint='\n'+build_character_language_directive(conn_cfg.get('character_language_pref','natural'),conn_cfg.get('character_language_custom',''))
+    system+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+surv_hint+batch_hint+lang_hint
     messages=[{'role':'system','content':system}]
     for x in post_presets:
         messages.append({'role':x['role'],'content':macros(x['content'])})
@@ -2050,8 +2206,9 @@ class Handler(BaseHTTPRequestHandler):
                     nick=str(m_state.get('nickname','')).strip()
                     cv=char_view(db,c)|{'nickname':nick,'display_name':nick or c['name']}
                     diary_p=build_diary_payload(db,p,c)
+                    translations=get_matched_translations_for_thread(db,p['id'],cid,msgs)
                     rel_dict=dict(rel)|{'active_meeting_id':m_state.get('active_meeting_id',''),'meeting_location':m_state.get('meeting_location',''),'hot_chat':bool(m_state.get('hot_chat',False)),'nickname':nick}
-                    return self.respond({'character':cv,'profile':p,'relation':rel_dict,'messages':msgs,'meetings':meetings,'surveillance':build_surveillance_payload(db,p,c),'diarySummary':{'latestDate':diary_p['latestDate'],'availableDates':diary_p['availableDates'],'latestTitle':diary_p['diary'].get('title','')},'queue':queue_view(db,p['id'],cid),'taskState':get_task_state(p['id'],cid,rel['mode'])})
+                    return self.respond({'character':cv,'profile':p,'relation':rel_dict,'messages':msgs,'translations':translations,'meetings':meetings,'surveillance':build_surveillance_payload(db,p,c),'diarySummary':{'latestDate':diary_p['latestDate'],'availableDates':diary_p['availableDates'],'latestTitle':diary_p['diary'].get('title','')},'queue':queue_view(db,p['id'],cid),'taskState':get_task_state(p['id'],cid,rel['mode'])})
                 if route=='/api/surveillance':
                     p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid);req_date=arg('date').strip()
                     if not c:raise ValueError('角色不存在')
@@ -2449,6 +2606,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not mid:raise ValueError('缺少消息 ID')
                     recalled_text='[系统提示：对方撤回了一条消息（你没有看清具体内容）]'
                     db.execute("UPDATE messages SET text=?,engine='recalled' WHERE id=? AND profile_id=? AND character_id=?",(recalled_text,mid,p['id'],cid))
+                    invalidate_translation(db,mid)
                     mem_rows=db.execute('SELECT id,raw_msg_ids FROM episodic_memories WHERE owner_id=? AND profile_id=?',(cid,p['id'])).fetchall()
                     for mr in mem_rows:
                         if mid in parse_json(mr['raw_msg_ids'],[]):
@@ -2460,6 +2618,136 @@ class Handler(BaseHTTPRequestHandler):
                             pending=[x for x in parse_json(q['pending'],[]) if x!=mid]
                             db.execute('UPDATE chat_queue SET pending=?,due_at=? WHERE profile_id=? AND character_id=?',(js(pending),q['due_at'] if pending else 0,p['id'],cid))
                     db.commit();return self.respond({'ok':True,'recalled':True,'queue':queue_view(db,p['id'],cid)})
+                if route=='/api/message-edit':
+                    p=profile_get(db,data.get('profileId'));cid=data.get('characterId');mid=str(data.get('messageId') or '').strip()
+                    raw_txt=str(data.get('text') or '').strip()
+                    if not mid:raise ValueError('缺少消息 ID')
+                    if not raw_txt or len(raw_txt)>4000:raise ValueError('消息请控制在 1–4000 字')
+                    row=db.execute('SELECT * FROM messages WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],cid)).fetchone()
+                    if not row:raise ValueError('消息不存在')
+                    if row['engine']=='recalled':raise ValueError('已撤回的消息无法编辑')
+                    if row['mode']!='chat':raise ValueError('仅支持编辑手机聊天消息')
+                    next_txt=(clean_chat_bubble_text(raw_txt) or raw_txt) if row['sender']=='ai' else raw_txt
+                    db.execute('UPDATE messages SET text=? WHERE id=?',(next_txt,mid))
+                    invalidate_translation(db,mid)
+                    db.commit()
+                    updated=dict(row)|{'text':next_txt}
+                    return self.respond({'ok':True,'message':updated,'translationInvalidated':True})
+                if route=='/api/message-regenerate':
+                    p=profile_get(db,data.get('profileId'));cid=data.get('characterId');c=BY_ID.get(cid)
+                    if not c:raise ValueError('角色不存在')
+                    r=db.execute('SELECT * FROM relations WHERE profile_id=? AND character_id=? AND status=?',(p['id'],cid,'matched')).fetchone()
+                    if not r or r['mode']!='chat':raise ValueError('仅支持在手机聊天模式重新生成')
+                    all_rows=[dict(x) for x in db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid ASC',(p['id'],cid)).fetchall()]
+                    thread_msgs=[m for m in all_rows if not _is_chat_artifact(m)]
+                    trailing_ai=[]
+                    for m in reversed(thread_msgs):
+                        if m['mode']!='chat':break
+                        if m['engine']=='recalled':continue
+                        if m['sender']=='ai':trailing_ai.insert(0,m)
+                        else:break
+                    if not trailing_ai:raise ValueError('当前没有可重新生成的角色回复')
+                    req_mid=str(data.get('messageId') or '').strip()
+                    if req_mid and not any(m['id']==req_mid for m in trailing_ai):raise ValueError('仅支持重新生成角色最新一轮回复')
+                    cur_mode=public_connection()['mode']
+                    if cur_mode=='normal':
+                        return self.respond({'ok':False,'replies':[],'reply':None,'removedIds':[],'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。','apiError':None})
+                    removed_ids=[m['id'] for m in trailing_ai]
+                    raw_reply='';engine='demo'
+                    if cur_mode=='live':
+                        try:
+                            ms=compile_messages(db,p,c,'chat',exclude_ids=removed_ids)
+                            if not any(x.get('role')=='user' for x in ms):
+                                ms.append({'role':'user','content':'【系统事件：重新生成开场】请结合你的原作性格与当前关系，重新发 1～2 条自然的手机聊天开场消息（多条气泡之间用 ||| 分隔）。'})
+                            raw_reply=completion(ms,max_tokens=min(1024,int(load_connection().get('max_tokens',4096))),log_meta={'mode':'chat','task_type':'chat','entryPoint':'chat-regenerate','profile':p,'character':c})
+                            engine='live'
+                        except Exception as e:
+                            return self.respond({'ok':False,'replies':[],'reply':None,'removedIds':[],'warning':str(e),'apiError':getattr(e,'api_error',None)})
+                    else:
+                        raw_reply=demo_text(db,p,c,'chat')
+                        engine='demo'
+                    bubble_texts=split_chat_bubbles(raw_reply)
+                    if not bubble_texts:
+                        return self.respond({'ok':False,'replies':[],'reply':None,'removedIds':[],'warning':'模型返回内容为空，已保留原有消息。','apiError':None})
+                    for rid in removed_ids:
+                        db.execute('DELETE FROM messages WHERE id=?',(rid,))
+                        invalidate_translation(db,rid)
+                    replies=[write_message(db,p['id'],cid,'ai','chat',b_txt,engine) for b_txt in bubble_texts]
+                    ai_msg=replies[-1] if replies else None
+                    if ai_msg:
+                        log_event(db,p['id'],cid,'ai_message',c['name']+' 重新回应 '+p['name']+'：'+(' / '.join(bubble_texts))[:180])
+                        db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),p['id'],cid))
+                    db.commit()
+                    return self.respond({'ok':True,'removedIds':removed_ids,'replies':replies,'reply':ai_msg,'warning':'','apiError':None})
+                if route=='/api/translate-messages':
+                    p=profile_get(db,data.get('profileId'));cid=data.get('characterId');c=BY_ID.get(cid)
+                    if not c:raise ValueError('角色不存在')
+                    r=db.execute('SELECT * FROM relations WHERE profile_id=? AND character_id=? AND status=?',(p['id'],cid,'matched')).fetchone()
+                    if not r:raise ValueError('尚未匹配')
+                    force=bool(data.get('force'))
+                    cfg=load_connection()
+                    auto_enabled=cfg.get('auto_translate',True) is not False
+                    all_msgs=[dict(x) for x in db.execute('SELECT id,profile_id,character_id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid ASC',(p['id'],cid)).fetchall()]
+                    req_ids=set(str(x) for x in data.get('messageIds')) if isinstance(data.get('messageIds'),list) and data.get('messageIds') else None
+                    target_msgs=[m for m in all_msgs if m['sender']=='ai' and m['mode']=='chat' and m['engine'] not in ('recalled','error') and not _is_chat_artifact(m) and (req_ids is None or m['id'] in req_ids)]
+                    if not force and not auto_enabled:
+                        return self.respond({'ok':True,'skipped':'disabled','calledApi':False,'translations':get_matched_translations_for_thread(db,p['id'],cid,all_msgs),'translatedIds':[],'cachedIds':[],'skippedIds':[m['id'] for m in target_msgs],'failedIds':[]})
+                    ignore_names=[c['name'],p['name']]+list(c.get('aliases') or [])
+                    existing_rows={row['message_id']:dict(row) for row in db.execute('SELECT * FROM message_translations WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchall()}
+                    to_translate=[];cached_ids=[];skipped_ids=[]
+                    for m in target_msgs:
+                        clean=clean_chat_bubble_text(m['text'])
+                        ver=compute_content_version(clean)
+                        if not needs_chinese_translation(clean,ignore_names):
+                            skipped_ids.append(m['id'])
+                            continue
+                        ex=existing_rows.get(m['id'])
+                        if not force and ex and ex.get('status')=='ready' and ex.get('content_version')==ver and ex.get('translated_text'):
+                            cached_ids.append(m['id'])
+                            continue
+                        to_translate.append({'id':m['id'],'text':clean,'content_version':ver})
+                    if not to_translate:
+                        return self.respond({'ok':True,'calledApi':False,'translations':get_matched_translations_for_thread(db,p['id'],cid,all_msgs),'translatedIds':[],'cachedIds':cached_ids,'skippedIds':skipped_ids,'failedIds':[]})
+                    cur_mode=public_connection()['mode']
+                    if cur_mode=='normal':
+                        return self.respond({'ok':True,'skipped':'no-api','calledApi':False,'translations':get_matched_translations_for_thread(db,p['id'],cid,all_msgs),'translatedIds':[],'cachedIds':cached_ids,'skippedIds':skipped_ids,'failedIds':[]})
+                    batch=to_translate[:12]
+                    now_ts=utc()
+                    if cur_mode=='demo':
+                        translated_ids=[]
+                        for item in batch:
+                            db.execute('INSERT OR REPLACE INTO message_translations VALUES (?,?,?,?,?,?,?,?,?,?,?)',(item['id'],p['id'],cid,item['content_version'],'zh-CN',demo_translate_to_zh(item['text']),'ready','','','demo',now_ts))
+                            translated_ids.append(item['id'])
+                        db.commit()
+                        return self.respond({'ok':True,'calledApi':False,'engine':'demo','translations':get_matched_translations_for_thread(db,p['id'],cid,all_msgs),'translatedIds':translated_ids,'cachedIds':cached_ids,'skippedIds':skipped_ids,'failedIds':[]})
+                    char_cue='、'.join((c.get('tags') or [])[:4])
+                    prompt_msgs=build_batch_translation_messages([{'id':x['id'],'text':x['text']} for x in batch],c['name'],char_cue)
+                    total_chars=sum(len(x['text']) for x in batch)
+                    max_tok=min(1600,max(260,total_chars*4+120))
+                    try:
+                        raw=completion(prompt_msgs,json_mode=True,max_tokens=max_tok,temperature=0.25,log_meta={'mode':'translation','task_type':'translation','entryPoint':'chat_translation','profile':p,'character':c})
+                        parsed=parse_translation_batch_response(raw,batch)
+                        translated_ids=[];failed_ids=[]
+                        for item in batch:
+                            zh=parsed['translations'].get(item['id'])
+                            if zh:
+                                db.execute('INSERT OR REPLACE INTO message_translations VALUES (?,?,?,?,?,?,?,?,?,?,?)',(item['id'],p['id'],cid,item['content_version'],'zh-CN',zh,'ready','','',cfg.get('model',''),now_ts))
+                                translated_ids.append(item['id'])
+                            else:
+                                db.execute('INSERT OR REPLACE INTO message_translations VALUES (?,?,?,?,?,?,?,?,?,?,?)',(item['id'],p['id'],cid,item['content_version'],'zh-CN','','error','INCOMPLETE_TRANSLATION','模型未返回该气泡的对应译文，可点击重试翻译。',cfg.get('model',''),now_ts))
+                                failed_ids.append(item['id'])
+                        db.commit()
+                        return self.respond({'ok':len(failed_ids)==0,'calledApi':True,'engine':'live','translations':get_matched_translations_for_thread(db,p['id'],cid,all_msgs),'translatedIds':translated_ids,'cachedIds':cached_ids,'skippedIds':skipped_ids,'failedIds':failed_ids,'apiError':None})
+                    except Exception as e:
+                        api_err=getattr(e,'api_error',None) or {'error_type':'TRANSLATION_FAILED','error_code':'TRANSLATION_FAILED','http_status':0,'title':'双语译文翻译失败','message':str(e),'task_type':'translation'}
+                        err_code=api_err.get('error_code') or api_err.get('error_type') or 'TRANSLATION_FAILED'
+                        err_msg=api_err.get('title') or api_err.get('message') or str(e)
+                        failed_ids=[]
+                        for item in batch:
+                            db.execute('INSERT OR REPLACE INTO message_translations VALUES (?,?,?,?,?,?,?,?,?,?,?)',(item['id'],p['id'],cid,item['content_version'],'zh-CN','','error',err_code,err_msg,cfg.get('model',''),now_ts))
+                            failed_ids.append(item['id'])
+                        db.commit()
+                        return self.respond({'ok':False,'calledApi':True,'engine':'live','translations':get_matched_translations_for_thread(db,p['id'],cid,all_msgs),'translatedIds':[],'cachedIds':cached_ids,'skippedIds':skipped_ids,'failedIds':failed_ids,'apiError':api_err})
                 if route=='/api/memory-action':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId');c=BY_ID.get(cid)
                     if not c:raise ValueError('角色不存在')
@@ -2565,6 +2853,9 @@ class Handler(BaseHTTPRequestHandler):
                     d=load_connection();
                     if 'demo_enabled' in data:d['demo_enabled']=bool(data['demo_enabled'])
                     if 'proactive_mode' in data and data['proactive_mode'] in ('off','daily','active'):d['proactive_mode']=data['proactive_mode']
+                    if 'auto_translate' in data:d['auto_translate']=bool(data['auto_translate'])
+                    if 'character_language_pref' in data and data['character_language_pref'] in ('natural','zh','en','custom'):d['character_language_pref']=data['character_language_pref']
+                    if 'character_language_custom' in data:d['character_language_custom']=str(data['character_language_custom'] or '').strip()[:40]
                     if 'base_url' in data:d['base_url']=validate_base_url(str(data['base_url']).strip())
                     if 'api_key' in data:
                         v=str(data['api_key']);
