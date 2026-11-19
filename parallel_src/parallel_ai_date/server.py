@@ -1153,6 +1153,54 @@ def overlay_actual_slots(base,actual):
         result=sorted(nxt,key=lambda s:hhmm_to_min(s['start']))
     return result
 
+def is_sleeping_slot(slot):
+    if not slot or slot.get('source') in ('meeting','chat_update'):return False
+    status=str(slot.get('status') or '');activity=str(slot.get('activity') or '');scene=str(slot.get('scene') or '')
+    actual=r'(?:熟睡|深眠|浅眠|睡眠|沉睡|已入睡|正在睡|睡着|已睡|安睡|\basleep\b|\bsleeping\b|\bdeep sleep\b|\bslumber\b)'
+    preparing=r'(?:准备(?:入睡|睡觉)|睡前|即将入睡|打算睡|\bprepar(?:e|ing) (?:to sleep|for bed)\b|\bgetting ready for bed\b)'
+    if re.search(actual,status,re.I):return True
+    if re.search(preparing,status,re.I) or re.search(preparing,activity,re.I):return False
+    return bool(re.search(actual,activity,re.I) or re.search(actual,scene,re.I))
+
+def wake_slot_from_message(slots,hhmm,character_name):
+    minute=hhmm_to_min(hhmm);idx=active_slot_index(slots,minute)
+    if idx<0 or not is_sleeping_slot(slots[idx]):return False
+    old=slots[idx]
+    observed=dict(old,start=hhmm,status='已醒来发消息',activity='已醒来查看并发送手机消息，尚未确认再次入睡',scene=character_name+'已经发出手机消息，原先的睡眠安排被打断。',source='chat_update')
+    if hhmm_to_min(old['start'])<minute:slots[idx:idx+1]=[dict(old,end=hhmm),observed]
+    else:slots[idx]=observed
+    return True
+
+def reconcile_phone_activity(db,pid,cid):
+    c=BY_ID.get(cid)
+    if not c:return
+    rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
+    if rel and rel['mode']=='meeting':return
+    p=profile_get(db,pid)
+    rec=get_or_init_surveillance(db,p,c)
+    if wake_slot_from_message(rec['slots'],fmt_hhmm(),c['name']):rec['updated_at']=utc()
+
+def chat_clock_label(ts):
+    try:
+        d=datetime.fromisoformat(str(ts).replace('Z','+00:00')).astimezone()
+        return d.strftime('%Y-%m-%d %H:%M')
+    except (TypeError,ValueError,OverflowError):return '时间未知'
+
+def chat_clock_context(history,now=None):
+    d=(now or datetime.now().astimezone()).astimezone()
+    raw=d.strftime('%z');zone='UTC'+raw[:3]+':'+raw[3:]
+    h=d.hour;period='凌晨' if h<5 else '上午' if h<12 else '下午' if h<18 else '晚上'
+    previous=''
+    for m in reversed(history):
+        if m.get('sender')!='user':continue
+        try:
+            t=datetime.fromisoformat(str(m.get('created_at')).replace('Z','+00:00')).astimezone()
+            minutes=max(0,int((d-t).total_seconds()//60))
+            previous=f"最近一条用户消息实际发送于 {t.strftime('%Y-%m-%d %H:%M')}，距现在约 {minutes} 分钟。"
+            break
+        except (TypeError,ValueError,OverflowError):continue
+    return f"\n【本次手机回复的当前时间】{d.strftime('%Y-%m-%d %H:%M')}（{period}，{zone}，应用本地时钟）。{previous}较早的消息是历史，不代表现在仍处在当时的时段。请按此刻的时间自然回应，尤其注意跨日、早晚问候及作息；不要机械复述时间，也不要把现实日期改变为原作年份或输出时间前缀。"
+
 def sync_surveillance_from_chat(db,p,c,ai_text=''):
     txt=str(ai_text or '').strip()
     rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
@@ -1756,6 +1804,7 @@ def write_message(db,pid,cid,sender,mode,txt,engine='human'):
     clean_txt = (clean_meeting_novel_text(txt) if mode=='meeting' else (clean_chat_bubble_text(txt) or '…')) if (sender=='ai' and engine not in ('error','recalled')) else str(txt or '')
     item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=utc())
     db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)',tuple(item.values()))
+    if sender=='ai' and mode=='chat' and engine in ('live','demo') and not _is_chat_artifact(item):reconcile_phone_activity(db,pid,cid)
     return item
 
 def log_event(db,pid,cid,kind,summary):
@@ -2146,7 +2195,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         if msg.get('engine')=='recalled':
             history_turns.append({'role':role,'content':'[系统提示：对方刚刚撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'})
         else:
-            t_tag=fmt_hhmm(msg.get('created_at')) or '--:--'
+            t_tag=chat_clock_label(msg.get('created_at')) if mode=='chat' else (fmt_hhmm(msg.get('created_at')) or '--:--')
             m_label='线下见面' if msg['mode']=='meeting' else '线上短信'
             who=c['name'] if msg['sender']=='ai' else p['name']
             timeline_lines.append(f"#{idx+1} {t_tag}（{m_label}·{who}）")
@@ -2186,11 +2235,13 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             row=db.execute('SELECT id,sender,text,created_at FROM messages WHERE id=?',(mid,)).fetchone()
             if row:bundled_rows.append(dict(row))
         if len(bundled_rows)>1:
-            batch_hint=f"\n【连续消息提示】对方刚刚连续发来了最后 {len(bundled_rows)} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。"
-    surv_hint=f"\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「{cur_surv['location']}」·「{cur_surv['activity']}」（仅供对方主动问起你在哪或在忙什么、且与当前聊天话题不冲突时自然参考；不必主动汇报行踪或生硬解释日程）。" if cur_surv else ''
+            recent=now_ms()-int(datetime.fromisoformat(bundled_rows[0]['created_at'].replace('Z','+00:00')).timestamp()*1000)<3600000
+            batch_hint=f"\n【连续消息提示】对方{'刚刚连续发来了' if recent else '此前陆续发来了'}最后 {len(bundled_rows)} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。"
+    wake_hint='原日程为睡眠，但你正在阅读并准备发送手机消息，应视作已暂时醒来；不要声称自己仍在熟睡。' if is_sleeping_slot(cur_surv) else ''
+    surv_hint=f"\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「{cur_surv['location']}」·「{cur_surv['activity']}」。{wake_hint}实际互动优先于预设日程，不必主动汇报行踪或生硬解释日程。" if cur_surv else ''
     conn_cfg=load_connection()
     lang_hint='\n'+build_character_language_directive(conn_cfg.get('character_language_pref','natural'),conn_cfg.get('character_language_custom',''))
-    system+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+surv_hint+batch_hint+lang_hint
+    system+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+chat_clock_context(working_history)+surv_hint+batch_hint+lang_hint
     messages=[{'role':'system','content':system}]
     for x in post_presets:
         messages.append({'role':x['role'],'content':macros(x['content'])})

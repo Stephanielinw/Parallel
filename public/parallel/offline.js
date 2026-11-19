@@ -1460,6 +1460,45 @@
     }
     return result;
   }
+  // An accepted outgoing phone message is evidence of wakefulness, not a claim
+  // that the character slept until the planned end or will remain awake forever.
+  function isSleepingSlot(slot){
+    if(!slot||['meeting','chat_update'].includes(slot.source))return false;
+    const status=String(slot.status||''),activity=String(slot.activity||''),scene=String(slot.scene||'');
+    const actual=/(?:熟睡|深眠|浅眠|睡眠|沉睡|已入睡|正在睡|睡着|已睡|安睡|\basleep\b|\bsleeping\b|\bdeep sleep\b|\bslumber\b)/i;
+    const preparing=/(?:准备(?:入睡|睡觉)|睡前|即将入睡|打算睡|\bprepar(?:e|ing) (?:to sleep|for bed)\b|\bgetting ready for bed\b)/i;
+    if(actual.test(status))return true;
+    if(preparing.test(status)||preparing.test(activity))return false;
+    return actual.test(activity)||actual.test(scene);
+  }
+  function wakeSlotFromMessage(slots,hhmm,characterName,makeId){
+    const minute=hhmmToMin(hhmm),idx=activeSlotIndex(slots,minute);
+    if(idx<0||!isSleepingSlot(slots[idx]))return false;
+    const old=slots[idx];
+    const observed={...old,id:makeId(),start:hhmm,status:'已醒来发消息',activity:'已醒来查看并发送手机消息，尚未确认再次入睡',scene:characterName+'已经发出手机消息，原先的睡眠安排被打断。',source:'chat_update'};
+    if(hhmmToMin(old.start)<minute)slots.splice(idx,1,{...old,end:hhmm},observed);
+    else slots.splice(idx,1,observed);
+    return true;
+  }
+  function reconcilePhoneActivity(pid,cid){
+    const p=db.profiles.find(x=>x.id===pid),c=byId.get(cid);
+    if(!p||!c||relation(pid,cid)?.mode==='meeting')return;
+    const rec=getOrInitSurveillance(p,c,localDateStr());
+    if(wakeSlotFromMessage(rec.slots,fmtHHMM(Date.now())||'12:00',c.name,()=> 'slot_chat_'+uid()))rec.updated_at=stamp();
+  }
+  function chatClockLabel(ts){
+    const d=new Date(ts??Date.now());
+    if(!Number.isFinite(d.getTime()))return '时间未知';
+    return localDateStr(d.getTime())+' '+fmtHHMM(d.getTime());
+  }
+  function chatClockContext(history,now=Date.now()){
+    const d=new Date(now),offset=-d.getTimezoneOffset(),sign=offset>=0?'+':'-',abs=Math.abs(offset);
+    const zone='UTC'+sign+String(Math.floor(abs/60)).padStart(2,'0')+':'+String(abs%60).padStart(2,'0');
+    const hours=d.getHours(),period=hours<5?'凌晨':hours<12?'上午':hours<18?'下午':'晚上';
+    const last=[...history].reverse().find(m=>m.sender==='user'&&Number.isFinite(Date.parse(m.created_at)));
+    const previous=last?'最近一条用户消息实际发送于 '+chatClockLabel(last.created_at)+'，距现在约 '+Math.max(0,Math.floor((now-Date.parse(last.created_at))/60000))+' 分钟。':'';
+    return '\n【本次手机回复的当前时间】'+chatClockLabel(now)+'（'+period+'，'+zone+'，应用本地时钟）。'+previous+'较早的消息是历史，不代表现在仍处在当时的时段。请按此刻的时间自然回应，尤其注意跨日、早晚问候及作息；不要机械复述时间，也不要把现实日期改变为原作年份或输出时间前缀。';
+  }
   const syncSurveillanceFromChat=(p,c,userRows,aiText)=>{
     const txt=String(aiText||'').trim();
     if(!txt||relation(p.id,c.id)?.mode==='meeting')return;
@@ -2186,6 +2225,7 @@
       :String(text??'');
     const m={id:uid(),profile_id:pid,character_id:cid,sender,mode,text:cleanTxt,engine,meeting_id:mode==='meeting'?(r?.active_meeting_id||''):'',created_at:stamp()};
     db.messages.push(m);
+    if(sender==='ai'&&mode==='chat'&&['live','demo'].includes(engine)&&!isChatArtifact(m))reconcilePhoneActivity(pid,cid);
     return m;
   };
   const rawMessagesOf=(pid,cid)=>db.messages.filter(m=>m.profile_id===pid&&m.character_id===cid);
@@ -2308,7 +2348,7 @@
         historyTurns.push({role,content:'[系统提示：对方刚刚撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'});
         return;
       }
-      const tTag=fmtHHMM(m.created_at)||'--:--';
+      const tTag=mode==='chat'?chatClockLabel(m.created_at):(fmtHHMM(m.created_at)||'--:--');
       const mLabel=m.mode==='meeting'?'线下见面':'线上短信';
       const who=m.sender==='ai'?c.name:p.name;
       timelineLines.push(`#${idx+1} ${tTag}（${mLabel}·${who}）`);
@@ -2359,12 +2399,13 @@
     if(mode==='chat'&&effectivePending.length>1){
       const bundledRows=effectivePending.map(id=>db.messages.find(x=>x.id===id)).filter(Boolean);
       if(bundledRows.length>1){
-        batchHint=`\n【连续消息提示】对方刚刚连续发来了最后 ${bundledRows.length} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。`;
+        const recent=Date.now()-Date.parse(bundledRows[0].created_at)<3600000;
+        batchHint=`\n【连续消息提示】对方${recent?'刚刚连续发来了':'此前陆续发来了'}最后 ${bundledRows.length} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。`;
       }
     }
-    const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「${curSurv.location}」·「${curSurv.activity}」（仅供对方主动问起你在哪或在忙什么、且与当前聊天话题不冲突时自然参考；不必主动汇报行踪或生硬解释日程）。`:'';
+    const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「${curSurv.location}」·「${curSurv.activity}」。${isSleepingSlot(curSurv)?'原日程为睡眠，但你正在阅读并准备发送手机消息，应视作已暂时醒来；不要声称自己仍在熟睡。':''}实际互动优先于预设日程，不必主动汇报行踪或生硬解释日程。`:'';
     const langHint='\n'+buildCharacterLanguageDirective(db.connection?.character_language_pref||'natural',db.connection?.character_language_custom||'');
-    sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint+langHint;
+    sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+chatClockContext(workingHistory)+survHint+batchHint+langHint;
     const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)})),...historyTurns];
     return chat;
   };

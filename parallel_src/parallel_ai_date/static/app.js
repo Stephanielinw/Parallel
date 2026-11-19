@@ -1073,7 +1073,7 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
       ${isToday?`<div class="surv-live-card">
         <div class="surv-live-head">
           <span class="surv-live-badge"><i class="surv-live-dot"></i> 此刻实时画面 · ${esc(cur.status||'日常活动')}</span>
-          <span class="surv-live-time">${esc(cur.start||'00:00')} – ${esc(cur.end||'23:59')}</span>
+          <span class="surv-live-time">${esc(cur.start||'00:00')}</span>
         </div>
         <div class="surv-live-loc">${I('map')}<span>${esc(cur.location||`${c.name}的常去地点`)}</span></div>
         <div class="surv-live-act">${esc(cur.activity||'正在处理日常事务')}</div>
@@ -1085,12 +1085,12 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
       </div>`:''}
       <div class="surv-section-head">
         <h3>${isToday?'今日已发生足迹（随时间自然解锁）':`${esc(curDateVal)} 全天经历回溯`}</h3>
-        <span class="caption">已解锁 ${unlocked.length} / ${data.totalSlotsCount||unlocked.length} 个时段</span>
+        <span class="caption">${unlocked.length} 条已发生记录</span>
       </div>
       <div class="surv-timeline">
         ${unlocked.map(s=>`<div class="surv-slot ${s.isCurrent?'is-current':''} ${s.source==='meeting'?'is-meeting':''}">
           <div class="surv-slot-top">
-            <span class="surv-slot-time">${esc(s.start)} – ${esc(s.end)}</span>
+            <span class="surv-slot-time">${esc(s.start)}</span>
             <span class="surv-slot-loc">${I('map')}<span>${esc(s.location)}</span></span>
             <span class="surv-slot-tag">${esc(sourceBadge(s))}</span>
           </div>
@@ -1098,7 +1098,7 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
           ${(!isToday&&s.scene)?`<div class="surv-slot-scene">${esc(s.scene)}</div>`:''}
         </div>`).join('')}
       </div>
-      ${lockedCount>0?`<div class="surv-locked-note">${I('clock')}<span>今日后续还有 ${lockedCount} 个未到时间的行程时段，将随现实时间推进自动解锁，也可由你们接下来的聊天与见面动态改写。</span></div>`:''}`;
+      `;
     modal(html,`<button class="btn soft" data-action="open-char-hub">返回角色空间</button><button class="btn primary" data-action="close-modal">关闭监控</button>`);
     const mEl=document.querySelector('#modal-root .modal');
     if(mEl)mEl.classList.add('modal-wide');
