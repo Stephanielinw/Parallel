@@ -820,6 +820,7 @@
       blocked:!!q.blocked||isPaused,
       paused:isPaused,
       taskState:ts,
+      recoveryKind:q.userPaused||ts?.userPaused?'user':ts?.interrupted?'interrupted':ts?.last_error?'error':'',
       paceMode:q.paceMode||(hotChat?'hot':'daily'),
       hotChat,
       delayMinutes:q.delayMinutes||(hotChat?1:20),
@@ -897,6 +898,7 @@
       return {reply:null,replies:[],queued:true,warning:'当前处于正常模式且尚未连接 API，请先在「终端」填写 API 地址、密钥和模型。',queue:queueInfo(p.id,c.id)};
     }
     const scheduledDueAt=Number(q.dueAt||q.scheduledDueAt||ts?.scheduled_due_at||0);
+    if(retryOpts.recovery&&scheduledDueAt>retryOpts.recovery.openedAt)return {reply:null,replies:[],queued:true,queue:queueInfo(p.id,c.id)};
     const pending=q.pending.slice();
     const simulatedAt=retryOpts.recovery?recoverReplyTime(p.id,c.id,pending,scheduledDueAt,retryOpts.recovery,ts):0;
     q.scheduledDueAt=scheduledDueAt;
@@ -1040,7 +1042,7 @@
   }
   let recoveryRunning=null;
   const recoveredSessions=new Set();
-  async function runQueueBatch(jobs,activePid,activeCid,recovery=null){
+  async function runQueueBatch(jobs,activePid,activeCid,recovery=null,concurrency=2){
     let next=0;const flushed=[];
     async function worker(){
       while(next<jobs.length){
@@ -1053,7 +1055,7 @@
         }catch(e){flushed.push({profileId:p.id,characterId:c.id,characterName:c.name,warning:String(e.message||e),background:isBackground});}
       }
     }
-    await Promise.all(Array.from({length:Math.min(2,jobs.length)},()=>worker()));
+    await Promise.all(Array.from({length:Math.min(concurrency,jobs.length)},()=>worker()));
     return {flushed};
   }
   async function recoverDueQueues(data){
@@ -1095,7 +1097,7 @@
       if(!c||!r||r.status!=='matched'||r.mode!=='chat')continue;
       jobs.push({p,c,force:false});
     }
-    return runQueueBatch(jobs,p.id,activeCid);
+    return runQueueBatch(jobs,p.id,activeCid,null,1);
   }
   const char=(c,pid='')=>{
     const rel=pid?relation(pid,c.id):null;
@@ -1765,7 +1767,9 @@
     }
     const entry=diaryStore.byDate[dStr];
     delete entry._lastApiError;
+    // Existing diaries remain intact until explicit refresh; no surprise paid rewrite.
     if(pub().mode!=='live')return entry;
+    if(entry.stale_after_recovery&&!forceRefresh)return entry;
     if(entry.engine==='live'&&!forceRefresh)return entry;
     try{
       const intimacy=computeIntimacyInfo(p,c);
@@ -1793,6 +1797,7 @@
         entry.intimacy_label=intimacy.label;
         entry.intimacy_score=intimacy.score;
         entry.engine='live';
+        delete entry.stale_after_recovery;
         entry.updated_at=stamp();
         clearBgError(p.id,c.id,'diary');
         save();
@@ -2280,7 +2285,10 @@
       ?(mode==='meeting'?cleanMeetingNovelText(text):(cleanChatBubbleText(text)||'…'))
       :String(text??'');
     const m={id:uid(),profile_id:pid,character_id:cid,sender,mode,text:cleanTxt,engine,meeting_id:mode==='meeting'?(r?.active_meeting_id||''):'',created_at:at?new Date(at).toISOString():stamp(),...(at?{generated_at:stamp()}: {})};
-    db.messages.push(m);
+    // A user can send another message while historical recovery is generating.
+    // Insert recovered bubbles at their original chronological position in this pair.
+    const later=at?db.messages.findIndex(row=>row.profile_id===pid&&row.character_id===cid&&Date.parse(row.created_at)>at):-1;
+    if(later>=0)db.messages.splice(later,0,m);else db.messages.push(m);
     if(sender==='ai'&&mode==='chat'&&['live','demo'].includes(engine)&&!isChatArtifact(m))reconcilePhoneActivity(pid,cid,at||Date.now());
     if(at){const diary=db.diaries[pairKey(pid,cid)]?.byDate?.[localDateStr(at)];if(diary)diary.stale_after_recovery=true;}
     return m;

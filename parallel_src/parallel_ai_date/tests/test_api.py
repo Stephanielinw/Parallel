@@ -578,6 +578,34 @@ class ParallelAPITest(unittest.TestCase):
         self.assertEqual(server.location_from_report('我准备去屋顶'),'')
         self.assertEqual(server.explicit_arrival_place('我已经到街角咖啡馆门口了，等等，我好像看见你了。'),'街角咖啡馆门口')
 
+
+    def test_14_backlog_recovery(self):
+        self.call('/settings',{'clear_key':True,'demo_enabled':True})
+        a=self.create('Backlog A');b=self.create('Backlog B')
+        before=server.now_ms()-7200000;due=before+60000
+        stamp=lambda t:server.datetime.fromtimestamp(t/1000,server.timezone.utc).isoformat(timespec='microseconds')
+        fixtures=[(a['id'],'re-game:leon:re2','due','',due),(a['id'],'re-game:leon:re4','interrupted','interrupted',due+1000),(a['id'],'re-game:leon:re6','paused','user',due),(b['id'],'re-game:leon:re2','future','',server.now_ms()+600000)]
+        with server.connect() as db:
+            for pid,cid,label,kind,t in fixtures:
+                db.execute("INSERT INTO relations(profile_id,character_id,status,mode,attempts,updated_at) VALUES (?,?,'matched','chat',1,?)",(pid,cid,stamp(before-1000)))
+                mid=server.uid()
+                db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)',(mid,pid,cid,'user','chat','Backlog '+label,'human',stamp(before)))
+                db.execute('INSERT INTO chat_queue(profile_id,character_id,pending,due_at,blocked,recovery_kind,scheduled_due_at) VALUES (?,?,?,?,?,?,?)',(pid,cid,server.js([mid]),0 if kind else t,1 if kind else 0,kind,t if kind else 0))
+            db.commit()
+        args={'openedAt':server.now_ms(),'offlineSince':before-1000,'session':'test-backlog','profileId':a['id']}
+        result=self.call('/chat-recover',args)
+        own=[v for v in result['flushed'] if v['profileId'] in (a['id'],b['id'])]
+        self.assertEqual(len(own),2)
+        for cid,t in [('re-game:leon:re2',due),('re-game:leon:re4',due+1000)]:
+            row=next(v for v in own if v['characterId']==cid)
+            self.assertEqual(row['reply']['created_at'],stamp(t))
+        self.assertEqual(self.call('/chat-recover',args)['flushed'],[])
+        with server.connect() as db:
+            for pid,cid in [(a['id'],'re-game:leon:re6'),(b['id'],'re-game:leon:re2')]:
+                q=server.queue_view(db,pid,cid)
+                self.assertEqual(q['count'],1)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM messages WHERE profile_id=? AND character_id=? AND sender='ai'",(pid,cid)).fetchone()[0],0)
+
 if __name__=='__main__':unittest.main()
 
 

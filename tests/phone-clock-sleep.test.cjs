@@ -19,6 +19,6 @@ const now=new Date(2026,10,19,8,0).getTime(),last=new Date(2026,10,18,23,0).toIS
 const hint=f.chatClockContext([{sender:'user',created_at:last}],now);
 assert(hint.includes('2026-11-19 08:00'));assert(hint.includes('上午'));assert(hint.includes('2026-11-18 23:00'));assert(hint.includes('540 分钟'));
 assert(!a.includes("\${esc(s.start)} – \${esc(s.end)}"));assert(!a.includes("\${esc(cur.start||'00:00')} – \${esc(cur.end||'23:59')}"));
-assert(o.includes('chatClockContext(workingHistory)+survHint'));
+assert(o.includes('chatClockContext(workingHistory,options.simulatedAt||Date.now())+survHint'));
 assert(o.includes("['live','demo'].includes(engine)&&!isChatArtifact(m))reconcilePhoneActivity"));
 console.log('Sleep wake reconciliation, cross-midnight current time and start-only monitoring passed');

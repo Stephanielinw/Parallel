@@ -172,6 +172,10 @@ let recoveryBusy=false,bootReady=false,hiddenSince=0;
 const noteVisible=()=>{if(document.hidden)return;lastVisibleAt=Date.now();try{localStorage.setItem(LAST_VISIBLE_KEY,String(lastVisibleAt));}catch{}};
 async function recoverOnOpen(offlineSince=0,manual=false){
   if(recoveryBusy||state.settings?.mode==='normal'||!state.activeId)return;
+  if(state.flushBusy||state.chatBusy||state.revealingBubbles){
+    setTimeout(()=>{if(!document.hidden)void recoverOnOpen(offlineSince,manual);},1000);
+    return;
+  }
   recoveryBusy=true;
   const pid=state.activeId,openedAt=Date.now();
   const session=String(openedAt)+'-'+Math.random().toString(36).slice(2);
@@ -1161,6 +1165,7 @@ async function openDiaryModal(selectedDate='',forceRefresh=false){
         </div>
       </div>
       ${data.bgError?`<div class="preset-diag-warn" style="margin-bottom:10px"><span>上次自动执笔日记未成功（${esc(data.bgError.error_code)}：${esc(data.bgError.title)}），当前展示已保留的日记内容。</span></div>`:''}
+      ${diary.stale_after_recovery?`<p class="caption">当日有补发的聊天记录，原日记已保留。需要时可选择重新执笔。</p>`:''}
       <article class="diary-sheet">
         <header class="diary-sheet-head">
           <div class="diary-meta-pills">

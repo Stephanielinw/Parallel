@@ -768,6 +768,8 @@ def queue_flush(db,p,c,force=False,manual_resume=False,recovery=None):
             db.execute("UPDATE chat_queue SET blocked=1 WHERE profile_id=? AND character_id=?",(pid,cid))
             db.commit()
             return {'queued':True,'reply':None,'replies':[],'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。','queue':queue_view(db,pid,cid)}
+        due=int(q['due_at'] or q['scheduled_due_at'] or 0)
+        if recovery and due>recovery['openedAt']:return {'queued':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
         if manual_resume:
             t_state['paused']=False
             t_state['attempt']=int(t_state.get('attempt') or 0)+1
@@ -776,8 +778,7 @@ def queue_flush(db,p,c,force=False,manual_resume=False,recovery=None):
         t_state['status']='inflight'
         t_state['updated_at']=utc()
         sources=pending_list;token=uid();revision=q['revision']
-        due=int(q['due_at'] or q['scheduled_due_at'] or 0)
-        simulated_at=recover_reply_time(db,pid,cid,sources,due,recovery,q['simulated_at']) if recovery else 0
+        simulated_at=recover_reply_time(db,pid,cid,sources,due,recovery,q['simulated_at']) if recovery and not recovery.get('manual') else 0
         db.execute("UPDATE chat_queue SET pending='[]',due_at=0,status='inflight',inflight=?,inflight_sources=?,blocked=0,scheduled_due_at=?,simulated_at=?,recovery_kind='' WHERE profile_id=? AND character_id=?",(token,js(sources),due,simulated_at,pid,cid))
         last=db.execute('SELECT rowid FROM messages WHERE id=?',(sources[-1],)).fetchone()
         prompt=compile_messages(db,p,c,'chat',through_rowid=last['rowid'] if last else None,pending_ids=sources,simulated_at=simulated_at)
@@ -785,7 +786,7 @@ def queue_flush(db,p,c,force=False,manual_resume=False,recovery=None):
     settings=load_connection();warning='';engine='demo';reply=None;replies=[];api_error=None
     if all(settings.get(k) for k in ('base_url','api_key','model')):
         try:
-            txt=completion(prompt,log_meta={'mode':'chat','task_type':'chat','entryPoint':'chat-flush','profile':p,'character':c,'attempt':t_state['attempt'],'retry_of_task_id':t_state.get('last_task_id',''),'parseFn':lambda raw:' / '.join(split_chat_bubbles(raw))})
+            txt=completion(prompt,log_meta={'mode':'chat','task_type':'chat','entryPoint':'chat-flush','profile':p,'character':c,'attempt':t_state['attempt'],'retry_of_task_id':t_state.get('last_task_id',''),'simulated_reply_at':datetime.fromtimestamp(simulated_at/1000,timezone.utc).isoformat() if simulated_at else '','parseFn':lambda raw:' / '.join(split_chat_bubbles(raw))})
             engine='live'
         except Exception as e:
             warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
@@ -848,7 +849,7 @@ def recover_due_queues(db,data):
             if len(RECOVERY_SESSIONS)>64:RECOVERY_SESSIONS.discard(next(iter(RECOVERY_SESSIONS-{session})))
         opened=min(now_ms(),int(data.get('openedAt') or now_ms()))
         since=max(0,min(opened,int(data.get('offlineSince') or 0)))
-        recovery=None if manual else {'openedAt':opened,'offlineSince':since}
+        recovery={'openedAt':opened,'offlineSince':since,'manual':manual}
         jobs=[]
         for r in db.execute("SELECT q.* FROM chat_queue q JOIN relations r ON r.profile_id=q.profile_id AND r.character_id=q.character_id WHERE r.status='matched' AND r.mode='chat' AND q.status<>'inflight'").fetchall():
             if manual and r['profile_id']!=data.get('profileId'):continue
@@ -1437,6 +1438,7 @@ def ensure_live_diary(db,p,c,target_date='',force=False):
         d_store['by_date'][d_str]=build_default_diary(db,p,c,d_str,surv_rec)
     entry=d_store['by_date'][d_str]
     if public_connection()['mode']!='live':return entry
+    if entry.get('stale_after_recovery') and not force:return entry
     if entry.get('engine')=='live' and not force:return entry
     try:
         intimacy=compute_intimacy_info(db,p,c)
@@ -1450,6 +1452,7 @@ def ensure_live_diary(db,p,c,target_date='',force=False):
             entry['mood']=str(parsed.get('mood') or entry['mood']).strip()[:16]
             entry['content']=str(parsed.get('content')).strip()[:2400]
             entry['engine']='live'
+            entry.pop('stale_after_recovery',None)
     except Exception:
         pass
     return entry
@@ -1634,7 +1637,7 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
     return rec
 
 def ensure_meeting_records(db,p,c):
-    all_rows=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at,id',(p['id'],c['id'])).fetchall()
+    all_rows=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? ORDER BY julianday(created_at),rowid',(p['id'],c['id'])).fetchall()
     all_msgs=[dict(r) for r in all_rows if not _is_chat_artifact(dict(r))]
     groups=[]
     cur=[]
@@ -1850,8 +1853,11 @@ def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids
     where='profile_id=? AND character_id=?'
     args=[pid,cid]
     if through_rowid is not None:
-        where+=' AND rowid<=?';args.append(through_rowid)
-    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE '+where+' ORDER BY rowid DESC',args).fetchall()
+        cutoff=db.execute('SELECT created_at FROM messages WHERE rowid=? AND profile_id=? AND character_id=?',(through_rowid,pid,cid)).fetchone()
+        if cutoff:
+            # A recovered reply can have a later insertion rowid but an earlier conversation timestamp.
+            where+=' AND (julianday(created_at)<julianday(?) OR (julianday(created_at)=julianday(?) AND rowid<=?))';args.extend([cutoff['created_at'],cutoff['created_at'],through_rowid])
+    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
     excl=set(exclude_ids or [])
     chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m) and m['id'] not in excl]
     if mode=='meeting':
@@ -1930,6 +1936,7 @@ def record_system_log(entry):
         'character_name':entry.get('character_name',''),
         'mode':entry.get('mode','chat'),
         'entry_point':entry.get('entry_point',''),
+        'simulated_reply_at':entry.get('simulated_reply_at',''),
         'model':entry.get('model',''),
         'endpoint':entry.get('endpoint',''),
         'headers_masked':entry.get('headers_masked') or {},
@@ -2038,6 +2045,7 @@ def completion(messages,*,json_mode=False,max_tokens=None,temperature=None,log_m
             'retry_of_task_id':retry_of_task_id,
             'attempt':attempt,
             'entry_point':meta.get('entryPoint',req_mode),
+        'simulated_reply_at':meta.get('simulated_reply_at',''),
             'model':model,
             'endpoint':endpoint,
             'headers_masked':headers_masked,
@@ -2171,6 +2179,7 @@ def completion(messages,*,json_mode=False,max_tokens=None,temperature=None,log_m
         'retry_of_task_id':retry_of_task_id,
         'attempt':attempt,
         'entry_point':meta.get('entryPoint',req_mode),
+        'simulated_reply_at':meta.get('simulated_reply_at',''),
         'model':model,
         'endpoint':endpoint,
         'headers_masked':headers_masked,
@@ -2438,9 +2447,9 @@ class Handler(BaseHTTPRequestHandler):
                     for r in rows:
                         c=BY_ID.get(r['character_id']);
                         if not c:continue
-                        last_rows=db.execute('SELECT id,text,sender,mode,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid DESC',(p['id'],c['id']))
+                        last_rows=db.execute('SELECT id,text,sender,mode,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY julianday(created_at) DESC,rowid DESC',(p['id'],c['id']))
                         last=next((dict(x) for x in last_rows if not _is_chat_artifact(dict(x))),None)
-                        incoming_rows=db.execute("SELECT id,text,sender,mode,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND sender='ai' AND engine NOT IN ('error','recalled') ORDER BY rowid DESC",(p['id'],c['id']))
+                        incoming_rows=db.execute("SELECT id,text,sender,mode,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND sender='ai' AND engine NOT IN ('error','recalled') ORDER BY julianday(created_at) DESC,rowid DESC",(p['id'],c['id']))
                         last_incoming=next((dict(x) for x in incoming_rows if not _is_chat_artifact(dict(x))),None)
                         m_state=MEETING_STATE.get((p['id'],c['id']),{})
                         nick=str(m_state.get('nickname','')).strip()
