@@ -1756,6 +1756,16 @@
     const zh=text.match(SCENE_RULES.stateZh);
     return zh?cleanScenePlace(zh[1],false):'';
   }
+  function explicitArrivalPlace(raw){
+    const text=normalizeSceneText(raw);
+    if(!text||/^[「『“"*>]/.test(text)||SCENE_RULES.uncertain.test(text))return '';
+    // A user who explicitly arrives may tell us the location even without a prior proposal.
+    // This is useful for a manual meeting; it is not sufficient to auto-switch.
+    const zh=text.match(/^(?:(?:我)?(?:已经|刚刚?|已)?(?:到了?|抵达(?:了)?|到达(?:了)?))[，,。 ]*(?:在)?[「『“"]?([^，。！？；、\n「」『』“”"]{1,40})/);
+    if(zh){const loc=cleanScenePlace(zh[1].replace(/^了|了$/g,''));if(loc&&!/^(?:啦|吗|吧|呀|哟|喽|哦)$/.test(loc))return loc;}
+    const en=text.match(/^(?:i(?:['’]ve| have| just)? arrived(?: at| in)?|i (?:just )?got to|i made it to)\s+([^.!?;,\n]{1,100})/i);
+    return en?cleanScenePlace(en[1],true):'';
+  }
   function proposalLocation(raw){
     const text=normalizeSceneText(raw);
     if(!text||/^[「『“"*>]/.test(text)||SCENE_RULES.uncertain.test(text)||SCENE_RULES.cancel.test(text))return '';
@@ -1771,7 +1781,7 @@
     if(!last||last.id!==arrivalId||last.sender!=='user')return null;
     const txt=normalizeSceneText(last.text);
     if(SCENE_RULES.uncertain.test(txt)||/^[「『“"*>]/.test(txt))return null;
-    const arrivedAt=locationFromReport(txt);
+    const arrivedAt=explicitArrivalPlace(txt)||locationFromReport(txt);
     if(!SCENE_RULES.arrival.test(txt)&&!arrivedAt)return null;
     let plan=null;
     const recent=rows.slice(0,-1).slice(-40);
@@ -1806,7 +1816,7 @@
     const recent=currentPlanRows(pid,cid).slice(-16);
     for(let i=recent.length-1;i>=0;i--){
       const m=recent[i];
-      const loc=proposalLocation(m.text)||(m.sender==='ai'?locationFromReport(m.text):'');
+      const loc=proposalLocation(m.text)||(m.sender==='user'?explicitArrivalPlace(m.text):locationFromReport(m.text));
       if(loc)return loc;
       if(SCENE_RULES.cancel.test(normalizeSceneText(m.text)))break;
     }

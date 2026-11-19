@@ -31,6 +31,13 @@ jobs:
           node tests/chat-anchor-memory.test.cjs
           node tests/scene-transition.test.cjs
           python3 -m py_compile parallel_src/parallel_ai_date/server.py
+      - name: Run existing regression suites (no real model calls)
+        run: |
+          npx tsx --test src/utils/protocolCleaner.test.ts src/parallelPortable.test.ts
+          node tests/mobile-ui.test.cjs
+          node tests/discover-session.test.cjs
+          node parallel_src/parallel_ai_date/tests/test_portable.cjs
+          python3 -m unittest parallel_src/parallel_ai_date/tests/test_api.py
       - name: Build
         run: npm run build -- --base=/Parallel/
       - name: Check required browser assets and privacy guard

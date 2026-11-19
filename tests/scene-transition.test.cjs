@@ -3,7 +3,7 @@ const root=path.join(__dirname,'..'),read=p=>fs.readFileSync(path.join(root,p),'
 const o=read('public/parallel/offline.js'),a=read('public/parallel/app.js');
 assert.equal(o,read('parallel_src/parallel_ai_date/static/offline.js'));assert.equal(a,read('parallel_src/parallel_ai_date/static/app.js'));
 const code=o.slice(o.indexOf('  const SCENE_RULES='),o.indexOf('  function currentPlanRows'));
-const {confirmedArrival:f,locationFromReport:l,proposalLocation:p}=new Function(code+'\nreturn {confirmedArrival,locationFromReport,proposalLocation}')();
+const {confirmedArrival:f,locationFromReport:l,proposalLocation:p,explicitArrivalPlace}=new Function(code+'\nreturn {confirmedArrival,locationFromReport,proposalLocation,explicitArrivalPlace}')();
 const now=Date.parse('2026-11-19T18:00:00Z'),ts=new Date(now-10000).toISOString();
 const row=(id,sender,text)=>({id,sender,text,created_at:ts});
 const zh=[row('1','ai','我们在屋顶见面吧'),row('2','user','好的'),row('3','user','我到了')];
@@ -29,3 +29,36 @@ assert.deepEqual(result.map(s=>[s.start,s.end,s.location]),[['00:00','10:00','A'
 assert.equal(funcs.activeSlotIndex(result,600),1);
 assert(a.includes('autoArrivalId:r.autoMeeting.arrival_id'));
 console.log('Meeting confirmation, arrival guards, open location extraction, schedule overlay passed');
+
+assert.equal(explicitArrivalPlace('我已经到街角咖啡馆门口了，等等，我好像看见你了。'),'街角咖啡馆门口');
+assert.equal(explicitArrivalPlace('我到了，在咖啡店门口'),'咖啡店门口');
+assert.equal(explicitArrivalPlace('我到了'),'');
+const vm=require('node:vm'),{webcrypto}=require('node:crypto');
+(async()=>{
+  const store=new Map(),win={};
+  let calls=0;
+  const ctx={window:win,localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},crypto:webcrypto,URLSearchParams,Date,JSON,Math,TextEncoder,console,fetch:async()=>{calls++;throw Error('network disabled')}};
+  vm.createContext(ctx);vm.runInContext(o,ctx);
+  const e=win.ParallelOffline;
+  const profile=(await e.request('/profile',{name:'Scene test',age:24,gender:'female',interested_in:['all'],min_age:18,max_age:65,sources:['生化危机 · 游戏']})).profile;
+  const cid='re-game:leon:re4',pair={profileId:profile.id,characterId:cid};
+  let matched=false;
+  for(let i=0;i<15;i++)if((await e.request('/swipe',{...pair,direction:'right'})).matched){matched=true;break;}
+  assert(matched);
+  const pack=JSON.parse(e.exportData());
+  pack.data.messages.push({id:'scripted-proposal',profile_id:profile.id,character_id:cid,sender:'ai',mode:'chat',text:'我们在屋顶见面吧',engine:'demo',meeting_id:'',created_at:new Date().toISOString()});
+  e.importData(JSON.stringify(pack));
+  const ack=await e.request('/message',{...pair,text:'好的'});assert.equal(ack.autoMeeting,null);
+  const arr=await e.request('/message',{...pair,text:'我到了'});assert.equal(arr.autoMeeting.location,'屋顶');
+  const invalid=await e.request('/mode',{...pair,mode:'meeting',autoArrivalId:'other-id',triggerOpening:true});assert(invalid.autoRejected);
+  const opened=await e.request('/mode',{...pair,mode:'meeting',autoArrivalId:arr.user.id,triggerOpening:true});
+  assert.equal(opened.mode,'meeting');assert.equal(opened.meeting_location,'屋顶');assert(opened.openingReply);
+  assert.equal(opened.surveillance.current.location,'屋顶');
+  const again=await e.request('/mode',{...pair,mode:'meeting',autoArrivalId:arr.user.id,triggerOpening:true});assert(again.autoRejected);
+  const after=(await e.request('/thread?profileId='+profile.id+'&characterId='+encodeURIComponent(cid))).messages;
+  assert.equal(after.filter(m=>m.text==='我到了').length,1);
+  await e.request('/mode',{...pair,mode:'chat',finalizeMeeting:true});
+  const post=await e.request('/message',{...pair,text:'我到了'});assert.equal(post.autoMeeting,null);
+  assert.equal(calls,0);
+  console.log('Portable arrival route, mode transition, duplicate protection and scene boundary passed');
+})().catch(e=>{console.error(e);process.exitCode=1});

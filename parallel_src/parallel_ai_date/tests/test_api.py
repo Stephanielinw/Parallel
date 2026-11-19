@@ -547,6 +547,34 @@ class ParallelAPITest(unittest.TestCase):
             server.urllib.request.urlopen=orig_urlopen
             self.call('/settings',{'demo_mode':True,'auto_translate':True,'character_language_pref':'natural','character_language_custom':''})
 
+    def test_13_confirmed_arrival_transition(self):
+        self.call('/settings',{'clear_key':True,'demo_enabled':True})
+        p=self.create('Auto arrival test');pid=p['id'];cid='re-game:leon:re4'
+        for i in range(15):
+            if self.call('/swipe',{'profileId':pid,'characterId':cid,'direction':'right'})['matched']:break
+        with server.connect() as db:
+            server.write_message(db,pid,cid,'ai','chat','我们在屋顶见面吧','demo');db.commit()
+        pair={'profileId':pid,'characterId':cid}
+        ack=self.call('/message',dict(pair,text='好的'))
+        self.assertIsNone(ack['autoMeeting'])
+        arr=self.call('/message',dict(pair,text='我到了'))
+        self.assertEqual(arr['autoMeeting']['location'],'屋顶')
+        invalid=self.call('/mode',dict(pair,mode='meeting',autoArrivalId='wrong',triggerOpening=True))
+        self.assertTrue(invalid['autoRejected'])
+        opened=self.call('/mode',dict(pair,mode='meeting',autoArrivalId=arr['user']['id'],triggerOpening=True))
+        self.assertEqual(opened['mode'],'meeting')
+        self.assertEqual(opened['location'],'屋顶')
+        self.assertIsNotNone(opened['openingReply'])
+        duplicate=self.call('/mode',dict(pair,mode='meeting',autoArrivalId=arr['user']['id'],triggerOpening=True))
+        self.assertTrue(duplicate['autoRejected'])
+        thread=self.call('/thread?profileId='+pid+'&characterId='+cid)
+        self.assertEqual(len([m for m in thread['messages'] if m['text']=='我到了']),1)
+        self.call('/mode',dict(pair,mode='chat',finalizeMeeting=True))
+        self.assertIsNone(self.call('/message',dict(pair,text='我到了'))['autoMeeting'])
+        self.assertEqual(server.location_from_report("I'm on the rooftop."),'the rooftop')
+        self.assertEqual(server.location_from_report('我准备去屋顶'),'')
+        self.assertEqual(server.explicit_arrival_place('我已经到街角咖啡馆门口了，等等，我好像看见你了。'),'街角咖啡馆门口')
+
 if __name__=='__main__':unittest.main()
 
 

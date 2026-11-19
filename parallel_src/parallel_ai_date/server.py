@@ -1417,6 +1417,16 @@ def location_from_report(raw):
     zh=SCENE_RULES['stateZh'].search(text)
     return clean_scene_place(zh.group(1)) if zh else ''
 
+def explicit_arrival_place(raw):
+    text=normalize_scene_text(raw)
+    if not text or re.match(r'^[「『“"*>]',text) or SCENE_RULES['uncertain'].search(text):return ''
+    zh=re.match(r'^(?:(?:我)?(?:已经|刚刚?|已)?(?:到了?|抵达(?:了)?|到达(?:了)?))[，,。 ]*(?:在)?[「『“"]?([^，。！？；、\n「」『』“”"]{1,40})',text)
+    if zh:
+        loc=clean_scene_place(re.sub(r'^了|了$','',zh.group(1)))
+        if loc and not re.fullmatch(r'啦|吗|吧|呀|哟|喽|哦',loc):return loc
+    en=re.match(r"^(?:i(?:['’]ve| have| just)? arrived(?: at| in)?|i (?:just )?got to|i made it to)\s+([^.!?;,\n]{1,100})",text,re.I)
+    return clean_scene_place(en.group(1),True) if en else ''
+
 def proposal_location(raw):
     text=normalize_scene_text(raw)
     if not text or re.match(r'^[「『“"*>]',text) or SCENE_RULES['uncertain'].search(text) or SCENE_RULES['cancel'].search(text):return ''
@@ -1435,7 +1445,7 @@ def confirmed_arrival(rows,arrival_id,now=None):
     if not rows or rows[-1]['id']!=arrival_id or rows[-1]['sender']!='user':return None
     text=normalize_scene_text(rows[-1]['text'])
     if SCENE_RULES['uncertain'].search(text) or re.match(r'^[「『“"*>]',text):return None
-    arrived_at=location_from_report(text)
+    arrived_at=explicit_arrival_place(text) or location_from_report(text)
     if not SCENE_RULES['arrival'].search(text) and not arrived_at:return None
     plan=None
     for i,m in enumerate(rows[:-1][-40:]):
@@ -1471,7 +1481,7 @@ def infer_meeting_location(db,pid,cid,custom_loc=''):
     clean_custom=str(custom_loc or '').strip()
     if clean_custom:return clean_custom[:40]
     for m in reversed(current_plan_rows(db,pid,cid)[-16:]):
-        loc=proposal_location(m['text']) or (location_from_report(m['text']) if m['sender']=='ai' else '')
+        loc=proposal_location(m['text']) or (explicit_arrival_place(m['text']) if m['sender']=='user' else location_from_report(m['text']))
         if loc:return loc
         if SCENE_RULES['cancel'].search(normalize_scene_text(m['text'])):break
     try:
@@ -2647,11 +2657,12 @@ class Handler(BaseHTTPRequestHandler):
                     if r['mode']!=mode:
                         with CHAT_LOCK:queue_cancel(db,p['id'],cid)
                         if mode=='meeting':
+                            inferred_location=infer_meeting_location(db,p['id'],cid,loc_input)
                             db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
                             max_row=db.execute('SELECT COALESCE(MAX(rowid),0) FROM messages WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()[0]
                             m_state['started_after_rowid']=int(max_row or 0)
                             m_state['active_meeting_id']='meet_'+uid()
-                            m_state['meeting_location']=infer_meeting_location(db,p['id'],cid,loc_input)
+                            m_state['meeting_location']=inferred_location
                             sync_surveillance_on_meeting_start(db,p,c,m_state['meeting_location'],m_state['active_meeting_id'])
                             log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 在线下见面')
                             api_error=None
