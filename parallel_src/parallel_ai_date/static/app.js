@@ -72,7 +72,18 @@ const cleanBodyText=(txt,sender='ai',preserveParagraphs=false)=>{
   if(globalThis.ParallelOffline?.stripProtocolTags)return globalThis.ParallelOffline.stripProtocolTags(s,{preserveParagraphs});
   return s.replace(/^(?:[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)[ \t]*)+/gm,'');
 };
-const api=async(path,data)=>{if(globalThis.ParallelOffline)return globalThis.ParallelOffline.request(path,data);const o=await fetch('/api'+path,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});let body;try{body=await o.json()}catch{throw Error('服务端没有返回 JSON')}if(!o.ok){const err=new Error(body.error||'请求失败');err.apiError=body.apiError||null;throw err;}return body};
+const rawApi=async(path,data)=>{if(globalThis.ParallelOffline)return globalThis.ParallelOffline.request(path,data);const o=await fetch('/api'+path,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});let body;try{body=await o.json()}catch{throw Error('服务端没有返回 JSON')}if(!o.ok){const err=new Error(body.error||'请求失败');err.apiError=body.apiError||null;throw err;}return body};
+const api=async(path,data)=>{
+  const key=generatingRequestPair(path,data);
+  beginTypingRequest(key);
+  try{
+    renderTypingChange(key);
+    return await rawApi(path,data);
+  }finally{
+    endTypingRequest(key);
+    renderTypingChange(key);
+  }
+};
 const TR_MINOR_TOKENS=new Set(['ok','okay','app','wifi','ai','id','ip','vip','bgm','npc','cp','ui','ux','api','vr','ar','pdf','gps','dna','mv','tv','cd','usb','gif','png','jpg','atm','diy','ktv','ceo','hr','pr','qa','pm','am','km','cm','kg','ml','mg','re','re0','re1','re2','re3','re4','re5','re6','re7','re8','mcu','tva','bsaa','stars','ubcs','lol','omg','btw','vs','kfc','bmw','ps5','pc','ios','mac']);
 const computeContentVersionClient=text=>{
   if(globalThis.ParallelOffline?.computeContentVersion)return globalThis.ParallelOffline.computeContentVersion(text);
@@ -384,11 +395,43 @@ async function refreshInboxSnapshot(pid=state.activeId){
 function refreshInboxQuietly(pid=state.activeId){if(pid===state.activeId)void refreshInboxSnapshot(pid).catch(()=>{});}
 
 async function loadThreads(preselect){$('topbar-actions').innerHTML=`<button class="btn soft" data-action="go-discover">${I('sparkleheart')} 继续发现</button>${renderProfileDropdownHtml()}`;if(!activeProfile())return $('view').innerHTML=empty('dog','先创建 Profile','消息会按你当前扮演的身份分别展示。','创建 Profile','profile');const pid=state.activeId;const threads=await refreshInboxSnapshot(pid);if(!threads||state.tab!=='messages'||pid!==state.activeId)return;state.threads=threads;if(preselect)state.threadId=preselect;if(!state.threads.find(x=>x.character.id===state.threadId))state.threadId=window.innerWidth>580?(state.threads[0]?.character.id||''):'';if(state.threadId)await loadThread(state.threadId,false);else renderMessages()}
+// Generation indicators belong to a Profile + Character pair, never the global scheduler.
+const typingRequests=new Map();
+const typingPair=(pid,cid)=>pid&&cid?JSON.stringify([pid,cid]):'';
+const currentTypingPair=()=>typingPair(state.activeId,state.threadId);
+let loadedThreadPair='',bubbleRevealPair='';
+function isCurrentPair(pid,cid){return state.activeId===pid&&state.threadId===cid;}
+function hasCurrentThreadSnapshot(){return Boolean(loadedThreadPair&&loadedThreadPair===currentTypingPair());}
+function generatingRequestPair(path,data){
+  if(!data?.profileId||!data?.characterId)return '';
+  const key=typingPair(data.profileId,data.characterId);
+  const current=key===currentTypingPair()&&hasCurrentThreadSnapshot();
+  if(path==='/chat-flush'||path==='/reply'||path==='/message-regenerate')return key;
+  if(path==='/message'&&current&&state.chatMode==='meeting'&&!isCurrentThreadPaused())return key;
+  if(path==='/mode'&&data.mode==='meeting'&&data.triggerOpening===true)return key;
+  if(path==='/task-action'&&data.action==='retry'&&['chat','meeting'].includes(data.mode))return key;
+  // A background scan or proactive check may do no work at all, so it is not a typing event.
+  return '';
+}
+function beginTypingRequest(key){
+  if(!key)return;
+  typingRequests.set(key,(typingRequests.get(key)||0)+1);
+}
+function endTypingRequest(key){
+  if(!key)return;
+  const count=(typingRequests.get(key)||0)-1;
+  if(count>0)typingRequests.set(key,count);else typingRequests.delete(key);
+}
 function isCharacterTyping(){
-  return Boolean(state.flushBusy||state.queue?.status==='inflight'||state.revealingBubbles||(state.chatBusy&&state.chatMode==='meeting'));
+  const key=currentTypingPair();
+  if(!key)return false;
+  return Boolean(typingRequests.has(key)||(state.revealingBubbles&&bubbleRevealPair===key)||(hasCurrentThreadSnapshot()&&(state.queue?.status==='inflight'||state.taskState?.status==='inflight')));
+}
+function renderTypingChange(key){
+  if(key&&key===currentTypingPair()&&hasCurrentThreadSnapshot()&&state.tab==='messages')renderMessages();
 }
 function isCurrentThreadPaused(){
-  return Boolean(state.queue?.paused||state.queue?.status==='paused'||state.taskState?.status==='paused');
+  return hasCurrentThreadSnapshot()&&Boolean(state.queue?.paused||state.queue?.status==='paused'||state.taskState?.status==='paused');
 }
 async function loadThread(cid,render=true){
   const existingInput=$('chat-input');
@@ -397,6 +440,7 @@ async function loadThread(cid,render=true){
   const r=await api('/thread?profileId='+encodeURIComponent(pid)+'&characterId='+encodeURIComponent(cid));
   if(seq!==threadRequestSeq||state.tab!=='messages'||state.activeId!==pid)return;
   state.threadId=cid;
+  loadedThreadPair=typingPair(pid,cid);
   state.messages=r.messages||[];
   state.translations=r.translations||{};
   state.meetings=r.meetings||[];
@@ -1278,12 +1322,16 @@ function updateQueueCountdown(){
 }
 async function revealMultipleBubbles(replies,profileId,id){
   if(!Array.isArray(replies)||replies.length<=1){
-    state.hiddenReplyIds.clear();
-    state.revealingBubbles=false;
+    if(bubbleRevealPair===typingPair(profileId,id)){
+      state.hiddenReplyIds.clear();
+      state.revealingBubbles=false;
+      bubbleRevealPair='';
+    }
     if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);
     else refreshInboxQuietly(profileId);
     return;
   }
+  bubbleRevealPair=typingPair(profileId,id);
   state.hiddenReplyIds=new Set(replies.slice(1).map(x=>x.id));
   state.revealingBubbles=true;
   if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);
@@ -1294,6 +1342,7 @@ async function revealMultipleBubbles(replies,profileId,id){
     if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')renderMessages();
   }
   state.revealingBubbles=false;
+  bubbleRevealPair='';
   state.hiddenReplyIds.clear();
   if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')renderMessages();
   else refreshInboxQuietly(profileId);
@@ -1305,8 +1354,10 @@ async function flushChat(force=false){if(state.flushBusy||state.chatBusy||state.
     const r=await api('/chat-flush',{profileId,characterId:id,force});
     state.flushBusy=false;
     if(r.apiError){
-      if(r.queue)state.queue=r.queue;
-      if(r.taskState)state.taskState=r.taskState;
+      if(isCurrentPair(profileId,id)&&hasCurrentThreadSnapshot()){
+        if(r.queue)state.queue=r.queue;
+        if(r.taskState)state.taskState=r.taskState;
+      }
       if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages'){
         await loadThreads(id);
         showApiErrorModal(r.apiError,r.taskState,{type:'chat_flush',profileId,characterId:id,mode:'chat'});
@@ -1337,7 +1388,7 @@ async function flushBackgroundQueues(){
     const list=r?.flushed||[];
     for(const item of list){
       if(item.apiError){
-        if(!item.background&&state.tab==='messages'&&state.threadId===item.characterId){
+        if(!item.background&&state.tab==='messages'&&isCurrentPair(profileId,item.characterId)){
           showApiErrorModal(item.apiError,item.taskState,{type:'chat_flush',profileId,characterId:item.characterId,mode:'chat'});
         }else{
           toast(`${item.characterName} 后台回复已暂停（${item.apiError.title||item.apiError.error_code}）`);
@@ -1406,7 +1457,7 @@ async function tickChatQueue(){
       }).catch(()=>{});
     }
   }
-  if(state.tab==='messages'&&state.threadId&&state.chatMode==='chat'){
+  if(state.tab==='messages'&&state.threadId&&state.chatMode==='chat'&&hasCurrentThreadSnapshot()){
     updateQueueCountdown();
     const q=state.queue;
     if(q?.count>0&&!q.blocked&&!q.paused&&q.status!=='paused'&&q.status!=='inflight'&&!isCurrentThreadPaused()&&!state.chatBusy&&!state.flushBusy&&!state.revealingBubbles){
@@ -1436,9 +1487,10 @@ setInterval(tickChatQueue,1000);
 setInterval(()=>{if(globalThis.ParallelOffline&&state.activeId&&!document.hidden)void api('/episode-archive-tick',{profileId:state.activeId}).catch(()=>{});},60000);
 async function toggleHotChat(){
   if(!state.threadId||!state.activeId||state.chatBusy)return;
-  const nextHot=!state.hotChat;
+  const nextHot=!state.hotChat,pid=state.activeId,cid=state.threadId;
   try{
-    const r=await api('/hot-chat',{profileId:state.activeId,characterId:state.threadId,hotChat:nextHot});
+    const r=await api('/hot-chat',{profileId:pid,characterId:cid,hotChat:nextHot});
+    if(!isCurrentPair(pid,cid)||!hasCurrentThreadSnapshot())return;
     state.hotChat=Boolean(r.hotChat);
     if(r.queue)state.queue=r.queue;
     if(state.hotChat)state.lastSendAt=Date.now();
@@ -1457,8 +1509,10 @@ async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
   renderMessages();
   try{
     const r=await api('/message',{profileId,characterId:id,text:txt});
-    if(r.queue)state.queue=r.queue;
-    if(r.taskState)state.taskState=r.taskState;
+    if(isCurrentPair(profileId,id)&&hasCurrentThreadSnapshot()){
+      if(r.queue)state.queue=r.queue;
+      if(r.taskState)state.taskState=r.taskState;
+    }
     if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);
     else refreshInboxQuietly(profileId);
     if(r.apiError){
@@ -1472,14 +1526,14 @@ async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
     if(e.apiError)showApiErrorModal(e.apiError,null,{type:'message',profileId,characterId:id,mode});
     else toast(e.message);
     if(state.activeId===profileId&&state.threadId===id)await loadThreads(id);
-  }finally{state.chatBusy=false;if(state.tab==='messages'&&state.threadId===id){renderMessages();const el=$('chat-input');if(el)el.focus()}}
+  }finally{state.chatBusy=false;if(state.tab==='messages'&&isCurrentPair(profileId,id)){renderMessages();const el=$('chat-input');if(el)el.focus()}}
 }
 async function continueReply(){if(state.chatBusy||state.flushBusy||state.queue?.status==='inflight'||!state.threadId)return;
   if(state.chatMode==='chat'&&state.queue?.count){return flushChat(true)}
   state.chatBusy=true;const id=state.threadId,profileId=state.activeId,mode=state.chatMode;state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:new Date().toISOString(),engine:'human'});renderMessages();
   try{
     const r=await api('/reply',{profileId,characterId:id});
-    if(r.taskState)state.taskState=r.taskState;
+    if(isCurrentPair(profileId,id)&&hasCurrentThreadSnapshot()&&r.taskState)state.taskState=r.taskState;
     if(r.apiError){
       state.chatBusy=false;
       if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);
@@ -1588,7 +1642,7 @@ async function changeMode(){
       renderMessages();
       const r=await api('/mode',{profileId,characterId:id,mode:'meeting',triggerOpening:true});
       state.flushBusy=false;
-      await loadThreads(id);
+      if(state.tab==='messages'&&isCurrentPair(profileId,id))await loadThreads(id);else refreshInboxQuietly(profileId);
       if(r.apiError){
         showApiErrorModal(r.apiError,r.taskState,{type:'meeting_opening',profileId,characterId:id,mode:'meeting'});
       }else{
@@ -1608,7 +1662,7 @@ async function changeMode(){
   try{
     await api('/mode',{profileId,characterId:id,mode:'chat',finalizeMeeting:true,location:loc});
     state.chatBusy=false;
-    await loadThreads(id);
+    if(state.tab==='messages'&&isCurrentPair(profileId,id))await loadThreads(id);else refreshInboxQuietly(profileId);
     toast('已结束见面：聊天页已生成本次见面卡片，点击卡片可查看完整记录');
   }catch(e){
     state.chatBusy=false;
@@ -1623,7 +1677,7 @@ function renderPortableBackup(){return `<div class="terminal-card"><div class="k
 function exportBackup(){const raw=globalThis.ParallelOffline.exportData(),blob=new Blob([raw],{type:'application/json'}),href=URL.createObjectURL(blob),a=document.createElement('a');a.href=href;a.download='Parallel_Backup_'+new Date().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),2000);toast('存档已导出（不包含 API Key）')}
 let pendingRestoreText='';
 async function importBackup(file){if(!file)return;try{pendingRestoreText=await file.text();modal(`<h2>恢复存档确认</h2><p>这将用备份文件 <b>${esc(file.name)}</b> 覆盖当前存档。确定继续吗？</p>`,`<button class="btn ghost" data-action="close-modal">取消</button><button class="btn primary" data-action="confirm-restore-backup">确认恢复</button>`)}catch(e){toast('读取备份失败：'+e.message)}}
-async function confirmRestoreBackup(){if(!pendingRestoreText)return;try{const r=globalThis.ParallelOffline.importData(pendingRestoreText);pendingRestoreText='';closeModal();state.activeId='';state.profileDraft=null;state.threadId='';state.renderedThreadId='';state.draftInputs={};discoverDecks.clear();discoverRequests.clear();discoverAllSources.clear();state.candidates=[];state.deckIndex=0;state.threads=[];state.messages=[];await bootstrap();toast(`已恢复 ${r.profiles} 个 Profile、${r.messages} 条消息，请重新填写 API Key`)}catch(e){toast('恢复失败：'+e.message)}}
+async function confirmRestoreBackup(){if(!pendingRestoreText)return;try{const r=globalThis.ParallelOffline.importData(pendingRestoreText);pendingRestoreText='';closeModal();state.activeId='';state.profileDraft=null;state.threadId='';state.renderedThreadId='';loadedThreadPair='';typingRequests.clear();bubbleRevealPair='';state.draftInputs={};discoverDecks.clear();discoverRequests.clear();discoverAllSources.clear();state.candidates=[];state.deckIndex=0;state.threads=[];state.messages=[];await bootstrap();toast(`已恢复 ${r.profiles} 个 Profile、${r.messages} 条消息，请重新填写 API Key`)}catch(e){toast('恢复失败：'+e.message)}}
 
 const modelPickerConfig={
   chat:{input:'api-model',url:'api-url',key:'api-key',settingUrl:'base_url',hasKey:'has_key',route:'/models',label:'聊天模型'},
@@ -1981,11 +2035,11 @@ async function pauseFailedApiTask(toastMsg='已暂停当前对话的模型调用
   if(pid&&cid&&!['discover_refresh','swipe','portrait','photo_description'].includes(ctx?.retryContext?.type)){
     try{
       const r=await api('/task-action',{profileId:pid,characterId:cid,mode,action:'pause'});
-      if(cid===state.threadId){
+      if(isCurrentPair(pid,cid)&&hasCurrentThreadSnapshot()){
         if(r.queue)state.queue=r.queue;
         if(r.taskState)state.taskState=r.taskState;
       }
-      if(state.tab==='messages')await loadThreads(state.threadId||cid);
+      if(state.tab==='messages'&&state.activeId===pid)await loadThreads(state.threadId||cid);
     }catch{}
   }
   if(toastMsg)toast(toastMsg);
@@ -2044,20 +2098,22 @@ async function retryFailedApiTask(){
     }
     state.activeErrorContext=null;
     closeModal();
-    if(state.tab==='messages'&&state.threadId===cid){
+    if(state.tab==='messages'&&isCurrentPair(pid,cid)){
       state.flushBusy=true;
       renderMessages();
     }
     const res=await api('/task-action',{profileId:pid,characterId:cid,mode,action:'retry'});
     state.flushBusy=false;
-    if(res.queue&&cid===state.threadId)state.queue=res.queue;
-    state.taskState=res.taskState||null;
+    if(isCurrentPair(pid,cid)&&hasCurrentThreadSnapshot()){
+      if(res.queue)state.queue=res.queue;
+      state.taskState=res.taskState||null;
+    }
     if(res.apiError){
       if(state.tab==='messages'&&state.activeId===pid)await loadThreads(state.threadId||cid);
       showApiErrorModal(res.apiError,res.taskState,rCtx);
       return;
     }
-    if(res.replies&&res.replies.length>1&&state.tab==='messages'&&state.threadId===cid){
+    if(res.replies&&res.replies.length>1&&state.tab==='messages'&&isCurrentPair(pid,cid)){
       await revealMultipleBubbles(res.replies,pid,cid);
     }else if(state.tab==='messages'&&state.activeId===pid){
       await loadThreads(state.threadId||cid);
