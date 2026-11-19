@@ -165,7 +165,26 @@ function getModeLabel(s){
   if(s?.mode==='normal')return '正常模式 · 未连接 API';
   return '演示模式';
 }
+const LAST_VISIBLE_KEY='parallel-last-visible-at';
+let lastVisibleAt=0;
+try{lastVisibleAt=Number(localStorage.getItem(LAST_VISIBLE_KEY)||0);}catch{}
+let recoveryBusy=false,bootReady=false,hiddenSince=0;
+const noteVisible=()=>{if(document.hidden)return;lastVisibleAt=Date.now();try{localStorage.setItem(LAST_VISIBLE_KEY,String(lastVisibleAt));}catch{}};
+async function recoverOnOpen(offlineSince=0,manual=false){
+  if(recoveryBusy||state.settings?.mode==='normal'||!state.activeId)return;
+  recoveryBusy=true;
+  const pid=state.activeId,openedAt=Date.now();
+  const session=String(openedAt)+'-'+Math.random().toString(36).slice(2);
+  try{
+    const r=await api('/chat-recover',{profileId:pid,activeCharacterId:state.tab==='messages'?state.threadId:'',openedAt,offlineSince,session,manual});
+    const failed=(r?.flushed||[]).filter(x=>x.apiError||x.warning);
+    if(failed.length)toast('有 '+failed.length+' 个积压回复未成功，可在消息列表重试。');
+    if(state.tab==='messages')await loadThreads(state.threadId);else await refreshInboxSnapshot(state.activeId);
+  }catch(e){toast('积压消息同步未完成：'+e.message);}
+  finally{recoveryBusy=false;noteVisible();}
+}
 async function bootstrap(){
+  const offlineSince=lastVisibleAt;
   try{
     const data=await api('/bootstrap');
     state.profiles=data.profiles;
@@ -188,6 +207,8 @@ async function bootstrap(){
     renderChrome();
     if(state.activeId)await refreshInboxSnapshot().catch(()=>null);
     await navigate(state.tab);
+    await recoverOnOpen(offlineSince);
+    bootReady=true;noteVisible();
     if(state.activeId&&state.settings.mode!=='normal'&&state.settings.proactive_mode!=='off'){
       setTimeout(()=>checkProactiveMessages('startup'),1100);
     }
@@ -557,7 +578,9 @@ async function retryMessageTranslation(mid){
   await scheduleAutoTranslation(state.activeId,state.threadId,[mid],true);
 }
 function renderMessagesListItems(){
-  return `<div class="threads-header">CONNECTIONS · ${state.threads.length}</div>${state.threads.map(x=>{
+  const count=state.threads.filter(x=>x.queue?.paused&&x.queue?.count>0&&x.taskState?.last_error&&!x.taskState?.userPaused).length;
+  const retry=count>1?`<div style="padding:8px"><button class="btn soft" data-action="retry-backlog">重试 ${count} 个积压回复</button></div>`:'';
+  return retry+`<div class="threads-header">CONNECTIONS · ${state.threads.length}</div>${state.threads.map(x=>{
     const rawLast=(x.last?.engine==='recalled'||x.last?.recalled)?'撤回了一条消息':(x.last?.text||'刚刚匹配');
     const lastTxt=cleanBodyText(rawLast,x.last?.sender||'ai');
     const dName=displayName(x.character);
@@ -1347,7 +1370,7 @@ async function revealMultipleBubbles(replies,profileId,id){
   if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')renderMessages();
   else refreshInboxQuietly(profileId);
 }
-async function flushChat(force=false){if(state.flushBusy||state.chatBusy||state.revealingBubbles||!state.threadId||state.chatMode!=='chat')return;
+async function flushChat(force=false){if(recoveryBusy||state.flushBusy||state.chatBusy||state.revealingBubbles||!state.threadId||state.chatMode!=='chat')return;
   state.flushBusy=true;const id=state.threadId,profileId=state.activeId;
   if(state.tab==='messages'&&state.threadId===id)renderMessages();
   try{
@@ -1380,7 +1403,7 @@ async function flushChat(force=false){if(state.flushBusy||state.chatBusy||state.
   }
 }
 async function flushBackgroundQueues(){
-  if(state.flushBusy||state.chatBusy||state.revealingBubbles||!state.activeId)return;
+  if(recoveryBusy||state.flushBusy||state.chatBusy||state.revealingBubbles||!state.activeId)return;
   state.flushBusy=true;const profileId=state.activeId;
   const activeCid=(state.tab==='messages'&&state.threadId)?state.threadId:'';
   try{
@@ -1406,7 +1429,7 @@ async function flushBackgroundQueues(){
   }catch{}finally{state.flushBusy=false}
 }
 async function checkProactiveMessages(trigger='startup',targetCharId=''){
-  if(state.proactiveBusy||state.flushBusy||state.chatBusy||state.revealingBubbles||!state.activeId)return;
+  if(recoveryBusy||state.proactiveBusy||state.flushBusy||state.chatBusy||state.revealingBubbles||!state.activeId)return;
   if(state.settings.mode==='normal')return;
   if(trigger!=='manual'&&state.settings.proactive_mode==='off')return;
   state.proactiveBusy=true;
@@ -1443,7 +1466,7 @@ async function checkProactiveMessages(trigger='startup',targetCharId=''){
   }
 }
 async function tickChatQueue(){
-  if(!state.activeId)return;
+  if(!bootReady||recoveryBusy||document.hidden||!state.activeId)return;
   const curDate=localDateStr();
   if(state.lastKnownDate&&curDate!==state.lastKnownDate){
     state.lastKnownDate=curDate;
@@ -2264,6 +2287,7 @@ if(a==='dismiss-bg-error'){
   return;
 }
 if(a==='open-match'){const id=el.dataset.id;closeModal();state.threadId=id;return navigate('messages')}
+if(a==='retry-backlog')return recoverOnOpen(0,true);
 if(a==='select-thread')return loadThread(el.dataset.id);
 if(a==='back-threads'){++threadRequestSeq;state.threadId='';state.renderedThreadId='';return renderMessages()}
 if(a==='change-mode')return changeMode();
@@ -2413,10 +2437,13 @@ window.addEventListener('resize',syncVisibleViewport,{passive:true});
 window.visualViewport?.addEventListener('resize',syncVisibleViewport,{passive:true});
 window.visualViewport?.addEventListener('scroll',syncVisibleViewport,{passive:true});
 document.addEventListener('visibilitychange',()=>{
-  if(!document.hidden&&state.activeId){
-    if(state.tab==='messages')void loadThreads(state.threadId).catch(()=>{});
-    else refreshInboxQuietly();
+  if(document.hidden){hiddenSince=Date.now();try{localStorage.setItem(LAST_VISIBLE_KEY,String(hiddenSince));}catch{}return;}
+  if(bootReady&&state.activeId){
+    const since=hiddenSince||lastVisibleAt;hiddenSince=0;
+    void recoverOnOpen(since);
   }
 });
+window.addEventListener('pagehide',()=>{if(!document.hidden)noteVisible();});
+setInterval(noteVisible,10000);
 syncVisibleViewport();
 bootstrap();

@@ -310,11 +310,12 @@
     for(const [tk,t] of Object.entries(target.taskStates)){
       if(!t||typeof t!=='object'){delete target.taskStates[tk];continue;}
       if(t.status==='inflight'){
+        t.interrupted=true;
         t.status='paused';
         t.paused=true;
         t.inflight_token='';
       }
-      if(t.paused&&t.mode==='chat'&&t.profile_id&&t.character_id){
+      if((t.paused||t.status==='paused')&&t.mode==='chat'&&t.profile_id&&t.character_id){
         const qk=pairKey(t.profile_id,t.character_id);
         const q=target.queue[qk]||(target.queue[qk]={pending:[],dueAt:0,status:'paused',blocked:true,paused:true,revision:1,inflight:'',paceMode:'daily',delayMinutes:1,targetTimeLabel:'',scheduleReason:''});
         if(Array.isArray(t.pending_ids)){
@@ -322,6 +323,7 @@
             if(mid&&!q.pending.includes(mid))q.pending.push(mid);
           }
         }
+        q.scheduledDueAt=Number(t.scheduled_due_at||q.scheduledDueAt||q.dueAt||0);
         q.paused=true;
         q.blocked=true;
         q.status='paused';
@@ -826,7 +828,7 @@
   };
   const clearQueue=(pid,cid)=>{
     const k=pairKey(pid,cid),q=db.queue[k];
-    if(q){q.pending=[];q.dueAt=0;q.status='idle';q.blocked=false;q.paused=false;q.revision=(q.revision||0)+1;q.inflight='';q.targetTimeLabel='';q.scheduleReason='';}
+    if(q){q.pending=[];q.dueAt=0;q.scheduledDueAt=0;q.status='idle';q.blocked=false;q.paused=false;q.revision=(q.revision||0)+1;q.inflight='';q.targetTimeLabel='';q.scheduleReason='';}
     clearTaskState(pid,cid,'chat');
   };
   const enqueue=(pid,cid,id,msgText='')=>{
@@ -893,10 +895,13 @@
       q.blocked=true;save();
       return {reply:null,replies:[],queued:true,warning:'当前处于正常模式且尚未连接 API，请先在「终端」填写 API 地址、密钥和模型。',queue:queueInfo(p.id,c.id)};
     }
+    const scheduledDueAt=Number(q.dueAt||q.scheduledDueAt||ts?.scheduled_due_at||0);
+    const pending=q.pending.slice();
+    const simulatedAt=retryOpts.recovery?recoverReplyTime(p.id,c.id,pending,scheduledDueAt,retryOpts.recovery,ts):0;
+    q.scheduledDueAt=scheduledDueAt;
     q.paused=false;
     q.userPaused=false;
     q.blocked=false;
-    const pending=q.pending.slice();
     const generation=(q.revision||0)+1;
     q.revision=generation;
     const token=uid();
@@ -919,6 +924,8 @@
       status:'inflight',
       attempt,
       pending_ids:pending.slice(),
+      scheduled_due_at:scheduledDueAt,
+      simulated_at:simulatedAt||0,
       inflight_token:token,
       revision:generation,
       last_error:null,
@@ -926,7 +933,7 @@
     };
     save();
     const r=relation(p.id,c.id);let txt,engine='demo',warning='',apiError=null;
-    const msgs=prompt(p,c,'chat',pending,{entry_point:'chat_flush'});
+    const msgs=prompt(p,c,'chat',pending,{entry_point:'chat_flush',simulatedAt});
     if(curMode==='live'){
       try{
         txt=await llm(msgs,{
@@ -937,6 +944,8 @@
           task_id:taskId,
           retry_of_task_id:retryOfTaskId,
           attempt,
+          simulatedAt,
+          background:Boolean(retryOpts.background),
           signal:abortCtrl?.signal
         });
         engine='live';
@@ -961,7 +970,8 @@
     if(engine==='error'){
       const newer=q.pending.slice();
       q.pending=[...pending.filter(m=>!newer.includes(m)),...newer];
-      q.dueAt=0;
+      q.scheduledDueAt=scheduledDueAt;
+      if(!newer.length)q.dueAt=0;
       q.blocked=true;
       q.paused=true;
       q.status='paused';
@@ -977,6 +987,8 @@
         status:'paused',
         attempt,
         pending_ids:q.pending.slice(),
+        scheduled_due_at:scheduledDueAt,
+        simulated_at:simulatedAt||0,
         inflight_token:'',
         last_error:apiError||{
           error_code:'API_ERROR',
@@ -996,50 +1008,93 @@
       q.status='idle';
       q.paused=false;
       q.blocked=false;
+      q.scheduledDueAt=0;
       clearTaskState(p.id,c.id,'chat');
       clearBgError(p.id,c.id,'chat_flush_bg');
       const bubbleTexts=splitChatBubbles(txt);
-      replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine));
+      replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine,simulatedAt));
       reply=replies[replies.length-1]||null;
       const combinedTxt=bubbleTexts.join(' / ');
-      event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180));
+      event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180),simulatedAt);
       const userRows=pending.map(mid=>db.messages.find(m=>m.id===mid)).filter(Boolean);
       if(reply){
         recordDialogueEpisode(p,c,userRows,{...reply,text:combinedTxt},'chat');
-        syncSurveillanceFromChat(p,c,userRows,combinedTxt);
+        syncSurveillanceFromChat(p,c,userRows,combinedTxt,simulatedAt||Date.now());
       }
       if(r)r.updated_at=stamp();
       save();
       return {reply,replies,queued:false,warning:'',apiError:null,queue:queueInfo(p.id,c.id)};
     }
   }
+  // Use authoritative dueAt only. Do not backdate beyond newer interactions.
+  function recoverReplyTime(pid,cid,pending,due,recovery,task){
+    const end=Number(recovery.openedAt),start=Number(recovery.offlineSince||0);
+    const prior=Number(task?.simulated_at||0),candidate=prior||Number(due||0);
+    if(!Number.isFinite(candidate)||candidate<=0||candidate>end||(!prior&&candidate<start))return 0;
+    const rows=messagesOf(pid,cid).filter(m=>!isChatArtifact(m));
+    if(pending.some(id=>!rows.some(m=>m.id===id)))return 0;
+    if(rows.some(m=>!Number.isFinite(Date.parse(m.created_at))||Date.parse(m.created_at)>candidate))return 0;
+    if(db.events.some(e=>e.profile_id===pid&&e.character_id===cid&&['matched','unmatched','meeting','return'].includes(e.type)&&Date.parse(e.created_at)>candidate))return 0;
+    return candidate;
+  }
+  let recoveryRunning=null;
+  const recoveredSessions=new Set();
+  async function runQueueBatch(jobs,activePid,activeCid,recovery=null){
+    let next=0;const flushed=[];
+    async function worker(){
+      while(next<jobs.length){
+        const {p,c,force}=jobs[next++];
+        const isBackground=p.id!==activePid||!activeCid||activeCid!==c.id;
+        try{
+          const res=await flushQueue(p,c,Boolean(force),{recovery,background:isBackground});
+          if(res.apiError&&isBackground)recordBgError(p.id,c.id,'chat_flush_bg',res.apiError);
+          if(res.reply||res.warning||res.apiError)flushed.push({profileId:p.id,characterId:c.id,characterName:c.name,reply:res.reply,warning:res.warning||'',apiError:res.apiError||null,taskState:res.taskState||null,background:isBackground});
+        }catch(e){flushed.push({profileId:p.id,characterId:c.id,characterName:c.name,warning:String(e.message||e),background:isBackground});}
+      }
+    }
+    await Promise.all(Array.from({length:Math.min(2,jobs.length)},()=>worker()));
+    return {flushed};
+  }
+  async function recoverDueQueues(data){
+    if(recoveryRunning)return recoveryRunning;
+    if(pub().mode==='normal')return {flushed:[]};
+    const openedAt=Math.min(Date.now(),Number(data.openedAt)||Date.now());
+    const offlineSince=Math.max(0,Math.min(openedAt,Number(data.offlineSince)||0));
+    const session=String(data.session||''),manual=data.manual===true;
+    if(!manual&&(!session||recoveredSessions.has(session)))return {flushed:[]};
+    if(!manual){recoveredSessions.add(session);if(recoveredSessions.size>32)recoveredSessions.delete(recoveredSessions.values().next().value);}
+    const jobs=[];
+    for(const p of db.profiles){
+      if(manual&&p.id!==data.profileId)continue;
+      for(const [k,q] of Object.entries(db.queue)){
+        if(!k.startsWith(p.id+'|'))continue;
+        const cid=k.slice(p.id.length+1),c=byId.get(cid),r=relation(p.id,cid),ts=getTaskState(p.id,cid,'chat');
+        if(!c||r?.status!=='matched'||r.mode!=='chat'||!q?.pending?.length||q.status==='inflight'||ts?.status==='inflight'||q.userPaused||ts?.userPaused)continue;
+        const failed=Boolean(q.paused||q.blocked||ts?.status==='paused');
+        const recoverable=Boolean(ts?.interrupted||ts?.last_error);
+        const due=Number(q.dueAt||q.scheduledDueAt||ts?.scheduled_due_at||0);
+        if(failed&&!recoverable)continue;
+        if(manual&&!failed)continue;
+        if(due>openedAt||(!failed&&!due))continue;
+        jobs.push({p,c,force:failed,due});
+      }
+    }
+    jobs.sort((x,y)=>x.due-y.due||x.c.id.localeCompare(y.c.id));
+    recoveryRunning=runQueueBatch(jobs,String(data.profileId||''),String(data.activeCharacterId||''),manual?null:{openedAt,offlineSince});
+    try{return await recoveryRunning;}finally{recoveryRunning=null;}
+  }
   async function flushDueQueues(p,activeCid=''){
-    const now=Date.now(),flushed=[];
+    if(recoveryRunning)return {flushed:[]};
+    const now=Date.now(),jobs=[];
     for(const [k,q] of Object.entries(db.queue)){
       if(!k.startsWith(p.id+'|'))continue;
-      const cid=k.slice(p.id.length+1);
-      const ts=getTaskState(p.id,cid,'chat');
+      const cid=k.slice(p.id.length+1),ts=getTaskState(p.id,cid,'chat');
       if(!q||!q.pending?.length||q.status==='inflight'||q.paused||ts?.status==='paused'||q.blocked||!q.dueAt||q.dueAt>now)continue;
       const c=byId.get(cid),r=relation(p.id,cid);
       if(!c||!r||r.status!=='matched'||r.mode!=='chat')continue;
-      const isBackground=Boolean(activeCid&&activeCid!==cid);
-      const res=await flushQueue(p,c,false);
-      if(res.apiError&&isBackground){
-        recordBgError(p.id,cid,'chat_flush_bg',res.apiError);
-      }
-      if(res.reply||res.warning||res.apiError){
-        flushed.push({
-          characterId:cid,
-          characterName:c.name,
-          reply:res.reply,
-          warning:res.warning||'',
-          apiError:res.apiError||null,
-          taskState:res.taskState||null,
-          background:isBackground
-        });
-      }
+      jobs.push({p,c,force:false});
     }
-    return {flushed};
+    return runQueueBatch(jobs,p.id,activeCid);
   }
   const char=(c,pid='')=>{
     const rel=pid?relation(pid,c.id):null;
@@ -1333,10 +1388,10 @@
     }
     return store.byDate[dStr];
   };
-  const getCurrentSurveillanceSlot=(p,c)=>{
-    const rec=getOrInitSurveillance(p,c,localDateStr());
+  const getCurrentSurveillanceSlot=(p,c,at=Date.now())=>{
+    const rec=getOrInitSurveillance(p,c,localDateStr(at));
     const r=relation(p.id,c.id);
-    const nowHHMM=fmtHHMM(Date.now())||'12:00';
+    const nowHHMM=fmtHHMM(at)||'12:00';
     const nowMin=hhmmToMin(nowHHMM);
     if(r?.mode==='meeting'){
       const loc=r.meeting_location||'约定的街角咖啡馆';
@@ -1480,11 +1535,11 @@
     else slots.splice(idx,1,observed);
     return true;
   }
-  function reconcilePhoneActivity(pid,cid){
+  function reconcilePhoneActivity(pid,cid,at=Date.now()){
     const p=db.profiles.find(x=>x.id===pid),c=byId.get(cid);
     if(!p||!c||relation(pid,cid)?.mode==='meeting')return;
-    const rec=getOrInitSurveillance(p,c,localDateStr());
-    if(wakeSlotFromMessage(rec.slots,fmtHHMM(Date.now())||'12:00',c.name,()=> 'slot_chat_'+uid()))rec.updated_at=stamp();
+    const rec=getOrInitSurveillance(p,c,localDateStr(at));
+    if(wakeSlotFromMessage(rec.slots,fmtHHMM(at)||'12:00',c.name,()=> 'slot_chat_'+uid()))rec.updated_at=stamp();
   }
   function chatClockLabel(ts){
     const d=new Date(ts??Date.now());
@@ -1499,13 +1554,13 @@
     const previous=last?'最近一条用户消息实际发送于 '+chatClockLabel(last.created_at)+'，距现在约 '+Math.max(0,Math.floor((now-Date.parse(last.created_at))/60000))+' 分钟。':'';
     return '\n【本次手机回复的当前时间】'+chatClockLabel(now)+'（'+period+'，'+zone+'，应用本地时钟）。'+previous+'较早的消息是历史，不代表现在仍处在当时的时段。请按此刻的时间自然回应，尤其注意跨日、早晚问候及作息；不要机械复述时间，也不要把现实日期改变为原作年份或输出时间前缀。';
   }
-  const syncSurveillanceFromChat=(p,c,userRows,aiText)=>{
+  const syncSurveillanceFromChat=(p,c,userRows,aiText,at=Date.now())=>{
     const txt=String(aiText||'').trim();
     if(!txt||relation(p.id,c.id)?.mode==='meeting')return;
     const newLoc=txt.split(/\s+\/\s+|\|\|\||\n/).map(locationFromReport).filter(Boolean).at(-1);
     if(!newLoc)return;
-    const rec=getOrInitSurveillance(p,c,localDateStr());
-    const nowHHMM=fmtHHMM(Date.now())||'12:00',nowMin=hhmmToMin(nowHHMM),idx=activeSlotIndex(rec.slots,nowMin);
+    const rec=getOrInitSurveillance(p,c,localDateStr(at));
+    const nowHHMM=fmtHHMM(at)||'12:00',nowMin=hhmmToMin(nowHHMM),idx=activeSlotIndex(rec.slots,nowMin);
     if(idx<0)return;
     const slot=rec.slots[idx];
     if(slot.location===newLoc&&slot.source==='chat_update')return;
@@ -2082,8 +2137,8 @@
     }
   }
   const episodePendingCard=x=>({id:'pending:'+x.source_key,owner_id:x.owner_id,profile_id:x.profile_id,source_type:'episode-pending',source_key:x.source_key,signature:x.signature,summary:x.previous?'原文已变更，需要重新归档':'情节已结束，等待语义归档',tags:[],raw_msg_ids:x.raw_msg_ids,started_at:x.started_at,event_at:x.event_at,created_at:x.event_at,archive_status:x.job?.status==='running'?'正在归档':x.job?.status==='failed'?'归档失败：'+x.job.error:x.automatic?'待归档':'历史情节 · 可手动归档',episode:{startedAt:x.started_at,endedAt:x.event_at}});
-  const retrieveRelevantMemories=(pid,cid,queryText='',excludeMsgIds=new Set(),limit=4,maxChars=1200)=>{
-    const allItems=db.episodicMemories.filter(x=>x.owner_id===cid&&x.profile_id===pid&&!x.isolated_error&&!x.archive_stale).filter(x=>x.source_type!=='daily-summary'||!db.episodicMemories.some(y=>y.owner_id===cid&&y.profile_id===pid&&y.source_type==='episode-summary'&&!y.archive_stale&&overlapIds(x.raw_msg_ids,y.raw_msg_ids))).sort((a,b)=>b.event_at.localeCompare(a.event_at));
+  const retrieveRelevantMemories=(pid,cid,queryText='',excludeMsgIds=new Set(),limit=4,maxChars=1200,asOf=0)=>{
+    const allItems=db.episodicMemories.filter(x=>x.owner_id===cid&&x.profile_id===pid&&!x.isolated_error&&!x.archive_stale&&(!asOf||(Date.parse(x.event_at)<=asOf&&(x.raw_msg_ids||[]).every(id=>db.messages.some(m=>m.id===id&&Date.parse(m.created_at)<=asOf))))).filter(x=>x.source_type!=='daily-summary'||!db.episodicMemories.some(y=>y.owner_id===cid&&y.profile_id===pid&&y.source_type==='episode-summary'&&!y.archive_stale&&overlapIds(x.raw_msg_ids,y.raw_msg_ids))).sort((a,b)=>b.event_at.localeCompare(a.event_at));
     if(!allItems.length)return [];
     const byMemId=new Map(allItems.map(x=>[x.id,x]));
     const corrByTarget=new Map();
@@ -2213,19 +2268,20 @@
     const nm=String(entry.name||'').toUpperCase();
     return g==='COT'||g.includes('底部')||g.includes('誓约')||nm.includes('COT')||nm.includes('动笔前')||nm.includes('连续性检查')||nm.includes('底部誓约');
   };
-  const event=(pid,cid,type,summary)=>{
-    const nowStr=stamp();
+  const event=(pid,cid,type,summary,at=0)=>{
+    const nowStr=at?new Date(at).toISOString():stamp();
     const cleanSum=type==='user_message'?String(summary??'').trim():stripProtocolTags(summary,{preserveParagraphs:false});
     db.events.push({id:uid(),profile_id:pid,character_id:cid,type,summary:cleanSum.slice(0,500),created_at:nowStr});
   };
-  const write=(pid,cid,sender,mode,text,engine='human')=>{
+  const write=(pid,cid,sender,mode,text,engine='human',at=0)=>{
     const r=relation(pid,cid);
     const cleanTxt=(sender==='ai'&&engine!=='error'&&engine!=='recalled')
       ?(mode==='meeting'?cleanMeetingNovelText(text):(cleanChatBubbleText(text)||'…'))
       :String(text??'');
-    const m={id:uid(),profile_id:pid,character_id:cid,sender,mode,text:cleanTxt,engine,meeting_id:mode==='meeting'?(r?.active_meeting_id||''):'',created_at:stamp()};
+    const m={id:uid(),profile_id:pid,character_id:cid,sender,mode,text:cleanTxt,engine,meeting_id:mode==='meeting'?(r?.active_meeting_id||''):'',created_at:at?new Date(at).toISOString():stamp(),...(at?{generated_at:stamp()}: {})};
     db.messages.push(m);
-    if(sender==='ai'&&mode==='chat'&&['live','demo'].includes(engine)&&!isChatArtifact(m))reconcilePhoneActivity(pid,cid);
+    if(sender==='ai'&&mode==='chat'&&['live','demo'].includes(engine)&&!isChatArtifact(m))reconcilePhoneActivity(pid,cid,at||Date.now());
+    if(at){const diary=db.diaries[pairKey(pid,cid)]?.byDate?.[localDateStr(at)];if(diary)diary.stale_after_recovery=true;}
     return m;
   };
   const rawMessagesOf=(pid,cid)=>db.messages.filter(m=>m.profile_id===pid&&m.character_id===cid);
@@ -2303,11 +2359,11 @@
       ||workingHistory.slice(-3).filter(m=>m.sender==='user').map(m=>String(m.text??'').trim()).join(' ')
       ||workingHistory.slice(-2).map(m=>m.sender==='user'?String(m.text??'').trim():cleanChatBubbleText(m.text)).join(' ')
       ||preChatContext.slice(-2).map(m=>m.sender==='user'?String(m.text??'').trim():cleanChatBubbleText(m.text)).join(' ');
-    const recalled=retrieveRelevantMemories(p.id,c.id,querySeed,workingIds,4,1200);
+    const recalled=retrieveRelevantMemories(p.id,c.id,querySeed,workingIds,4,1200,options.simulatedAt||0);
     const relSummary=relationshipBaselineSummary(p.id,c.id,p.name);
     const interestsStr=(p.interests||[]).join('、')||'未填写';
     const intentStr=p.intent||'未填写';
-    const curSurv=getCurrentSurveillanceSlot(p,c);
+    const curSurv=getCurrentSurveillanceSlot(p,c,options.simulatedAt||Date.now());
     const meetingLoc=relation(p.id,c.id)?.meeting_location||curSurv?.location||'约定的街角咖啡馆';
     let sys='你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n';
     sys+='现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。\n';
@@ -2399,13 +2455,13 @@
     if(mode==='chat'&&effectivePending.length>1){
       const bundledRows=effectivePending.map(id=>db.messages.find(x=>x.id===id)).filter(Boolean);
       if(bundledRows.length>1){
-        const recent=Date.now()-Date.parse(bundledRows[0].created_at)<3600000;
+        const recent=(options.simulatedAt||Date.now())-Date.parse(bundledRows[0].created_at)<3600000;
         batchHint=`\n【连续消息提示】对方${recent?'刚刚连续发来了':'此前陆续发来了'}最后 ${bundledRows.length} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。`;
       }
     }
     const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「${curSurv.location}」·「${curSurv.activity}」。${isSleepingSlot(curSurv)?'原日程为睡眠，但你正在阅读并准备发送手机消息，应视作已暂时醒来；不要声称自己仍在熟睡。':''}实际互动优先于预设日程，不必主动汇报行踪或生硬解释日程。`:'';
     const langHint='\n'+buildCharacterLanguageDirective(db.connection?.character_language_pref||'natural',db.connection?.character_language_custom||'');
-    sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+chatClockContext(workingHistory)+survHint+batchHint+langHint;
+    sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+chatClockContext(workingHistory,options.simulatedAt||Date.now())+survHint+batchHint+langHint;
     const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)})),...historyTurns];
     return chat;
   };
@@ -2643,6 +2699,7 @@
       disabled_preset_count:disabledPresets.length,
       active_presets:activePresetsSummary,
       disabled_presets:disabledPresets.map(x=>({id:x.id,name:x.name,group:inferPresetGroup(x),role:x.role})),
+      simulated_reply_at:options.simulatedAt?new Date(options.simulatedAt).toISOString():'',
       request_payload:JSON.parse(JSON.stringify(payload))
     };
     let res;
@@ -3715,6 +3772,7 @@
         if(!data.characterId)return await flushDueQueues(p,String(data.activeCharacterId||''));
         const c=getC(data.characterId),r=requireMatch(p.id,c.id);if(r.mode!=='chat')bodyErr('当前不是手机聊天模式');return await flushQueue(p,c,data.force===true,{manualResume:Boolean(data.manualResume)});
       }
+      case '/chat-recover':return recoverDueQueues(data);
       case '/chat-flush-due':{
         const p=getP(data.profileId);const result=await flushDueQueues(p,String(data.activeCharacterId||''));void tickEpisodeArchive(p.id).catch(()=>{});return result;
       }
