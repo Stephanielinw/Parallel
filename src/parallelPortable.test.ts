@@ -493,9 +493,19 @@ test('Parallel v0.5 dedicated meeting novel flow, meeting summary card, and clea
   assert.ok(meetingMems[0].summary.includes('和 奈恩 在「'), 'Meeting memory card uses "和 奈恩 在「xx」见面" format');
   assert.equal(meetingMems[0].meeting_id, endMeeting.meetingRecord.id);
 
-  const dailyMems = memData.episodic.filter((m: any) => m.memory_type === 'daily_summary');
-  assert.ok(dailyMems.length >= 1, 'Groups daily chat into 1 daily summary card per day');
-  assert.ok(Array.isArray(dailyMems[0].day_messages) && dailyMems[0].day_messages.length >= 1, 'Daily summary includes day_messages for modal inspection');
+  // The current archive policy groups completed episodes after 3 hours of inactivity,
+  // not arbitrary calendar-day summaries. Keep the source IDs and transcript discoverable.
+  assert.equal(memData.episodic.filter((m: any) => m.source_type === 'episode-pending').length, 0, 'Active episode is not prematurely archived');
+  const backup = JSON.parse(engine.exportData());
+  const pairRows = backup.data.messages.filter((m: any) => m.profile_id === p.id && m.character_id === cid);
+  const shift = 4 * 60 * 60 * 1000;
+  for (const m of pairRows) m.created_at = new Date(Date.parse(m.created_at) - shift).toISOString();
+  engine.importData(JSON.stringify(backup));
+  const archived = await engine.request(`/memories?profileId=${p.id}&characterId=${encodeURIComponent(cid)}`);
+  const pending = archived.episodic.filter((m: any) => m.source_type === 'episode-pending');
+  assert.equal(pending.length, 1, 'A completed episode gets one pending archive card instead of daily summary');
+  assert.deepEqual([...pending[0].raw_msg_ids].sort(), pairRows.map((m: any) => m.id).sort(), 'Archive references all original message IDs');
+  assert.deepEqual([...pending[0].day_messages].map((m: any) => m.id).sort(), pairRows.map((m: any) => m.id).sort(), 'Archive detail includes the original chat and meeting messages');
 });
 
 test('Parallel v0.5 Daily Mode message bundling (preserving scheduled dueAt & timestamps), Hot Chat Mode toggle, and staggered proactive messages', async () => {
