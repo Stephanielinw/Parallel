@@ -323,7 +323,40 @@ def _explicit_chat_parts(raw):
             if cleaned and not _is_bare_chat_divider(cleaned) and not _is_narration_marker(cleaned):parts.append(cleaned)
     return parts
 
+KNOWN_PROXY_ERROR_PATTERNS=[
+    (re.compile(r'所有\s*API\s*密钥均请求失败|具体错误请查看轮询日志',re.IGNORECASE),'PROXY_ALL_KEYS_FAILED','反代服务所有 API 密钥均请求失败（请检查反代轮询日志或更换可用密钥）'),
+    (re.compile(r'^\s*(?:\[\s*(?:API|Upstream|Proxy|Gateway|OpenAI|Gemini|Claude|Anthropic|DeepSeek|OneAPI|NewAPI)\s*(?:Error|Exception|Fault)\s*\]|【\s*(?:API|接口|反代|上游|网关|系统)(?:错误|报错|异常|请求失败)\s*】)\s*[:：\-]?',re.IGNORECASE),'PROXY_WRAPPED_ERROR','反代或上游接口返回了包装在正文中的错误提示'),
+    (re.compile(r'^(?:\s*(?:Error|错误|请求失败|调用失败|上游错误|反代错误|网关错误)\s*[:：]\s*(?:HTTP\s*[45]\d{2}|status\s*code\s*[45]\d{2}|all\s*api\s*keys\s*failed|no\s*available\s*channel|channel\s*error|quota\s*exceeded|rate\s*limit\s*exceeded|invalid\s*api\s*key|model\s*not\s*found))',re.IGNORECASE),'PROXY_WRAPPED_ERROR','接口返回了错误状态提示')
+]
+
+def detect_proxy_wrapped_error(raw_text):
+    s=str(raw_text or '').strip()
+    if not s:return None
+    for pat,code,title in KNOWN_PROXY_ERROR_PATTERNS:
+        if pat.search(s) and len(s)<=600:
+            return {'code':code,'error_code':code,'error_type':code,'message':title,'detail':s[:500]}
+    if s.startswith('{') and s.endswith('}') and len(s)<=2000:
+        try:
+            parsed=json.loads(s)
+            if isinstance(parsed,dict) and parsed.get('error') and not parsed.get('choices') and not parsed.get('reply') and not parsed.get('slots') and not parsed.get('entry'):
+                err_obj=parsed['error']
+                err_msg=err_obj if isinstance(err_obj,str) else (err_obj.get('message') or err_obj.get('code') or err_obj.get('type') or js(err_obj))
+                return {'code':'HTTP_200_ERROR_OBJECT','error_code':'HTTP_200_ERROR_OBJECT','error_type':'HTTP_200_ERROR_OBJECT','message':f"接口返回错误对象：{str(err_msg)[:180]}",'detail':s[:500]}
+        except Exception:
+            pass
+    return None
+
+def is_legacy_error_artifact(m):
+    if not isinstance(m,dict):return False
+    if m.get('engine')=='error':return True
+    if m.get('sender')=='ai' and isinstance(m.get('text'),str):
+        t=m['text'].strip()
+        if re.fullmatch(r'（(?:生成失败|模型连接失败)[：:，,][\s\S]*）',t):return True
+        if detect_proxy_wrapped_error(t):return True
+    return False
+
 def _is_chat_artifact(m):
+    if is_legacy_error_artifact(m):return True
     return m.get('sender')=='ai' and m.get('mode')!='meeting' and m.get('engine')!='recalled' and (_is_bare_chat_divider(clean_chat_bubble_text(m.get('text'))) or _is_narration_marker(clean_chat_bubble_text(m.get('text'))))
 
 def split_chat_bubbles(raw):
@@ -331,13 +364,13 @@ def split_chat_bubbles(raw):
     if not raw_str:return ['…']
     parts=_explicit_chat_parts(raw_str)
     if not parts and (_is_bare_chat_divider(PROTOCOL_LEADING_TAG_RE.sub('',raw_str)) or _is_narration_marker(clean_chat_bubble_text(raw_str))):return []
-    if len(parts)==1 and len(parts[0])>=32:
+    if len(parts)==1 and len(parts[0])>=120:
         sentences=[clean_chat_bubble_text(s) for s in re.findall(r'[^。！？!?]+[。！？!?]+|[^。！？!?]+$',parts[0]) if clean_chat_bubble_text(s)]
         if len(sentences)>=2:
             parts=[];buf=''
             for s in sentences:
                 if not buf:buf=s
-                elif len(buf+s)<=26 and len(parts)>0:buf+=s
+                elif len(buf+s)<=48 or len(buf)<24:buf+=s
                 else:parts.append(buf);buf=s
             if buf:parts.append(buf)
     if len(parts)>4:
@@ -403,31 +436,64 @@ def compute_persona_delay(c,msg_text=''):
     target_lbl=fmt_hhmm(now_ms()+base*60000)
     return base,f"日常模式 · {(c.get('name') if c else None) or '对方'}正在忙手头的事，预计 {target_lbl} 左右看手机并统一回复"
 
+TASK_STATES={}
+BG_ERRORS={}
+
+def task_key_of(pid='',cid='',task_type='chat'):
+    return f"{pid or 'global'}::{cid or 'global'}::{task_type or 'chat'}"
+
+def get_task_state(pid,cid,task_type='chat'):
+    k=task_key_of(pid,cid,task_type)
+    if k not in TASK_STATES:
+        TASK_STATES[k]={
+            'key':k,'profile_id':pid or '','character_id':cid or '','task_type':task_type or 'chat',
+            'status':'idle','paused':False,'attempt':0,'last_error':None,'last_task_id':'','updated_at':utc()
+        }
+    return TASK_STATES[k]
+
+def clear_task_state(pid,cid,task_type='chat'):
+    k=task_key_of(pid,cid,task_type)
+    if k in TASK_STATES:
+        TASK_STATES[k].update(status='idle',paused=False,last_error=None,updated_at=utc())
+
+def clear_task_states_for_pair(pid,cid):
+    prefix=f"{pid or ''}::{cid or ''}::"
+    for k,st in list(TASK_STATES.items()):
+        if k.startswith(prefix):
+            st.update(status='idle',paused=False,last_error=None,updated_at=utc())
+
 def queue_view(db,pid,cid):
     m_state=MEETING_STATE.get((pid,cid),{})
     hot_chat=bool(m_state.get('hot_chat',False))
+    t_state=get_task_state(pid,cid,'chat')
+    is_paused=bool(t_state.get('paused'))
     x=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
     if not x:
-        return {'count':0,'pendingIds':[],'dueAt':0,'remainingMs':0,'status':'idle','blocked':False,'paceMode':'hot' if hot_chat else 'daily','hotChat':hot_chat,'delayMinutes':1 if hot_chat else 0,'targetTimeLabel':'','scheduleReason':''}
+        return {'count':0,'pendingIds':[],'dueAt':0,'remainingMs':0,'status':'paused' if is_paused else 'idle','blocked':is_paused,'paused':is_paused,'lastError':t_state.get('last_error'),'paceMode':'hot' if hot_chat else 'daily','hotChat':hot_chat,'delayMinutes':1 if hot_chat else 0,'targetTimeLabel':'','scheduleReason':'回复已暂停 · 点击恢复' if is_paused else ''}
     pending=parse_json(x['pending'],[])
     due_at=int(x['due_at'] or 0)
+    status_val='paused' if (is_paused and x['status']!='inflight') else x['status']
     return {
         'count':len(pending),
         'pendingIds':list(pending),
         'dueAt':due_at,
-        'remainingMs':max(0,due_at-now_ms()),
-        'status':x['status'],
-        'blocked':bool(x['blocked']),
+        'remainingMs':0 if is_paused else max(0,due_at-now_ms()),
+        'status':status_val,
+        'blocked':bool(x['blocked']) or is_paused,
+        'paused':is_paused,
+        'lastError':t_state.get('last_error'),
         'paceMode':m_state.get('pace_mode') or ('hot' if hot_chat else 'daily'),
         'hotChat':hot_chat,
         'delayMinutes':m_state.get('delay_minutes') or (1 if hot_chat else 20),
         'targetTimeLabel':fmt_hhmm(due_at) if due_at else m_state.get('target_time_label',''),
-        'scheduleReason':m_state.get('schedule_reason','')
+        'scheduleReason':'回复已暂停 · 点击恢复' if is_paused else m_state.get('schedule_reason','')
     }
 
 def queue_add(db,pid,cid,mid,msg_text=''):
     m_state=MEETING_STATE.setdefault((pid,cid),{})
     hot_chat=bool(m_state.get('hot_chat',False))
+    t_state=get_task_state(pid,cid,'chat')
+    is_paused=bool(t_state.get('paused'))
     c=BY_ID.get(cid)
     x=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
     pending=parse_json(x['pending'],[]) if x else []
@@ -435,7 +501,9 @@ def queue_add(db,pid,cid,mid,msg_text=''):
     if mid not in pending:pending.append(mid)
     now=now_ms()
     cur_due=int(x['due_at'] or 0) if x else 0
-    if hot_chat:
+    if is_paused:
+        due_at=cur_due
+    elif hot_chat:
         due_at=now+CHAT_QUIET_MS
         m_state['pace_mode']='hot'
         m_state['delay_minutes']=1
@@ -451,8 +519,9 @@ def queue_add(db,pid,cid,mid,msg_text=''):
             m_state['schedule_reason']=reason
         else:
             due_at=cur_due
-    if x:db.execute('UPDATE chat_queue SET pending=?,due_at=?,blocked=0 WHERE profile_id=? AND character_id=?',(js(pending),due_at,pid,cid))
-    else:db.execute('INSERT INTO chat_queue(profile_id,character_id,pending,due_at) VALUES (?,?,?,?)',(pid,cid,js(pending),due_at))
+    blocked_val=1 if is_paused else 0
+    if x:db.execute('UPDATE chat_queue SET pending=?,due_at=?,blocked=? WHERE profile_id=? AND character_id=?',(js(pending),due_at,blocked_val,pid,cid))
+    else:db.execute('INSERT INTO chat_queue(profile_id,character_id,pending,due_at,blocked) VALUES (?,?,?,?,?)',(pid,cid,js(pending),due_at,blocked_val))
     return queue_view(db,pid,cid)
 
 def queue_cancel(db,pid,cid):
@@ -461,32 +530,51 @@ def queue_cancel(db,pid,cid):
     if m_state:
         m_state['target_time_label']=''
         m_state['schedule_reason']=''
+    clear_task_states_for_pair(pid,cid)
     db.execute("UPDATE chat_queue SET pending='[]',due_at=0,status='idle',inflight='',inflight_sources='[]',blocked=0,revision=revision+1 WHERE profile_id=? AND character_id=?",(pid,cid))
 
-def queue_flush(db,p,c,force=False):
+def queue_flush(db,p,c,force=False,manual_resume=False):
     pid,cid=p['id'],c['id']
+    t_state=get_task_state(pid,cid,'chat')
     with CHAT_LOCK:
         q=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
         if not q:return {'queued':False,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
         if q['status']=='inflight':return {'queued':True,'inflight':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
         pending_list=parse_json(q['pending'],[])
-        if not pending_list:return {'queued':False,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
-        if q['blocked'] and not force:return {'queued':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
-        if not force and now_ms()<q['due_at']:return {'queued':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
+        if not pending_list:
+            if manual_resume and t_state.get('paused'):
+                clear_task_state(pid,cid,'chat')
+            return {'queued':False,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
+        if t_state.get('paused') and not manual_resume:
+            return {'queued':True,'paused':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
+        if q['blocked'] and not force and not manual_resume:
+            return {'queued':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
+        if not force and not manual_resume and now_ms()<q['due_at']:
+            return {'queued':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
         cur_mode=public_connection()['mode']
         if cur_mode=='normal':
             db.execute("UPDATE chat_queue SET blocked=1 WHERE profile_id=? AND character_id=?",(pid,cid))
             db.commit()
             return {'queued':True,'reply':None,'replies':[],'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。','queue':queue_view(db,pid,cid)}
+        if manual_resume:
+            t_state['paused']=False
+            t_state['attempt']=int(t_state.get('attempt') or 0)+1
+        else:
+            t_state['attempt']=1
+        t_state['status']='inflight'
+        t_state['updated_at']=utc()
         sources=pending_list;token=uid();revision=q['revision']
         db.execute("UPDATE chat_queue SET pending='[]',due_at=0,status='inflight',inflight=?,inflight_sources=?,blocked=0 WHERE profile_id=? AND character_id=?",(token,js(sources),pid,cid))
         last=db.execute('SELECT rowid FROM messages WHERE id=?',(sources[-1],)).fetchone()
         prompt=compile_messages(db,p,c,'chat',through_rowid=last['rowid'] if last else None,pending_ids=sources)
         db.commit()
-    settings=load_connection();warning='';engine='demo';reply=None;replies=[]
+    settings=load_connection();warning='';engine='demo';reply=None;replies=[];api_error=None
     if all(settings.get(k) for k in ('base_url','api_key','model')):
-        try:txt=completion(prompt,log_meta={'mode':'chat','entryPoint':'chat-flush','profile':p,'character':c,'parseFn':lambda raw:' / '.join(split_chat_bubbles(raw))});engine='live'
-        except Exception as e:warning=str(e);engine='error'
+        try:
+            txt=completion(prompt,log_meta={'mode':'chat','task_type':'chat','entryPoint':'chat-flush','profile':p,'character':c,'attempt':t_state['attempt'],'retry_of_task_id':t_state.get('last_task_id',''),'parseFn':lambda raw:' / '.join(split_chat_bubbles(raw))})
+            engine='live'
+        except Exception as e:
+            warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
     else:txt=demo_text(db,p,c,'chat')
     with CHAT_LOCK:
         current=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
@@ -496,11 +584,13 @@ def queue_flush(db,p,c,force=False):
         if engine=='error':
             newer=parse_json(current['pending'],[])
             restore=[m for m in sources if m not in newer]+newer
-            if newer:
-                db.execute("UPDATE chat_queue SET pending=?,status='idle',inflight='',inflight_sources='[]',blocked=0 WHERE profile_id=? AND character_id=?",(js(restore),pid,cid))
-            else:
-                db.execute("UPDATE chat_queue SET pending=?,due_at=?,status='idle',inflight='',inflight_sources='[]',blocked=1 WHERE profile_id=? AND character_id=?",(js(restore),now_ms(),pid,cid))
+            t_state['status']='error'
+            t_state['last_error']=api_error
+            if api_error and api_error.get('task_id'):t_state['last_task_id']=api_error['task_id']
+            t_state['updated_at']=utc()
+            db.execute("UPDATE chat_queue SET pending=?,due_at=?,status='idle',inflight='',inflight_sources='[]',blocked=1 WHERE profile_id=? AND character_id=?",(js(restore),now_ms(),pid,cid))
         else:
+            clear_task_state(pid,cid,'chat')
             bubble_texts=split_chat_bubbles(txt)
             replies=[write_message(db,pid,cid,'ai','chat',b_txt,engine) for b_txt in bubble_texts]
             reply=replies[-1] if replies else None
@@ -516,7 +606,7 @@ def queue_flush(db,p,c,force=False):
             db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),pid,cid))
             db.execute("UPDATE chat_queue SET status='idle',inflight='',inflight_sources='[]',blocked=0 WHERE profile_id=? AND character_id=?",(pid,cid))
         db.commit()
-    return {'queued':False,'reply':reply,'replies':replies,'warning':warning,'queue':queue_view(db,pid,cid)}
+    return {'queued':engine=='error','reply':reply,'replies':replies,'warning':warning,'apiError':api_error,'queue':queue_view(db,pid,cid)}
 
 def queue_flush_due(db,p):
     pid=p['id'];now=now_ms();flushed=[]
@@ -524,11 +614,12 @@ def queue_flush_due(db,p):
     for row in rows:
         cid=row['character_id'];c=BY_ID.get(cid)
         if not c or not parse_json(row['pending'],[]):continue
+        if get_task_state(pid,cid,'chat').get('paused'):continue
         rel=db.execute("SELECT status,mode FROM relations WHERE profile_id=? AND character_id=?",(pid,cid)).fetchone()
         if not rel or rel['status']!='matched' or rel['mode']!='chat':continue
         res=queue_flush(db,p,c,force=False)
         if res.get('reply') or res.get('warning'):
-            flushed.append({'characterId':cid,'characterName':c['name'],'reply':res.get('reply'),'warning':res.get('warning','')})
+            flushed.append({'characterId':cid,'characterName':c['name'],'reply':res.get('reply'),'warning':res.get('warning',''),'apiError':res.get('apiError')})
     return {'flushed':flushed}
 
 def match_role(db,p,character):
@@ -1161,7 +1252,7 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
 
 def ensure_meeting_records(db,p,c):
     all_rows=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at,id',(p['id'],c['id'])).fetchall()
-    all_msgs=[dict(r) for r in all_rows]
+    all_msgs=[dict(r) for r in all_rows if not _is_chat_artifact(dict(r))]
     groups=[]
     cur=[]
     for m in all_msgs:
@@ -1225,7 +1316,7 @@ def ensure_daily_summaries(db,p,c,active_msg_ids):
     if not all_msgs:return
     by_day={}
     for m in all_msgs:
-        if m['engine']=='recalled':continue
+        if m['engine']=='recalled' or _is_chat_artifact(dict(m)):continue
         day=str(m['created_at'])[:10]
         by_day.setdefault(day,[]).append(dict(m))
     for day,day_msgs in by_day.items():
@@ -1265,7 +1356,7 @@ def retrieve_relevant_memories(db,pid,cid,query_text='',exclude_msg_ids=None,lim
     scored=[]
     for item in all_items:
         raw_ids=set(item['raw_msg_ids'])
-        if raw_ids and raw_ids.issubset(exclude) and item['source_type']=='dialogue':
+        if raw_ids and ((item['source_type']=='dialogue' and raw_ids.issubset(exclude)) or (item['source_type']=='daily-summary' and bool(raw_ids & exclude))):
             continue
         if item['disputed'] and item['id'] not in corrections_by_target and not q_terms:
             continue
@@ -1473,11 +1564,46 @@ def record_system_log(entry):
         pass
     return log_item
 
+class ApiGatewayError(RuntimeError):
+    def __init__(self,api_error):
+        super().__init__(api_error.get('message') or 'API 请求失败')
+        self.api_error=api_error
+
+def classify_http_status_error(status,detail_msg='',retry_after=0):
+    s=int(status or 0)
+    ra=0
+    if isinstance(retry_after,dict):
+        ra_val=retry_after.get('Retry-After') or retry_after.get('retry-after') or ''
+        ra=int(ra_val) if str(ra_val).isdigit() else 0
+    elif str(retry_after).isdigit():
+        ra=int(retry_after)
+    suffix=f"（{detail_msg}）" if detail_msg else ''
+    def _res(code,title,msg,suggest_terminal=False,may_consume_tokens=False):
+        return {'error_code':code,'error_type':code,'http_status':s,'title':title,'message':msg,'retry_after':ra,'suggest_terminal':suggest_terminal,'may_consume_tokens':may_consume_tokens}
+    if s==400:return _res('HTTP_400','请求参数异常 (HTTP 400)',f"模型接口拒绝了请求参数{suffix}。请检查终端中的模型名称或 Max tokens 设置。",suggest_terminal=True)
+    if s==401:return _res('HTTP_401','API 认证失败 (HTTP 401)',f"API 密钥无效或已过期{suffix}。请前往「终端」检查并更新 API Key。",suggest_terminal=True)
+    if s==403:return _res('HTTP_403','访问权限不足 (HTTP 403)',f"当前 API 密钥无权访问该模型或接口{suffix}。请前往「终端」检查权限或更换模型。",suggest_terminal=True)
+    if s==404:return _res('HTTP_404','模型或接口不存在 (HTTP 404)',f"找不到指定的 API 路径或模型 ID{suffix}。请前往「终端」检查 API Base URL 与模型名称。",suggest_terminal=True)
+    if s==408:return _res('HTTP_408','请求超时 (HTTP 408)',f"上游服务器等待请求超时{suffix}。注意：服务端可能已消耗 Token，请谨慎重试。",may_consume_tokens=True)
+    if s==429:
+        wait_hint=f"建议等待约 {ra} 秒后再试。" if ra>0 else '建议稍作等待后再点击重试，或暂停调用。'
+        return _res('HTTP_429','请求频率或额度受限 (HTTP 429)',f"触发了接口速率限制或配额耗尽{suffix}。{wait_hint}")
+    if s==500:return _res('HTTP_500','服务器内部错误 (HTTP 500)',f"模型服务商或反代内部异常{suffix}。可稍后重试或暂停调用。")
+    if s==502:return _res('HTTP_502','网关错误 (HTTP 502)',f"反代或网关无法从上游获取有效响应{suffix}。可稍后重试。")
+    if s==503:return _res('HTTP_503','服务暂不可用 (HTTP 503)',f"上游模型服务繁忙或维护中{suffix}。建议稍后重试或暂停调用。")
+    if s==504:return _res('HTTP_504','网关超时 (HTTP 504)',f"反代等待上游模型响应超时{suffix}。注意：上游可能已在计费生成中，重试可能额外消耗 Token。",may_consume_tokens=True)
+    if s==529:return _res('HTTP_529','服务商过载 (HTTP 529)',f"上游模型服务商当前负载过高 (Overloaded){suffix}。建议等待片刻后再重试。")
+    return _res(f'HTTP_{s}',f'接口请求异常 (HTTP {s})',f"模型接口返回异常状态码 HTTP {s}{suffix}。请检查终端设置或查看系统日志。")
+
 def completion(messages,*,json_mode=False,max_tokens=None,log_meta=None):
     settings=load_connection();base=settings.get('base_url');key=settings.get('api_key');model=settings.get('model')
     if not all((base,key,model)):raise RuntimeError('尚未配置可用的 API 地址、密钥及模型')
     meta=log_meta or {}
     req_mode=meta.get('mode','chat')
+    task_type=meta.get('task_type') or req_mode
+    task_id=meta.get('task_id') or ('task_'+uid())
+    attempt=int(meta.get('attempt') or 1)
+    retry_of_task_id=meta.get('retry_of_task_id') or ''
     max_tok=int(max_tokens or settings.get('max_tokens') or 4096)
     temp=float(settings.get('temperature',0.85))
     top_p_val=float(settings.get('top_p',1))
@@ -1485,8 +1611,7 @@ def completion(messages,*,json_mode=False,max_tokens=None,log_meta=None):
     if json_mode:payload['response_format']={'type':'json_object'}
     endpoint=base+'/chat/completions'
     headers_masked={'Content-Type':'application/json','Authorization':'Bearer '+mask_api_key(key)}
-    active_presets=[]
-    disabled_presets=[]
+    active_presets=[];disabled_presets=[]
     try:
         with connect() as db_log:
             p_rows=db_log.execute('SELECT * FROM presets WHERE mode=? ORDER BY sort_order,id',(req_mode,)).fetchall()
@@ -1499,141 +1624,173 @@ def completion(messages,*,json_mode=False,max_tokens=None,log_meta=None):
     except Exception:
         pass
     t0=now_ms()
+    def _fail(error_type,title,message,http_status=0,detail='',retry_after=0,suggest_terminal=False,may_consume_tokens=False,raw_resp=None,raw_content='',finish_reason='',usage=None):
+        log_entry=record_system_log({
+            'profile_id':(meta.get('profile') or {}).get('id',''),
+            'profile_name':(meta.get('profile') or {}).get('name',''),
+            'character_id':(meta.get('character') or {}).get('id',''),
+            'character_name':(meta.get('character') or {}).get('name',''),
+            'mode':req_mode,
+            'task_id':task_id,
+            'retry_of_task_id':retry_of_task_id,
+            'attempt':attempt,
+            'entry_point':meta.get('entryPoint',req_mode),
+            'model':model,
+            'endpoint':endpoint,
+            'headers_masked':headers_masked,
+            'sampling':{'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok},
+            'active_preset_count':len(active_presets),
+            'disabled_preset_count':len(disabled_presets),
+            'active_presets':active_presets,
+            'disabled_presets':disabled_presets,
+            'request_payload':payload,
+            'raw_response':raw_resp,
+            'raw_content':raw_content,
+            'parsed_content':'',
+            'char_count_raw':len(raw_content or ''),
+            'char_count_parsed':0,
+            'finish_reason':finish_reason,
+            'usage':usage,
+            'duration_ms':now_ms()-t0,
+            'http_status':http_status,
+            'error_type':error_type,
+            'error':message
+        })
+        raise ApiGatewayError({
+            'error_type':error_type,
+            'http_status':http_status,
+            'title':title,
+            'message':message,
+            'detail':detail or message,
+            'task_type':task_type,
+            'task_id':task_id,
+            'retry_of_task_id':retry_of_task_id,
+            'attempt':attempt,
+            'character_id':(meta.get('character') or {}).get('id',''),
+            'character_name':(meta.get('character') or {}).get('name',''),
+            'profile_id':(meta.get('profile') or {}).get('id',''),
+            'profile_name':(meta.get('profile') or {}).get('name',''),
+            'retry_after':retry_after,
+            'suggest_terminal':suggest_terminal,
+            'may_consume_tokens':may_consume_tokens,
+            'log_id':(log_entry or {}).get('id',''),
+            'created_at':utc()
+        })
     req=urllib.request.Request(endpoint,data=js(payload).encode('utf8'),headers={'Authorization':'Bearer '+key,'Content-Type':'application/json','Accept':'application/json'},method='POST')
     try:
         with urllib.request.urlopen(req,timeout=65) as r:
             status_code=getattr(r,'status',200)
-            data=json.loads(r.read(4*1024*1024))
-        duration_ms=now_ms()-t0
-        choice=(data.get('choices') or [{}])[0]
-        msg_obj=choice.get('message') or {}
-        finish_reason=str(choice.get('finish_reason') or '')
-        usage_raw=data.get('usage') or {}
-        comp_details=usage_raw.get('completion_tokens_details') or {}
-        usage={
-            'prompt_tokens':usage_raw.get('prompt_tokens'),
-            'completion_tokens':usage_raw.get('completion_tokens'),
-            'total_tokens':usage_raw.get('total_tokens'),
-            'reasoning_tokens':comp_details.get('reasoning_tokens') or usage_raw.get('reasoning_tokens') or 0
-        } if usage_raw else None
-        content=msg_obj.get('content')
-        reasoning_content=str(msg_obj.get('reasoning_content') or msg_obj.get('reasoning') or '')
-        if isinstance(content,list):content=''.join(x.get('text','') for x in content if isinstance(x,dict))
-        raw_trimmed=content.strip() if isinstance(content,str) else ''
-        if req_mode=='chat' and raw_trimmed and not split_chat_bubbles(raw_trimmed):raw_trimmed=''
-        if not raw_trimmed:
-            record_system_log({
-                'profile_id':(meta.get('profile') or {}).get('id',''),
-                'profile_name':(meta.get('profile') or {}).get('name',''),
-                'character_id':(meta.get('character') or {}).get('id',''),
-                'character_name':(meta.get('character') or {}).get('name',''),
-                'mode':req_mode,
-                'entry_point':meta.get('entryPoint',req_mode),
-                'model':model,
-                'endpoint':endpoint,
-                'headers_masked':headers_masked,
-                'sampling':{'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok},
-                'active_preset_count':len(active_presets),
-                'disabled_preset_count':len(disabled_presets),
-                'active_presets':active_presets,
-                'disabled_presets':disabled_presets,
-                'request_payload':payload,
-                'raw_response':data,
-                'raw_content':'',
-                'reasoning_content':reasoning_content,
-                'parsed_content':'',
-                'char_count_raw':0,
-                'char_count_parsed':0,
-                'finish_reason':finish_reason,
-                'usage':usage,
-                'duration_ms':duration_ms,
-                'http_status':status_code,
-                'error':f"模型没有返回可用文本（finish_reason={finish_reason or 'unknown'}）"
-            })
-            raise RuntimeError('模型没有返回可用文本')
-        parse_fn=meta.get('parseFn')
-        parsed_content=parse_fn(raw_trimmed) if callable(parse_fn) else (clean_meeting_novel_text(raw_trimmed) if req_mode=='meeting' else raw_trimmed)
-        trunc_warn=''
-        if finish_reason in ('length','max_tokens'):
-            trunc_warn=f"模型因达到 max_tokens ({max_tok}) 上限被截断（finish_reason={finish_reason}）。建议在「终端 -> 连接与模型」中调高 Max tokens。"
-        record_system_log({
-            'profile_id':(meta.get('profile') or {}).get('id',''),
-            'profile_name':(meta.get('profile') or {}).get('name',''),
-            'character_id':(meta.get('character') or {}).get('id',''),
-            'character_name':(meta.get('character') or {}).get('name',''),
-            'mode':req_mode,
-            'entry_point':meta.get('entryPoint',req_mode),
-            'model':model,
-            'endpoint':endpoint,
-            'headers_masked':headers_masked,
-            'sampling':{'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok},
-            'active_preset_count':len(active_presets),
-            'disabled_preset_count':len(disabled_presets),
-            'active_presets':active_presets,
-            'disabled_presets':disabled_presets,
-            'request_payload':payload,
-            'raw_response':data,
-            'raw_content':raw_trimmed,
-            'reasoning_content':reasoning_content,
-            'parsed_content':parsed_content,
-            'char_count_raw':len(raw_trimmed),
-            'char_count_parsed':len(parsed_content or ''),
-            'finish_reason':finish_reason,
-            'usage':usage,
-            'truncation_warning':trunc_warn,
-            'duration_ms':duration_ms,
-            'http_status':status_code,
-            'error':''
-        })
-        return raw_trimmed
+            raw_bytes=r.read(4*1024*1024)
+            raw_text=raw_bytes.decode('utf8',errors='replace')
     except urllib.error.HTTPError as exc:
-        err_msg=f'模型接口返回 HTTP {exc.code}；请检查地址、模型和额度'
-        record_system_log({
-            'profile_id':(meta.get('profile') or {}).get('id',''),
-            'profile_name':(meta.get('profile') or {}).get('name',''),
-            'character_id':(meta.get('character') or {}).get('id',''),
-            'character_name':(meta.get('character') or {}).get('name',''),
-            'mode':req_mode,
-            'entry_point':meta.get('entryPoint',req_mode),
-            'model':model,
-            'endpoint':endpoint,
-            'headers_masked':headers_masked,
-            'sampling':{'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok},
-            'active_preset_count':len(active_presets),
-            'disabled_preset_count':len(disabled_presets),
-            'active_presets':active_presets,
-            'disabled_presets':disabled_presets,
-            'request_payload':payload,
-            'raw_response':None,
-            'duration_ms':now_ms()-t0,
-            'http_status':exc.code,
-            'error':err_msg
-        })
-        raise RuntimeError(err_msg)
+        err_body=''
+        try:err_body=exc.read(256*1024).decode('utf8',errors='replace')
+        except Exception:pass
+        err_json=parse_json(err_body,None) if err_body else None
+        detail_msg=''
+        if isinstance(err_json,dict):
+            e_obj=err_json.get('error')
+            detail_msg=(e_obj if isinstance(e_obj,str) else (e_obj.get('message') or e_obj.get('code') or e_obj.get('type') if isinstance(e_obj,dict) else '')) or err_json.get('message') or ''
+        elif err_body:
+            detail_msg=err_body.strip()[:180]
+        ra_hdr=exc.headers.get('Retry-After','') if exc.headers else ''
+        ra=int(ra_hdr) if str(ra_hdr).isdigit() else 0
+        classified=classify_http_status_error(exc.code,str(detail_msg)[:180],ra)
+        _fail(classified['error_type'],classified['title'],classified['message'],http_status=exc.code,detail=str(detail_msg or classified['message'])[:500],retry_after=ra,suggest_terminal=bool(classified.get('suggest_terminal')),may_consume_tokens=bool(classified.get('may_consume_tokens')),raw_resp=err_json or err_body[:1000])
     except urllib.error.URLError as exc:
-        err_msg='无法连接模型接口：'+str(exc.reason)[:140]
-        record_system_log({
-            'profile_id':(meta.get('profile') or {}).get('id',''),
-            'profile_name':(meta.get('profile') or {}).get('name',''),
-            'character_id':(meta.get('character') or {}).get('id',''),
-            'character_name':(meta.get('character') or {}).get('name',''),
-            'mode':req_mode,
-            'entry_point':meta.get('entryPoint',req_mode),
-            'model':model,
-            'endpoint':endpoint,
-            'headers_masked':headers_masked,
-            'sampling':{'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok},
-            'active_preset_count':len(active_presets),
-            'disabled_preset_count':len(disabled_presets),
-            'active_presets':active_presets,
-            'disabled_presets':disabled_presets,
-            'request_payload':payload,
-            'raw_response':None,
-            'duration_ms':now_ms()-t0,
-            'http_status':0,
-            'error':err_msg
-        })
-        raise RuntimeError(err_msg)
+        reason_str=str(getattr(exc,'reason','') or exc)
+        is_timeout='timed out' in reason_str.lower() or 'timeout' in reason_str.lower()
+        _fail('REQUEST_TIMEOUT' if is_timeout else 'NETWORK_ERROR','请求超时' if is_timeout else '网络连接失败',f"请求超时或被中断（{reason_str[:120]}）。注意：上游服务可能已处理该请求，重试可能产生额外 Token 消耗。" if is_timeout else f"无法连接模型接口（{reason_str[:140]}）。请检查网络连接或终端中的 API Base URL。",http_status=0,detail=reason_str[:400],suggest_terminal=not is_timeout,may_consume_tokens=True)
+    duration_ms=now_ms()-t0
+    if not raw_text or not raw_text.strip():
+        _fail('EMPTY_RESPONSE','接口返回空响应',f"接口返回了 HTTP {status_code}，但响应体为空。",http_status=status_code)
+    try:
+        data=json.loads(raw_text)
+    except Exception:
+        proxy_check=detect_proxy_wrapped_error(raw_text)
+        if proxy_check:
+            _fail(proxy_check['error_type'],'反代服务返回错误提示',proxy_check['message'],http_status=status_code,detail=proxy_check['detail'],raw_resp=raw_text[:1000])
+        _fail('INVALID_RESPONSE_JSON','接口响应无法解析',f"接口返回了 HTTP {status_code}，但响应不是有效的 JSON 格式。",http_status=status_code,detail=raw_text[:360],raw_resp=raw_text[:1000])
+    if not isinstance(data,dict):
+        _fail('INVALID_RESPONSE_JSON','接口响应结构异常','接口返回的 JSON 不是有效对象。',http_status=status_code)
+    if (data.get('error') or data.get('status')=='error') and (not isinstance(data.get('choices'),list) or len(data.get('choices'))==0):
+        e_obj=data.get('error')
+        err_msg=e_obj if isinstance(e_obj,str) else ((e_obj.get('message') or e_obj.get('code') or e_obj.get('type') or js(e_obj)) if isinstance(e_obj,dict) else (data.get('message') or '未知错误'))
+        proxy_err=detect_proxy_wrapped_error(str(err_msg))
+        _fail(proxy_err['error_type'] if proxy_err else 'HTTP_200_ERROR_OBJECT','接口返回错误对象 (HTTP 200)',proxy_err['message'] if proxy_err else f"接口虽返回 HTTP 200，但包含错误字段：{str(err_msg)[:200]}",http_status=status_code,detail=str(err_msg)[:500],raw_resp=data)
+    if not isinstance(data.get('choices'),list) or len(data['choices'])==0:
+        _fail('EMPTY_CHOICES','接口未返回候选回复 (Choices 为空)','接口响应中缺少 choices 列表或列表为空。',http_status=status_code,raw_resp=data)
+    choice=data['choices'][0] or {}
+    msg_obj=choice.get('message') or {}
+    finish_reason=str(choice.get('finish_reason') or '')
+    is_truncated=finish_reason.lower() in ('length','max_tokens')
+    usage_raw=data.get('usage') or {}
+    comp_details=usage_raw.get('completion_tokens_details') or {}
+    usage={
+        'prompt_tokens':usage_raw.get('prompt_tokens'),
+        'completion_tokens':usage_raw.get('completion_tokens'),
+        'total_tokens':usage_raw.get('total_tokens'),
+        'reasoning_tokens':comp_details.get('reasoning_tokens') or usage_raw.get('reasoning_tokens') or 0
+    } if usage_raw else None
+    content=msg_obj.get('content')
+    reasoning_content=str(msg_obj.get('reasoning_content') or msg_obj.get('reasoning') or '')
+    if isinstance(content,list):content=''.join(x.get('text','') for x in content if isinstance(x,dict))
+    raw_trimmed=content.strip() if isinstance(content,str) else ''
+    if req_mode=='chat' and raw_trimmed and not split_chat_bubbles(raw_trimmed):raw_trimmed=''
+    if not raw_trimmed:
+        is_len_trunc=is_truncated
+        _fail('OUTPUT_TRUNCATED' if is_len_trunc else 'EMPTY_CONTENT','输出被截断且无正文' if is_len_trunc else '模型返回空内容',f"模型因达到 max_tokens ({max_tok}) 上限被截断，未产出有效正文。建议在「终端」调高 Max tokens。" if is_len_trunc else f"模型没有返回可用文本（finish_reason={finish_reason or 'unknown'}）。",http_status=status_code,suggest_terminal=is_len_trunc,raw_resp=data,finish_reason=finish_reason,usage=usage)
+    proxy_content_err=detect_proxy_wrapped_error(raw_trimmed)
+    if proxy_content_err:
+        _fail(proxy_content_err['error_type'],'反代服务将错误写入了回复正文',proxy_content_err['message'],http_status=status_code,detail=proxy_content_err['detail'],raw_resp=data,raw_content=raw_trimmed,finish_reason=finish_reason,usage=usage)
+    if json_mode and not meta.get('skip_json_gateway'):
+        try:
+            json.loads(raw_trimmed)
+        except Exception:
+            is_trunc=is_truncated
+            _fail('OUTPUT_TRUNCATED' if is_trunc else 'INVALID_STRUCTURED_JSON','结构化输出被截断' if is_trunc else '结构化任务返回了无效 JSON',f"结构化任务返回的内容不是合法 JSON（finish_reason={finish_reason or 'unknown'}）。",http_status=status_code,detail=raw_trimmed[:360],raw_resp=data,raw_content=raw_trimmed,finish_reason=finish_reason,usage=usage)
+    if is_truncated and (json_mode or meta.get('reject_truncated') or len(raw_trimmed)<80):
+        _fail('OUTPUT_TRUNCATED','回复因达到 Token 上限被截断',f"模型输出因达到 max_tokens ({max_tok}) 上限被截断（当前仅 {len(raw_trimmed)} 字）。建议前往「终端」调高 Max tokens 后重试。",http_status=status_code,detail=raw_trimmed[:360],suggest_terminal=True,raw_resp=data,raw_content=raw_trimmed,finish_reason=finish_reason,usage=usage)
+    if req_mode=='chat' and not split_chat_bubbles(raw_trimmed):
+        _fail('EMPTY_PARSED_CONTENT','模型未返回可显示的正文','模型只返回了协议占位符或分隔符，请重试。',http_status=status_code,raw_resp=data,raw_content=raw_trimmed,finish_reason=finish_reason,usage=usage)
+    parse_fn=meta.get('parseFn')
+    parsed_content=parse_fn(raw_trimmed) if callable(parse_fn) else (clean_meeting_novel_text(raw_trimmed) if req_mode=='meeting' else raw_trimmed)
+    trunc_warn=''
+    if is_truncated:
+        trunc_warn=f"模型因达到 max_tokens ({max_tok}) 上限被截断（finish_reason={finish_reason}）。建议在「终端 -> 连接与模型」中调高 Max tokens。"
+    record_system_log({
+        'profile_id':(meta.get('profile') or {}).get('id',''),
+        'profile_name':(meta.get('profile') or {}).get('name',''),
+        'character_id':(meta.get('character') or {}).get('id',''),
+        'character_name':(meta.get('character') or {}).get('name',''),
+        'mode':req_mode,
+        'task_id':task_id,
+        'retry_of_task_id':retry_of_task_id,
+        'attempt':attempt,
+        'entry_point':meta.get('entryPoint',req_mode),
+        'model':model,
+        'endpoint':endpoint,
+        'headers_masked':headers_masked,
+        'sampling':{'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok},
+        'active_preset_count':len(active_presets),
+        'disabled_preset_count':len(disabled_presets),
+        'active_presets':active_presets,
+        'disabled_presets':disabled_presets,
+        'request_payload':payload,
+        'raw_response':data,
+        'raw_content':raw_trimmed,
+        'reasoning_content':reasoning_content,
+        'parsed_content':parsed_content,
+        'char_count_raw':len(raw_trimmed),
+        'char_count_parsed':len(parsed_content or ''),
+        'finish_reason':finish_reason,
+        'usage':usage,
+        'truncation_warning':trunc_warn,
+        'duration_ms':duration_ms,
+        'http_status':status_code,
+        'error':''
+    })
+    return raw_trimmed
 
 def expand_preset_macros(text,p,c):
     u_name=(p.get('name') if p else None) or 'User'
@@ -1667,19 +1824,37 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     interests_str='、'.join(p.get('interests') or []) or '未填写'
     intent_str=p.get('intent') or '未填写'
     system='''你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n'''
-    system+=f"【第一层 · 身份记忆 (Identity Memory)】\n你的身份：{c['name']}（角色ID：{c['id']}）。原作/连续性：{c['source']}。时间线：{c['version']}。已确认背景：{c['canon']}。\n"
-    system+=f"当前互动对象 Profile：姓名 {p['name']}，年龄 {p['age']}，性别 {p['gender']}，交友目的：{intent_str}，兴趣爱好：{interests_str}；公开自述：{p['bio']}。"
+    if mode=='meeting':
+        system+=f"【第一层 · 身份记忆 (Identity Memory)】\n你的身份：{c['name']}（角色ID：{c['id']}）。原作/连续性：{c['source']}。时间线：{c['version']}。已确认背景：{c['canon']}。\n"
+        system+=f"当前互动对象 Profile：姓名 {p['name']}，年龄 {p['age']}，性别 {p['gender']}，交友目的：{intent_str}，兴趣爱好：{interests_str}；公开自述：{p['bio']}。"
+    else:
+        profile_meta='，'.join(x for x in [
+            p['name'],
+            f"{p['age']}岁" if p.get('age') else '',
+            f"性别{p['gender']}" if p.get('gender') else '',
+            f"交友目的：{p['intent']}" if p.get('intent') else '',
+            f"兴趣：{'、'.join(p['interests'])}" if p.get('interests') else '',
+            f"简介：{p['bio']}" if p.get('bio') else ''
+        ] if x)
+        system+=f"【第一层 · 身份记忆 (Identity Memory)】\n你的身份：{c['name']}（原作：{c['source']} · {c['version']}）。背景设定：{c['canon']}\n"
+        system+=f"当前聊天对象资料：{profile_meta}。（注：若对方在下方实时聊天中重新做了自我介绍或使用英文/其他语言对话，请优先顺应对方在当前聊天中的自称、话题与语言。）"
     if p['role_character_id'] in BY_ID:
         role=BY_ID[p['role_character_id']]
         system+=f"\n对方扮演的原作人物：{role['name']}，{role['version']}，{role['canon']}。"
     elif p['role_hint']:system+=f"\n对方提供的扮演身份说明（未经自动验证）：{p['role_hint'][:240]}。"
     system+=f"\n\n【第二层 · 关系记忆基线 (Relationship Memory)】\n{rel_summary}"
-    if cur_surv:
+    if mode=='chat':
+        total_msgs=db.execute('SELECT COUNT(*) FROM messages WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()[0]
+        if '再次重逢' in rel_summary:
+            system+="\n关系阶段提示：你们曾解除匹配后重新匹配，你清楚记得过往相处经历，不必装作初次认识。"
+        elif total_msgs<=8:
+            system+="\n关系阶段提示：你们刚通过交友软件匹配不久，请保持角色自然的社交边界、幽默感或分寸，不要过度自来熟，也不要像客服一样生硬盘问或长篇解释个人设定。"
+    if mode=='meeting' and cur_surv:
         system+=f"\n\n【此刻你的真实位置与状态（实时监控同步）】\n当前时段：{cur_surv['start']}–{cur_surv['end']}｜你所在地点：{cur_surv['location']}｜状态：{cur_surv['status']}｜正在做的事：{cur_surv['activity']}。当对方问你在哪、在干什么或提出见面时，请自然地与你此刻的真实位置和状态保持一致。"
     if recalled:
         system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n"+"\n".join(format_episodic_entry(e) for e in recalled)
     else:
-        system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n（当前话题未触发额外远期档案，仅依靠下方今日活跃上下文连贯交流）"
+        system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n"+("（当前话题未触发额外远期档案，仅依靠下方今日活跃上下文连贯交流）" if mode=='meeting' else "（无额外远期档案命中，请直接聚焦下方当前聊天。）")
     if mode=='meeting':
         pre_chat=select_pre_meeting_chat_context(db,p['id'],c['id'],6)
         if pre_chat:
@@ -1705,8 +1880,8 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     if timeline_lines:
         system+="\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n"+" ｜ ".join(timeline_lines)
     if core_sys_parts:system+='\n\n'+'\n\n'.join(core_sys_parts)
-    messages=[{'role':'system','content':system}]
     if mode=='meeting':
+        messages=[{'role':'system','content':system}]
         m_state=MEETING_STATE.get((p['id'],c['id']),{})
         meet_loc=(cur_surv and cur_surv.get('location')) or infer_meeting_location(db,p['id'],c['id'],m_state.get('meeting_location',''))
         has_trailing_user=(len(history_turns)>0 and history_turns[-1]['role']=='user' and not trigger_opening and not is_continue)
@@ -1729,9 +1904,6 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         else:
             messages.append({'role':'user','content':f"【继续推进】请承接上一轮在「{meet_loc}」的现场氛围与动作，严格按照当前面对面小说预设的所有规则与目标篇幅，继续推进下一段细腻的面对面互动正文（不要替 {p['name']} 决定台词或心理）。"})
         return messages
-    for x in post_presets:
-        messages.append({'role':x['role'],'content':macros(x['content'])})
-    messages.extend(history_turns)
     batch_hint=''
     if mode=='chat' and pending_ids and len(pending_ids)>1:
         bundled_rows=[]
@@ -1739,9 +1911,13 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             row=db.execute('SELECT id,sender,text,created_at FROM messages WHERE id=?',(mid,)).fetchone()
             if row:bundled_rows.append(dict(row))
         if len(bundled_rows)>1:
-            tl=' -> '.join(f"{fmt_hhmm(x['created_at'])}「{(str(x['text'] or '').strip() if x.get('sender')=='user' else clean_chat_bubble_text(x['text']))[:60]}」" for x in bundled_rows)
-            batch_hint=f"\n【打包消息时间线】你在未看手机的这段时间里，对方陆续给你发来了 {len(bundled_rows)} 条消息（按发送时间先后：{tl}）。你现在刚拿起手机把这些消息一次性读完，请结合这些消息各自的时间戳跨度与内容，像真人一样自然连贯地统一回复。"
-    messages.append({'role':'system','content':'【第四层 · 当前状态 (Current State)】当前输出模式：约会 App 手机聊天；仅发聊天气泡，不写小说旁白，不要在正文开头添加任何时间或模式标签。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）'+batch_hint+'。'})
+            batch_hint=f"\n【连续消息提示】对方刚刚连续发来了最后 {len(bundled_rows)} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。"
+    surv_hint=f"\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「{cur_surv['location']}」·「{cur_surv['activity']}」（仅供对方主动问起你在哪或在忙什么、且与当前聊天话题不冲突时自然参考；不必主动汇报行踪或生硬解释日程）。" if cur_surv else ''
+    system+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+surv_hint+batch_hint
+    messages=[{'role':'system','content':system}]
+    for x in post_presets:
+        messages.append({'role':x['role'],'content':macros(x['content'])})
+    messages.extend(history_turns)
     return messages
 
 def demo_text(db,p,c,mode):
@@ -1774,9 +1950,10 @@ def match_reply(db,p,c,again=False):
             else:
                 interests_str='、'.join(p.get('interests') or []) or '无'
                 prompt.append({'role':'user','content':f"【系统事件：首次匹配】你刚刚在约会软件上与 {p['name']} 互相右滑匹配成功。请结合你的原作性格、所处境遇以及对方的公开资料（简介：{p.get('bio') or '无'}；兴趣：{interests_str}），主动给对方发 1～2 条自然、有个人特色的第一条手机消息（多条气泡之间用 ||| 分隔，绝对不要说“看来我们匹配上了”这种千篇一律的套话）。"})
-            raw=completion(prompt,max_tokens=220,log_meta={'mode':'chat','entryPoint':'chat_first_message','profile':p,'character':c})
+            raw=completion(prompt,max_tokens=220,log_meta={'mode':'chat','task_type':'match','entryPoint':'first-message','profile':p,'character':c})
             return split_chat_bubbles(raw),'live'
-        except Exception:return [],'error'
+        except Exception:
+            return [],'error'
     demo_txt=f"{p['name']}，没想到这么快又刷到你了。|||又见面了……上次的事我没有忘。" if again else f"Hey，{p['name']}。|||看来我们匹配上了。"
     return split_chat_bubbles(demo_txt),'demo'
 
@@ -1853,13 +2030,14 @@ class Handler(BaseHTTPRequestHandler):
                     for r in rows:
                         c=BY_ID.get(r['character_id']);
                         if not c:continue
-                        last=db.execute('SELECT id,text,sender,mode,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid DESC LIMIT 1',(p['id'],c['id'])).fetchone()
+                        last_rows=db.execute('SELECT id,text,sender,mode,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid DESC',(p['id'],c['id']))
+                        last=next((dict(x) for x in last_rows if not _is_chat_artifact(dict(x))),None)
                         incoming_rows=db.execute("SELECT id,text,sender,mode,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND sender='ai' AND engine NOT IN ('error','recalled') ORDER BY rowid DESC",(p['id'],c['id']))
                         last_incoming=next((dict(x) for x in incoming_rows if not _is_chat_artifact(dict(x))),None)
                         m_state=MEETING_STATE.get((p['id'],c['id']),{})
                         nick=str(m_state.get('nickname','')).strip()
                         cv=char_view(db,c)|{'nickname':nick,'display_name':nick or c['name']}
-                        threads.append({'character':cv,'relation':dict(r)|{'hot_chat':bool(m_state.get('hot_chat',False)),'nickname':nick},'last':dict(last) if last else None,'last_incoming':last_incoming,'queue':queue_view(db,p['id'],c['id'])})
+                        threads.append({'character':cv,'relation':dict(r)|{'hot_chat':bool(m_state.get('hot_chat',False)),'nickname':nick},'last':last,'last_incoming':last_incoming,'queue':queue_view(db,p['id'],c['id']),'taskState':get_task_state(p['id'],c['id'],r['mode'])})
                     return self.respond({'threads':threads})
                 if route=='/api/thread':
                     p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid)
@@ -1873,7 +2051,7 @@ class Handler(BaseHTTPRequestHandler):
                     cv=char_view(db,c)|{'nickname':nick,'display_name':nick or c['name']}
                     diary_p=build_diary_payload(db,p,c)
                     rel_dict=dict(rel)|{'active_meeting_id':m_state.get('active_meeting_id',''),'meeting_location':m_state.get('meeting_location',''),'hot_chat':bool(m_state.get('hot_chat',False)),'nickname':nick}
-                    return self.respond({'character':cv,'profile':p,'relation':rel_dict,'messages':msgs,'meetings':meetings,'surveillance':build_surveillance_payload(db,p,c),'diarySummary':{'latestDate':diary_p['latestDate'],'availableDates':diary_p['availableDates'],'latestTitle':diary_p['diary'].get('title','')},'queue':queue_view(db,p['id'],cid)})
+                    return self.respond({'character':cv,'profile':p,'relation':rel_dict,'messages':msgs,'meetings':meetings,'surveillance':build_surveillance_payload(db,p,c),'diarySummary':{'latestDate':diary_p['latestDate'],'availableDates':diary_p['availableDates'],'latestTitle':diary_p['diary'].get('title','')},'queue':queue_view(db,p['id'],cid),'taskState':get_task_state(p['id'],cid,rel['mode'])})
                 if route=='/api/surveillance':
                     p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid);req_date=arg('date').strip()
                     if not c:raise ValueError('角色不存在')
@@ -1956,6 +2134,9 @@ class Handler(BaseHTTPRequestHandler):
                         models=[x['id'] for x in data.get('data',[]) if isinstance(x,dict) and isinstance(x.get('id'),str)]
                         return self.respond({'models':models})
                     except urllib.error.HTTPError as e:raise ValueError('图片模型列表请求失败：HTTP '+str(e.code))
+                if route=='/api/task-state':
+                    pid=arg('profileId').strip();cid=arg('characterId').strip();mode=arg('mode').strip() or 'chat'
+                    return self.respond({'taskState':get_task_state(pid,cid,mode),'queue':queue_view(db,pid,cid) if (pid and cid) else None})
                 if route=='/api/health':return self.respond({'ok':True,'name':'Parallel','version':'0.5.1'})
             self.respond({'error':'未找到接口'},404)
         except ValueError as e:self.respond({'error':str(e)},400)
@@ -2162,17 +2343,21 @@ class Handler(BaseHTTPRequestHandler):
                             m_state['meeting_location']=infer_meeting_location(db,p['id'],cid,loc_input)
                             sync_surveillance_on_meeting_start(db,p,c,m_state['meeting_location'],m_state['active_meeting_id'])
                             log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 在线下见面')
+                            api_error=None
                             if data.get('triggerOpening') is True and public_connection()['mode']!='normal':
-                                engine='demo';settings=load_connection()
+                                engine='demo';settings=load_connection();reply_txt=''
                                 if all(settings.get(k) for k in ('base_url','api_key','model')):
-                                    try:reply_txt=clean_meeting_novel_text(completion(compile_messages(db,p,c,'meeting',trigger_opening=True),log_meta={'mode':'meeting','entryPoint':'meeting-opening','profile':p,'character':c,'parseFn':clean_meeting_novel_text}));engine='live'
-                                    except Exception as e:warning=str(e);reply_txt='（模型连接失败，请检查终端设置后重试。）';engine='error'
+                                    try:
+                                        reply_txt=clean_meeting_novel_text(completion(compile_messages(db,p,c,'meeting',trigger_opening=True),log_meta={'mode':'meeting','task_type':'meeting','entryPoint':'meeting-opening','profile':p,'character':c,'parseFn':clean_meeting_novel_text}))
+                                        engine='live'
+                                    except Exception as e:
+                                        warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
                                 else:reply_txt=clean_meeting_novel_text(demo_text(db,p,c,'meeting'))
-                                opening_reply=write_message(db,p['id'],cid,'ai','meeting',reply_txt,engine)
-                                m_state['active_meeting_id']='meet_'+opening_reply['id']
-                                if engine!='error':
+                                if engine!='error' and reply_txt:
+                                    opening_reply=write_message(db,p['id'],cid,'ai','meeting',reply_txt,engine)
+                                    m_state['active_meeting_id']='meet_'+opening_reply['id']
                                     log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply_txt[:180])
-                                meeting_record=upsert_meeting_record(db,p,c,m_state['active_meeting_id'],[opening_reply],m_state['meeting_location'])
+                                    meeting_record=upsert_meeting_record(db,p,c,m_state['active_meeting_id'],[opening_reply],m_state['meeting_location'])
                         else:
                             started_after=m_state.get('started_after_rowid')
                             all_rows=db.execute('SELECT rowid,* FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid',(p['id'],cid)).fetchall()
@@ -2210,7 +2395,43 @@ class Handler(BaseHTTPRequestHandler):
                         _,meetings=ensure_meeting_records(db,p,c)
                         if meetings:meeting_record=meetings[-1]
                     db.commit()
-                    return self.respond({'mode':mode,'meetingId':m_state.get('active_meeting_id',''),'active_meeting_id':m_state.get('active_meeting_id',''),'location':m_state.get('meeting_location',''),'meeting_location':m_state.get('meeting_location',''),'meetingRecord':meeting_record,'openingReply':opening_reply,'surveillance':build_surveillance_payload(db,p,c),'warning':warning})
+                    return self.respond({'mode':mode,'meetingId':m_state.get('active_meeting_id',''),'active_meeting_id':m_state.get('active_meeting_id',''),'location':m_state.get('meeting_location',''),'meeting_location':m_state.get('meeting_location',''),'meetingRecord':meeting_record,'openingReply':opening_reply,'surveillance':build_surveillance_payload(db,p,c),'warning':warning,'apiError':locals().get('api_error')})
+                if route=='/api/task-state':
+                    pid=str(data.get('profileId',''))
+                    cid=str(data.get('characterId',''))
+                    t_type=str(data.get('taskType','chat'))
+                    return self.respond({'taskState':get_task_state(pid,cid,t_type),'queue':queue_view(db,pid,cid) if (pid and cid) else None})
+                if route=='/api/task-action':
+                    p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId',''));c=BY_ID.get(cid)
+                    act=str(data.get('action',''))
+                    t_type=str(data.get('mode') or data.get('taskType') or 'chat')
+                    if t_type.startswith('meeting'):t_type='meeting'
+                    elif t_type.startswith('chat'):t_type='chat'
+                    t_state=get_task_state(p['id'],cid,t_type)
+                    if act=='pause':
+                        t_state['paused']=True
+                        t_state['status']='paused'
+                        t_state['updated_at']=utc()
+                        with CHAT_LOCK:
+                            db.execute("UPDATE chat_queue SET status='idle',inflight='',inflight_sources='[]',blocked=1,revision=revision+1 WHERE profile_id=? AND character_id=?",(p['id'],cid))
+                            db.commit()
+                        return self.respond({'ok':True,'paused':True,'taskState':t_state,'queue':queue_view(db,p['id'],cid) if c else None})
+                    if act in ('clear','dismiss-bg'):
+                        clear_task_state(p['id'],cid,t_type)
+                        with CHAT_LOCK:
+                            db.execute("UPDATE chat_queue SET blocked=0 WHERE profile_id=? AND character_id=?",(p['id'],cid))
+                            db.commit()
+                        return self.respond({'ok':True,'taskState':None,'queue':queue_view(db,p['id'],cid) if c else None})
+                    if act in ('resume','retry'):
+                        t_state['paused']=False
+                        t_state['status']='idle'
+                        t_state['updated_at']=utc()
+                        if t_type=='chat' and c:
+                            qv=queue_view(db,p['id'],cid)
+                            if qv['count']>0:
+                                return self.respond(queue_flush(db,p,c,force=True,manual_resume=True)|{'taskState':get_task_state(p['id'],cid,'chat')})
+                        return self.respond({'ok':True,'paused':False,'taskState':t_state,'queue':queue_view(db,p['id'],cid) if c else None})
+                    raise ValueError('未知的任务控制动作')
                 if route=='/api/chat-flush':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId')
                     if not cid:
@@ -2219,7 +2440,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not c:raise ValueError('角色不存在')
                     r=db.execute('SELECT status,mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()
                     if not r or r['status']!='matched' or r['mode']!='chat':raise ValueError('当前不是手机聊天模式')
-                    return self.respond(queue_flush(db,p,c,force=data.get('force') is True))
+                    return self.respond(queue_flush(db,p,c,force=data.get('force') is True,manual_resume=data.get('manualResume') is True))
                 if route=='/api/chat-flush-due':
                     p=profile_get(db,data.get('profileId'))
                     return self.respond(queue_flush_due(db,p))
@@ -2268,23 +2489,32 @@ class Handler(BaseHTTPRequestHandler):
                     r=db.execute('SELECT * FROM relations WHERE profile_id=? AND character_id=? AND status=?',(p['id'],cid,'matched')).fetchone()
                     if not r:raise ValueError('尚未匹配')
                     mode=r['mode']
+                    t_state=get_task_state(p['id'],cid,mode)
+                    if t_state.get('paused') and not data.get('manualResume'):
+                        return self.respond({'reply':None,'replies':[],'mode':mode,'paused':True,'warning':'当前任务已暂停调用，请点击「恢复」或「重试」后再继续。','taskState':t_state,'queue':queue_view(db,p['id'],cid)})
+                    if data.get('manualResume'):
+                        t_state['paused']=False
                     qv=queue_view(db,p['id'],cid)
                     if mode=='chat' and (qv['count'] or qv['status']=='inflight'):
-                        return self.respond(queue_flush(db,p,c,force=True))
+                        return self.respond(queue_flush(db,p,c,force=True,manual_resume=bool(data.get('manualResume'))))
                     if public_connection()['mode']=='normal':
                         return self.respond({'reply':None,'replies':[],'mode':mode,'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。'})
-                    engine='demo';warning='';settings=load_connection()
+                    engine='demo';warning='';settings=load_connection();api_error=None;reply=''
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
-                        try:reply=completion(compile_messages(db,p,c,mode,is_continue=(mode=='meeting')),log_meta={'mode':mode,'entryPoint':'meeting-continue' if mode=='meeting' else 'chat-reply','profile':p,'character':c,'parseFn':clean_meeting_novel_text if mode=='meeting' else (lambda raw:' / '.join(split_chat_bubbles(raw)))});engine='live'
+                        try:
+                            reply=completion(compile_messages(db,p,c,mode,is_continue=(mode=='meeting')),log_meta={'mode':mode,'task_type':mode,'entryPoint':'meeting-continue' if mode=='meeting' else 'chat-reply','profile':p,'character':c,'parseFn':clean_meeting_novel_text if mode=='meeting' else (lambda raw:' / '.join(split_chat_bubbles(raw)))})
+                            engine='live'
                         except Exception as e:
-                            warning=str(e)
-                            if mode=='chat':return self.respond({'reply':None,'replies':[],'mode':mode,'warning':warning})
-                            reply='（模型连接失败，请检查终端设置后重试。）';engine='error'
+                            warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
                     else:reply=demo_text(db,p,c,mode)
-                    bubble_texts=[reply] if engine=='error' else (split_chat_bubbles(reply) if mode=='chat' else [clean_meeting_novel_text(reply)])
+                    if engine=='error':
+                        t_state['status']='error';t_state['last_error']=api_error;t_state['updated_at']=utc()
+                        return self.respond({'reply':None,'replies':[],'mode':mode,'warning':warning,'apiError':api_error,'taskState':t_state})
+                    clear_task_state(p['id'],cid,mode)
+                    bubble_texts=split_chat_bubbles(reply) if mode=='chat' else [clean_meeting_novel_text(reply)]
                     replies=[write_message(db,p['id'],cid,'ai',mode,b_txt,engine) for b_txt in bubble_texts]
                     ai_msg=replies[-1] if replies else None
-                    if engine!='error' and ai_msg:
+                    if ai_msg:
                         combined_txt=' / '.join(bubble_texts)
                         log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+combined_txt[:180])
                         last_u=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND sender='user' ORDER BY created_at DESC,id DESC LIMIT 1",(p['id'],cid)).fetchone()
@@ -2292,7 +2522,7 @@ class Handler(BaseHTTPRequestHandler):
                         if mode=='chat':
                             sync_surveillance_from_chat(db,p,c,combined_txt)
                     db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),p['id'],cid))
-                    db.commit();return self.respond({'reply':ai_msg,'replies':replies,'mode':mode,'warning':warning})
+                    db.commit();return self.respond({'reply':ai_msg,'replies':replies,'mode':mode,'warning':warning,'taskState':get_task_state(p['id'],cid,mode)})
                 if route=='/api/message':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId');c=BY_ID.get(cid)
                     if not c:raise ValueError('角色不存在')
@@ -2305,23 +2535,32 @@ class Handler(BaseHTTPRequestHandler):
                     detect_and_apply_correction(db,p,c,user_msg)
                     if mode=='chat':
                         log_event(db,p['id'],cid,'user_message','与 '+p['name']+' 的聊天：'+txt[:180])
-                        with CHAT_LOCK:queue_add(db,p['id'],cid,user_msg['id'],txt)
+                        with CHAT_LOCK:qv=queue_add(db,p['id'],cid,user_msg['id'],txt)
                         db.commit()
-                        return self.respond({'user':user_msg,'reply':None,'replies':[],'queued':True,'mode':'chat','queue':queue_view(db,p['id'],cid)})
+                        return self.respond({'user':user_msg,'reply':None,'replies':[],'queued':True,'paused':bool(qv.get('paused')),'mode':'chat','queue':qv})
                     log_event(db,p['id'],cid,'user_message','与 '+p['name']+' 的'+('见面' if mode=='meeting' else '聊天')+'：'+txt[:180])
+                    t_state=get_task_state(p['id'],cid,'meeting')
+                    if t_state.get('paused'):
+                        db.commit();return self.respond({'user':user_msg,'reply':None,'replies':[],'paused':True,'auto_meeting':auto,'mode':mode,'taskState':t_state,'warning':'当前面对面生成已暂停，你的发言已保存。点击「恢复」后继续推进。'})
                     if public_connection()['mode']=='normal':
                         db.commit();return self.respond({'user':user_msg,'reply':None,'replies':[],'auto_meeting':auto,'mode':mode,'warning':'当前处于正常模式且尚未连接 API，请先在「终端」配置 API。'})
-                    engine='demo';warning='';settings=load_connection()
+                    engine='demo';warning='';settings=load_connection();api_error=None;reply=''
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
-                        try:reply=clean_meeting_novel_text(completion(compile_messages(db,p,c,mode,latest=txt),log_meta={'mode':mode,'entryPoint':'meeting-message' if mode=='meeting' else 'chat-message','profile':p,'character':c,'parseFn':clean_meeting_novel_text}));engine='live'
-                        except Exception as e:warning=str(e);reply='（模型连接失败，消息已保存。请检查终端设置后重试发送。）';engine='error'
+                        try:
+                            reply=clean_meeting_novel_text(completion(compile_messages(db,p,c,mode,latest=txt),log_meta={'mode':mode,'task_type':'meeting','entryPoint':'meeting-message','profile':p,'character':c,'parseFn':clean_meeting_novel_text}))
+                            engine='live'
+                        except Exception as e:
+                            warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
                     else:reply=clean_meeting_novel_text(demo_text(db,p,c,mode))
+                    if engine=='error':
+                        t_state['status']='error';t_state['last_error']=api_error;t_state['updated_at']=utc()
+                        db.commit();return self.respond({'user':user_msg,'reply':None,'replies':[],'auto_meeting':auto,'mode':mode,'warning':warning,'apiError':api_error,'taskState':t_state})
+                    clear_task_state(p['id'],cid,'meeting')
                     ai_msg=write_message(db,p['id'],cid,'ai',mode,reply,engine)
-                    if engine!='error':
-                        log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply[:180])
-                        record_dialogue_episode(db,p,c,[user_msg],ai_msg,mode)
+                    log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply[:180])
+                    record_dialogue_episode(db,p,c,[user_msg],ai_msg,mode)
                     db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),p['id'],cid))
-                    db.commit();return self.respond({'user':user_msg,'reply':ai_msg,'replies':[ai_msg],'auto_meeting':auto,'mode':mode,'warning':warning})
+                    db.commit();return self.respond({'user':user_msg,'reply':ai_msg,'replies':[ai_msg],'auto_meeting':auto,'mode':mode,'warning':warning,'taskState':get_task_state(p['id'],cid,'meeting')})
                 if route=='/api/settings':
                     d=load_connection();
                     if 'demo_enabled' in data:d['demo_enabled']=bool(data['demo_enabled'])

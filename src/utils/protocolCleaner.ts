@@ -142,7 +142,7 @@ export function splitChatBubbles(raw: string): string[] {
   let parts = explicitChatParts(rawStr);
   if (!parts.length && (isBareChatDivider(rawStr.replace(PROTOCOL_LEADING_TAG_RE,'')) || isNarrationMarker(cleanChatBubbleText(rawStr)))) return [];
 
-  if (parts.length === 1 && parts[0].length >= 32) {
+  if (parts.length === 1 && parts[0].length >= 120) {
     const sentences =
       parts[0]
         .match(/[^。！？!?]+[。！？!?]+|[^。！？!?]+$/g)
@@ -153,7 +153,7 @@ export function splitChatBubbles(raw: string): string[] {
       let buf = '';
       for (const s of sentences) {
         if (!buf) buf = s;
-        else if ((buf + s).length <= 26 && parts.length > 0) buf += s;
+        else if ((buf + s).length <= 48 || buf.length < 24) buf += s;
         else {
           parts.push(buf);
           buf = s;
@@ -432,3 +432,100 @@ export function sanitizeStoredDatabase(db: Record<string, any>): SanitizeStats {
 
   return stats;
 }
+
+export interface ProxyErrorDetectionResult {
+  error_type: string;
+  message: string;
+  detail: string;
+}
+
+const KNOWN_PROXY_ERROR_PATTERNS: Array<{
+  re: RegExp;
+  code: string;
+  title: string;
+}> = [
+  {
+    re: /所有\s*API\s*密钥均请求失败|具体错误请查看轮询日志/i,
+    code: 'PROXY_ALL_KEYS_FAILED',
+    title: '反代服务所有 API 密钥均请求失败（请检查反代轮询日志或更换可用密钥）',
+  },
+  {
+    re: /^(?:\s*\[?\s*(?:API\s*Error|Upstream\s*Error|Proxy\s*Error|OpenAI\s*Error|Claude\s*Error|Gemini\s*Error)\s*\]?\s*[:：])/i,
+    code: 'PROXY_WRAPPED_ERROR',
+    title: '反代或上游接口返回了包装在正文中的错误提示',
+  },
+  {
+    re: /^(?:\s*(?:Error|错误|请求失败|调用失败|上游错误|反代错误|网关错误)\s*[:：]\s*(?:HTTP\s*[45]\d{2}|status\s*code\s*[45]\d{2}|all\s*api\s*keys\s*failed|no\s*available\s*channel|channel\s*error|quota\s*exceeded|rate\s*limit\s*exceeded|invalid\s*api\s*key|model\s*not\s*found))/i,
+    code: 'PROXY_WRAPPED_ERROR',
+    title: '接口返回了错误状态提示',
+  },
+];
+
+/**
+ * Inspects assistant text returned under HTTP 200 for reverse-proxy error wrappers
+ * without misclassifying normal in-character dialogue that mentions words like "API", "404", "429", or "超时".
+ */
+export function detectProxyWrappedError(
+  rawText: unknown
+): ProxyErrorDetectionResult | null {
+  const s = String(rawText ?? '').trim();
+  if (!s) return null;
+
+  for (const item of KNOWN_PROXY_ERROR_PATTERNS) {
+    if (item.re.test(s) && s.length <= 600) {
+      return {
+        error_type: item.code,
+        message: item.title,
+        detail: s.slice(0, 500),
+      };
+    }
+  }
+
+  if (s.startsWith('{') && s.endsWith('}') && s.length <= 2000) {
+    try {
+      const parsed = JSON.parse(s);
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        parsed.error &&
+        !parsed.choices &&
+        !parsed.reply &&
+        !parsed.slots &&
+        !parsed.entry
+      ) {
+        const errMsg =
+          typeof parsed.error === 'string'
+            ? parsed.error
+            : parsed.error.message ||
+              parsed.error.code ||
+              parsed.error.type ||
+              JSON.stringify(parsed.error);
+        return {
+          error_type: 'HTTP_200_ERROR_OBJECT',
+          message: `接口返回错误对象：${String(errMsg).slice(0, 180)}`,
+          detail: s.slice(0, 500),
+        };
+      }
+    } catch {
+      // ignore non-JSON prose
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Checks whether a stored message row is a legacy error artifact (`engine === 'error'` or proxy error bubble).
+ */
+export function isLegacyErrorArtifact(
+  msg: { sender?: string; engine?: string; text?: string } | null | undefined
+): boolean {
+  if (!msg || typeof msg !== 'object') return false;
+  if (msg.engine === 'error') return true;
+  if (msg.sender === 'ai' && typeof msg.text === 'string') {
+    if (/^（生成失败：[\s\S]*）$/.test(msg.text.trim())) return true;
+    if (detectProxyWrappedError(msg.text)) return true;
+  }
+  return false;
+}
+

@@ -72,8 +72,8 @@ const cleanBodyText=(txt,sender='ai',preserveParagraphs=false)=>{
   if(globalThis.ParallelOffline?.stripProtocolTags)return globalThis.ParallelOffline.stripProtocolTags(s,{preserveParagraphs});
   return s.replace(/^(?:[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)[ \t]*)+/gm,'');
 };
-const api=async(path,data)=>{if(globalThis.ParallelOffline)return globalThis.ParallelOffline.request(path,data);const o=await fetch('/api'+path,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});let body;try{body=await o.json()}catch{throw Error('服务端没有返回 JSON')}if(!o.ok)throw Error(body.error||'请求失败');return body};
-const state={tab:'discover',profiles:[],sources:[],settings:{},activeId:(()=>{try{return localStorage.getItem('parallel-active-profile')||''}catch{return ''}})(),candidates:[],deckIndex:0,threads:[],threadId:'',messages:[],meetings:[],surveillanceMap:{},diaryMap:{},diarySummaryMap:{},lastKnownDate:localDateStr(),activeMeetingId:'',meetingLocation:'',hotChat:false,chatPlusOpen:false,profileMenuOpen:false,memoryCategory:'all',lastMemoriesData:null,chatMode:'chat',chatBusy:false,queue:{count:0,pendingIds:[],dueAt:0,remainingMs:0,status:'idle',blocked:false,paceMode:'daily',hotChat:false,delayMinutes:0,targetTimeLabel:'',scheduleReason:''},flushBusy:false,revealingBubbles:false,hiddenReplyIds:new Set(),lastSendAt:0,lastUserActiveAt:Date.now(),proactiveBusy:false,idleTickCount:0,terminalTab:'api',presetMode:'chat',presets:[],presetDiagnostics:{},systemLogs:[],logFilterMode:'all',profileDraft:null,identResults:[],editPresetId:null,presetImportDraft:null,loading:false,draftInputs:{},renderedThreadId:'',bgTickCount:0,apiCheckPrompted:false};
+const api=async(path,data)=>{if(globalThis.ParallelOffline)return globalThis.ParallelOffline.request(path,data);const o=await fetch('/api'+path,data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});let body;try{body=await o.json()}catch{throw Error('服务端没有返回 JSON')}if(!o.ok){const err=new Error(body.error||'请求失败');err.apiError=body.apiError||null;throw err;}return body};
+const state={tab:'discover',profiles:[],sources:[],settings:{},activeId:(()=>{try{return localStorage.getItem('parallel-active-profile')||''}catch{return ''}})(),candidates:[],deckIndex:0,threads:[],threadId:'',messages:[],meetings:[],surveillanceMap:{},diaryMap:{},diarySummaryMap:{},lastKnownDate:localDateStr(),activeMeetingId:'',meetingLocation:'',hotChat:false,chatPlusOpen:false,profileMenuOpen:false,memoryCategory:'all',lastMemoriesData:null,chatMode:'chat',chatBusy:false,queue:{count:0,pendingIds:[],dueAt:0,remainingMs:0,status:'idle',blocked:false,paused:false,paceMode:'daily',hotChat:false,delayMinutes:0,targetTimeLabel:'',scheduleReason:''},taskState:null,bgErrors:null,activeErrorContext:null,retryInflight:false,flushBusy:false,revealingBubbles:false,hiddenReplyIds:new Set(),lastSendAt:0,lastUserActiveAt:Date.now(),proactiveBusy:false,idleTickCount:0,terminalTab:'api',presetMode:'chat',presets:[],presetDiagnostics:{},systemLogs:[],logFilterMode:'all',profileDraft:null,identResults:[],editPresetId:null,presetImportDraft:null,loading:false,draftInputs:{},renderedThreadId:'',bgTickCount:0,apiCheckPrompted:false};
 const tabs=[{id:'profile',label:'我的',detail:'我的 Profile',icon:'user'},{id:'discover',label:'发现',detail:'发现心动',icon:'sparkleheart'},{id:'messages',label:'消息',detail:'你的消息',icon:'message'},{id:'terminal',label:'终端',detail:'终端设置',icon:'terminal'}];
 let toastTimer;
 function toast(text){const node=$('toast');node.textContent=text;node.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>node.classList.remove('show'),4000)}
@@ -172,34 +172,42 @@ function removeSourceTag(btn){btn.remove();$('pf-source-input')?.focus()}
 async function identifyAction(){const name=$('pf-name').value.trim();if(!name){toast('先填写姓名');return}try{const data=await api('/identify?name='+encodeURIComponent(name));const holder=$('identify-results');const selected=$('pf-role-id').value;holder.innerHTML=data.matches.length?`<div class="identify-box"><div class="caption">找到 ${data.matches.length} 个已收录的角色版本。请选择准确的平行世界身份：</div>${data.matches.map(c=>`<button type="button" class="ident-option ${selected===c.id?'active':''}" data-action="choose-identity" data-id="${esc(c.id)}">${I('usercheck')}<span><b>${esc(c.name)}</b> · ${esc(c.version)}<br><span class="subtle">${esc(c.source)}</span></span></button>`).join('')}<button type="button" class="btn ghost" data-action="clear-role">不使用原作身份</button></div>`:`<div class="notice">本地目录没有找到“${esc(name)}”。请在下方补充作品名称和时期；暂时不会假装已经确认原作设定。在线人物识别待接入外部可核实资料源。</div>`}catch(e){toast(e.message)}}
 async function uploadAvatar(e){const file=e.target.files?.[0];if(!file)return;if(!file.type.startsWith('image/')){toast('请选择图片');return}const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{const cv=document.createElement('canvas');const scale=Math.min(1,520/Math.max(img.width,img.height));cv.width=Math.round(img.width*scale);cv.height=Math.round(img.height*scale);cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);state.profileDraft=readProfileDraft();state.profileDraft.avatar=cv.toDataURL('image/jpeg',.74);URL.revokeObjectURL(url);renderProfile(state.profileDraft);toast('头像已添加，保存 Profile 后生效')};img.onerror=()=>toast('头像读取失败');img.src=url}
 // Discover and swipe
-// A discover batch belongs to one Profile and survives tab navigation, including an exhausted batch.
-const discoverDecks=new Map(),discoverRequests=new Map();
+// One discovery batch per Profile; tab navigation must not regenerate it.
+const discoverDecks=new Map(),discoverRequests=new Map(),discoverAllSources=new Set();
 function discoverFilterKey(p){return JSON.stringify([p.id,p.sources||[],p.interested_in||[],p.min_age,p.max_age,p.role_character_id||''])}
 function isCurrentDiscover(pid,key){const p=activeProfile();return state.tab==='discover'&&state.activeId===pid&&p&&discoverFilterKey(p)===key}
 function showDiscoverDeck(pid,deck){if(!isCurrentDiscover(pid,deck.key)||discoverDecks.get(pid)!==deck)return;state.candidates=deck.candidates;state.deckIndex=deck.index;renderDiscover(deck.total)}
 async function loadCandidates(showToast=false){$('topbar-actions').innerHTML=`${activeProfile()?`<button class="icon-btn" title="刷新 10 位候选" data-action="refresh">${I('refresh')}</button>${renderProfileDropdownHtml()}`:''}`;if(!activeProfile()){return $('view').innerHTML=empty('dog','先创建你的 Profile','填写身份与作品来源后，就可以开始滑卡。','创建 Profile','profile')}
     const profile=activeProfile(),pid=profile.id,key=discoverFilterKey(profile);
+    if(state.allowAllSources)discoverAllSources.add(pid);
     const cached=discoverDecks.get(pid),existing=discoverRequests.get(pid);
-    if(existing&&existing.key===key){try{await existing.promise}catch(e){if(isCurrentDiscover(pid,key))throw e}return;}
+    if(existing&&existing.key===key){await existing.promise;return;}
     if(cached&&cached.key===key&&(!showToast||state.loading)){showDiscoverDeck(pid,cached);return;}
     if(showToast&&state.loading)return;
-    if(!(activeProfile().sources||[]).length&&!state.allowAllSources){return $('view').innerHTML=`<div class="empty-state"><div class="empty-illustration">${I('compass')}</div><h2>还没有填写希望匹配的作品</h2><p>请先在你的 Profile 中添加「希望匹配的作品」Tag（如：生化危机、巫师3、漫威电影、赛博朋克2077），平行世界将只为你匹配对应作品中的角色。</p><div class="inline-row" style="justify-content:center"><button class="btn primary" data-action="nav" data-tab="profile">去添加作品 Tag ${I('arrow')}</button><button class="btn soft" data-action="allow-all-sources">不限作品 · 随机探索全部</button></div></div>`}
-    const request={key,promise:null};
-    discoverRequests.set(pid,request);
+    if(!(activeProfile().sources||[]).length&&!discoverAllSources.has(pid)){return $('view').innerHTML=`<div class="empty-state"><div class="empty-illustration">${I('compass')}</div><h2>还没有填写希望匹配的作品</h2><p>请先在你的 Profile 中添加「希望匹配的作品」Tag（如：生化危机、巫师3、漫威电影、赛博朋克2077），平行世界将只为你匹配对应作品中的角色。</p><div class="inline-row" style="justify-content:center"><button class="btn primary" data-action="nav" data-tab="profile">去添加作品 Tag ${I('arrow')}</button><button class="btn soft" data-action="allow-all-sources">不限作品 · 随机探索全部</button></div></div>`}
+    const request={key,promise:null};discoverRequests.set(pid,request);
     request.promise=(async()=>{
       try{
         const d=await api('/discover',{profileId:pid,refresh:Boolean(showToast)});
         if(discoverRequests.get(pid)!==request)return;
-        const deck={key,candidates:d.candidates,index:0,total:d.total_available};
-        discoverDecks.set(pid,deck);
+        if(d.apiError){
+          if(isCurrentDiscover(pid,key)){
+            if(cached&&cached.key===key)showDiscoverDeck(pid,cached);
+            else {$('view').innerHTML=empty('compass','候选加载失败','请重试或检查终端设置。','重试','discover');}
+            showApiErrorModal(d.apiError,null,{type:'discover_refresh',profileId:pid});
+          }
+          return;
+        }
+        const deck={key,candidates:d.candidates,index:0,total:d.total_available};discoverDecks.set(pid,deck);
         if(isCurrentDiscover(pid,key)){
           showDiscoverDeck(pid,deck);
           if(showToast)toast(`已刷新：${d.candidates.length} 位候选${d.generation==='live-generated'?' · AI 已重新生成角色档案':''}${d.candidates.length<10?'（当前目录不足 10 位）':''}`);
         }
       }catch(e){
         if(discoverRequests.get(pid)!==request||!isCurrentDiscover(pid,key))return;
-        if(cached&&cached.key===key){showDiscoverDeck(pid,cached);toast(e.message);return;}
-        throw e;
+        if(cached&&cached.key===key)showDiscoverDeck(pid,cached);
+        else $('view').innerHTML=empty('compass','候选加载失败','请重试或检查终端设置。','重试','discover');
+        if(e.apiError)showApiErrorModal(e.apiError,null,{type:'discover_refresh',profileId:pid});else toast(e.message);
       }finally{if(discoverRequests.get(pid)===request)discoverRequests.delete(pid);}
     })();
     return request.promise;
@@ -228,8 +236,14 @@ async function generateCardPortrait(regenerate=false,silent=false){
     if(!silent)toast('角色照片已生成');
   }catch(e){
     state.portraitFailed[c.id]=true;
-    if(!silent)toast('图片生成失败（已回退为文字描写）：'+e.message);
-    if(!silent)await photoDescriptionModal(false,true);
+    if(!silent){
+      if(e.apiError){
+        showApiErrorModal(e.apiError,null,{type:'portrait',characterId:c.id,regenerate});
+      }else{
+        toast('图片生成失败（已回退为文字描写）：'+e.message);
+        await photoDescriptionModal(false,true);
+      }
+    }
   }finally{
     state.portraitBusyId='';
     if(state.tab==='discover')renderDiscover();
@@ -246,16 +260,17 @@ async function doSwipe(direction){
     const res=await api('/swipe',{profileId:pid,characterId:c.id,direction});
     if(discoverDecks.get(pid)!==deck)return;
     deck.index=index+1;
-    if(res.warning&&state.activeId===pid)toast(res.warning);
     if(isCurrentDiscover(pid,deck.key)){state.deckIndex=deck.index;setTimeout(()=>showDiscoverDeck(pid,deck),130);}
     if(res.matched&&!res.already_matched){
       refreshInboxQuietly(pid);
-      setTimeout(()=>{if(isCurrentDiscover(pid,deck.key)&&discoverDecks.get(pid)===deck)matchModal(c,res)},330);
+      setTimeout(()=>{if(!isCurrentDiscover(pid,deck.key)||discoverDecks.get(pid)!==deck)return;
+        if(res.apiError)showApiErrorModal(res.apiError,res.taskState,{type:'first_message',characterId:c.id,profileId:pid});else matchModal(c,res);
+      },330);
     }else if(isCurrentDiscover(pid,deck.key)){
       if(res.already_matched)toast('你们已经在匹配列表中了');
       else if(direction==='right')toast(res.engine==='demo'?'对方这次没有选择匹配（演示判定）':'对方这次没有选择匹配');
     }
-  }catch(e){if(isCurrentDiscover(pid,deck.key)&&discoverDecks.get(pid)===deck){toast(e.message);if(card){card.style.transform='';card.style.opacity='1'}}}
+  }catch(e){if(isCurrentDiscover(pid,deck.key)&&discoverDecks.get(pid)===deck){if(e.apiError)showApiErrorModal(e.apiError,null,{type:'swipe',direction,profileId:pid,characterId:c.id});else toast(e.message);if(card){card.style.transform='';card.style.opacity='1'}}}
   finally{state.loading=false}
 }
 function matchModal(c,r){const isNormal=state.settings.mode==='normal';const html=`<div class="match-spotlight">${I('hearts')}<div class="match-text">IT'S A MATCH</div></div><h2>${r.again?'又遇见了，'+esc(c.name):'你们互相喜欢！'}</h2><p>${r.again?'你们之前的聊天和经历都还在。':(isNormal?'你们已经建立匹配，连接 API 后角色会用真实模型向你打招呼，你也可以现在先发消息。':'你可以现在开始聊天，角色也给你发来了第一条消息。')}${r.engine==='demo'?' 当前匹配判定为演示模式。':''}</p>`;modal(html,`<button class="btn ghost" data-action="close-modal">继续发现</button><button class="btn primary" data-action="open-match" data-id="${esc(c.id)}">${I('letter')} 去聊天</button>`)}
@@ -270,7 +285,10 @@ async function photoDescriptionModal(regenerate=false,forceText=false){const c=s
     const content=`<div class="kicker">A PHOTO, IN WORDS</div><h2>${esc(c.name)} 的照片</h2><p class="caption">${esc(c.source)} · ${esc(c.version)}</p><div class="photo-description-paper"><p>${esc(r.description)}</p></div><p class="caption">${state.settings.image_mode==='live'?'你也可以点击下方按钮使用图片 API 生成实际图片。':`当前未填写图片生成 API，使用文字呈现照片。${r.engine==='live-text'?'这段描写由你配置的文字模型生成。':'这是固定的文字示意；连接文字模型后可生成更细致的描写，或在终端填写图片 API 生成图片。'}`}</p>`;
     const buttons=`<button class="btn ghost" data-action="close-modal">关闭</button>${state.settings.mode==='live'?`<button class="btn soft" data-action="photo-description-refresh">${I('refresh')} 重新描写（文字 API）</button>`:''}${state.settings.image_mode==='live'?`<button class="btn primary" data-action="regenerate-portrait">${I('camera')} 用图片 API 生成照片</button>`:''}`;
     modal(content,buttons);
-  }catch(e){toast('照片文字描述失败：'+e.message)}
+  }catch(e){
+    if(e.apiError)showApiErrorModal(e.apiError,null,{type:'photo_description',characterId:c.id});
+    else toast('照片文字描述失败：'+e.message);
+  }
 }
 // Messages
 
@@ -331,6 +349,9 @@ async function loadThreads(preselect){$('topbar-actions').innerHTML=`<button cla
 function isCharacterTyping(){
   return Boolean(state.flushBusy||state.queue?.status==='inflight'||state.revealingBubbles||(state.chatBusy&&state.chatMode==='meeting'));
 }
+function isCurrentThreadPaused(){
+  return Boolean(state.queue?.paused||state.queue?.status==='paused'||state.taskState?.status==='paused');
+}
 async function loadThread(cid,render=true){
   const existingInput=$('chat-input');
   if(existingInput&&state.renderedThreadId)state.draftInputs[state.renderedThreadId]=existingInput.value;
@@ -343,12 +364,20 @@ async function loadThread(cid,render=true){
   if(r.surveillance)state.surveillanceMap[cid]=r.surveillance;
   if(r.diarySummary)state.diarySummaryMap[cid]=r.diarySummary;
   const tItem=state.threads.find(x=>x.character.id===cid);
-  if(tItem){if(r.character)tItem.character=r.character;tItem.last_incoming=state.messages.filter(isIncoming).at(-1)||null;}
+  if(tItem){
+    if(r.character)tItem.character=r.character;
+    tItem.last_incoming=state.messages.filter(isIncoming).at(-1)||null;
+    tItem.queue=r.queue||tItem.queue;
+    tItem.taskState=r.taskState||null;
+    tItem.bgErrors=r.bgErrors||null;
+  }
   state.chatMode=r.relation.mode;
   state.hotChat=Boolean(r.relation.hot_chat||r.queue?.hotChat);
   state.activeMeetingId=r.relation.active_meeting_id||'';
   state.meetingLocation=r.relation.meeting_location||'';
-  state.queue=r.queue||{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paceMode:state.hotChat?'hot':'daily',hotChat:state.hotChat};
+  state.queue=r.queue||{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paused:false,paceMode:state.hotChat?'hot':'daily',hotChat:state.hotChat};
+  state.taskState=r.taskState||r.queue?.taskState||null;
+  state.bgErrors=r.bgErrors||null;
   if(state.settings?.mode==='live'&&r.surveillance?.engine!=='live'){
     const pid=state.activeId;
     api('/surveillance',{profileId:pid,characterId:cid}).then(surv=>{
@@ -363,7 +392,8 @@ function renderMessagesListItems(){
     const lastTxt=cleanBodyText(rawLast,x.last?.sender||'ai');
     const dName=displayName(x.character);
     const hasNick=Boolean(x.character.nickname&&x.character.nickname!==x.character.name);
-    return `<button class="thread-card ${x.character.id===state.threadId?'active':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(dName)}${hasNick?`<span class="thread-truename-hint">（${esc(x.character.name)}）</span>`:''}${threadHasUnread(x)?'<span class="thread-unread-badge" title="有新消息" aria-label="有未读消息"></span>':''}</b><p>${esc(lastTxt)}</p></span></button>`;
+    const isPaused=Boolean(x.queue?.paused||x.queue?.status==='paused'||x.taskState?.status==='paused');
+    return `<button class="thread-card ${x.character.id===state.threadId?'active':''} ${isPaused?'is-paused-thread':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(dName)}${hasNick?`<span class="thread-truename-hint">（${esc(x.character.name)}）</span>`:''}${isPaused?'<span class="thread-paused-pill" title="该对话回复已暂停">已暂停</span>':''}${threadHasUnread(x)?'<span class="thread-unread-badge" title="有新消息" aria-label="有未读消息"></span>':''}</b><p>${esc(lastTxt)}</p></span></button>`;
   }).join('')}`;
 }
 function formatNovelParagraphs(text,sender='ai'){
@@ -499,17 +529,64 @@ function renderChatMessagesHtml(c){
     const recallBtn=canRecall?`<button type="button" class="msg-del-btn" data-action="delete-message" data-id="${esc(m.id)}" title="撤回此条消息" aria-label="撤回此条消息">撤回</button>`:'';
     let receiptHtml='';
     if(m.sender==='user'){
-      const isUnread=(m.id==='pending'||(pendingSet.has(m.id)&&!charTyping));
-      receiptHtml=isUnread
-        ?`<span class="msg-receipt is-sent" title="已发出">${I('sent','receipt-ic')}<em>已发出</em></span>`
-        :`<span class="msg-receipt is-read" title="对方已读">${I('read','receipt-ic')}<em>已读</em></span>`;
+      const isPending=(m.id==='pending'||(pendingSet.has(m.id)&&!charTyping));
+      const isPaused=isPending&&isCurrentThreadPaused();
+      if(isPaused){
+        receiptHtml=`<span class="msg-receipt is-paused" title="回复已暂停，点击恢复后将一并发送">${I('clock','receipt-ic')}<em>待回复 · 已暂停</em></span>`;
+      }else{
+        receiptHtml=isPending
+          ?`<span class="msg-receipt is-sent" title="已发出">${I('sent','receipt-ic')}<em>已发出</em></span>`
+          :`<span class="msg-receipt is-read" title="对方已读">${I('read','receipt-ic')}<em>已读</em></span>`;
+      }
     }
-    const time=`<span>${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示回复':''}${m.engine==='error'?' · 接口错误':''}</span>${receiptHtml}${recallBtn}`;
+    const time=`<span>${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示回复':''}</span>${receiptHtml}${recallBtn}`;
     return `<div class="bubble-row ${m.sender==='user'?'mine':''}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble">${esc(cleanBodyText(m.text,m.sender))}</div><div class="chat-time">${time}</div></div></div>`;
   }).join('');
 
   const typingHtml=charTyping?`<div class="typing-inline" role="status" aria-live="polite"><span class="typing-label">对方正在输入中</span><span class="typing-ellipsis"><i>.</i><i>.</i><i>.</i></span></div>`:'';
   return htmlParts+typingHtml;
+}
+function renderPausedTaskBanner(){
+  const paused=isCurrentThreadPaused();
+  const ts=state.taskState||state.queue?.taskState||null;
+  const err=ts?.last_error||null;
+  const pendingCount=state.chatMode==='chat'
+    ?(state.queue?.pendingIds?.length||ts?.pending_ids?.length||0)
+    :(ts?.pending_ids?.length||0);
+  const bgList=state.bgErrors?Object.values(state.bgErrors):[];
+  let bgHtml='';
+  if(bgList.length&&!paused){
+    const latestBg=bgList[bgList.length-1];
+    bgHtml=`<div class="bg-error-inline-bar" data-testid="bg-error-banner">
+      <div class="bg-error-inline-text">
+        <span class="bg-error-dot"></span>
+        <span>后台任务（${esc(latestBg.task_label||latestBg.task_type)}）上次同步未成功（${esc(latestBg.error_code||'API_ERROR')}），已保留原有数据。</span>
+      </div>
+      <div class="bg-error-inline-actions">
+        <button type="button" class="btn ghost tiny-btn" data-action="api-error-open-logs">查看日志</button>
+        <button type="button" class="btn ghost tiny-btn" data-action="dismiss-bg-error">忽略</button>
+      </div>
+    </div>`;
+  }
+  if(!paused)return bgHtml;
+  const codeBadge=err?.http_status?`HTTP ${err.http_status}`:(err?.error_code||'PAUSED');
+  const reasonText=err?.title||(state.chatMode==='meeting'?'面对面小说生成已暂停':'手机聊天回复已暂停');
+  const pendingHint=pendingCount>0
+    ?`已安全保留 ${pendingCount} 条待回复消息；暂停期间发送的新消息将按顺序排入队列，不会自动触发调用。`
+    :'当前任务的自动请求已停止；你的历史记录与角色记忆完好无损。';
+  return `<div class="paused-task-banner" id="paused-task-banner" data-testid="paused-task-banner" role="region" aria-label="回复已暂停状态提示">
+    <div class="paused-task-main">
+      <div class="paused-task-title-row">
+        <span class="paused-task-badge">${esc(codeBadge)}</span>
+        <strong class="paused-task-headline">回复已暂停 · 点击恢复</strong>
+      </div>
+      <p class="paused-task-desc">${esc(reasonText)} · ${esc(pendingHint)}</p>
+    </div>
+    <div class="paused-task-actions">
+      <button type="button" class="btn soft tiny-btn" data-action="api-error-show-detail" data-testid="paused-banner-detail-btn">错误详情</button>
+      <button type="button" class="btn primary tiny-btn" data-action="api-error-retry" data-testid="paused-banner-resume-btn" ${state.retryInflight?'disabled':''}>${I('refresh')} ${state.retryInflight?'恢复中…':'点击恢复'}</button>
+    </div>
+  </div>`;
 }
 function renderHeaderModeButton(meeting){
   if(meeting){
@@ -564,6 +641,8 @@ function renderMessages(){
     chatBodyEl.className=`chat-body ${meeting?'meeting-novel-body':''}`;
     chatBodyEl.innerHTML=renderChatMessagesHtml(selected.character);
     chatBodyEl.scrollTop=chatBodyEl.scrollHeight;
+    const bannerSlot=$('chat-paused-banner-slot');
+    if(bannerSlot)bannerSlot.innerHTML=renderPausedTaskBanner();
     existingInput.placeholder=meeting?'写下你在见面时的动作、神态或台词……':'输入消息……';
     const sendBtn=layoutEl.querySelector('#chat-form .send');
     if(sendBtn)sendBtn.disabled=isBusy;
@@ -606,7 +685,7 @@ function renderChat(thread){
     <span class="chat-plus-icon">${I(item.icon)}</span>
     <span class="chat-plus-label">${item.label}</span>
   </button>`).join('');
-  return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表" title="返回列表">${I('back')}</button><button type="button" class="chat-avatar-trigger" data-action="open-char-hub" aria-label="打开角色专属空间" title="点击打开角色专属空间（监控、日记、记忆档案与备注）">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b title="${esc(dName)}">${esc(dName)}</b><small class="${charTyping?'typing-header-hint':''}" title="${esc(subText)}">${charTyping?'对方正在输入中…':esc(subText)}</small></div></button></div><div class="chat-header-actions"><span id="chat-mode-btn-slot">${renderHeaderModeButton(meeting)}</span><button type="button" class="icon-btn danger-icon" data-action="unmatch" aria-label="解除匹配" title="解除匹配">${I('unmatch')}</button></div></div><div id="chat-body" class="chat-body ${meeting?'meeting-novel-body':''}">${renderChatMessagesHtml(c)}</div><form id="chat-form" class="chat-compose"><textarea id="chat-input" rows="1" placeholder="${meeting?'写下你在见面时的动作、神态或台词……':'输入消息……'}" maxlength="4000" required></textarea><button class="send" type="submit" title="发送消息" ${isBusy?'disabled':''}>${I('send')}</button><button class="chat-plus-btn ${plusOpen?'active':''}" type="button" data-action="toggle-chat-plus" aria-label="更多功能" aria-expanded="${plusOpen?'true':'false'}" title="更多功能（照片、语音、表情包、电话、视频电话）">${I('plus')}</button></form><div id="chat-plus-panel" class="chat-plus-panel ${plusOpen?'open':''}" role="region" aria-label="聊天扩展功能面板"><div class="chat-plus-grid">${plusItemsHtml}</div></div><div class="chat-queue-status" id="chat-queue-status" aria-live="polite"></div>`;
+  return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表" title="返回列表">${I('back')}</button><button type="button" class="chat-avatar-trigger" data-action="open-char-hub" aria-label="打开角色专属空间" title="点击打开角色专属空间（监控、日记、记忆档案与备注）">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b title="${esc(dName)}">${esc(dName)}</b><small class="${charTyping?'typing-header-hint':''}" title="${esc(subText)}">${charTyping?'对方正在输入中…':esc(subText)}</small></div></button></div><div class="chat-header-actions"><span id="chat-mode-btn-slot">${renderHeaderModeButton(meeting)}</span><button type="button" class="icon-btn danger-icon" data-action="unmatch" aria-label="解除匹配" title="解除匹配">${I('unmatch')}</button></div></div><div id="chat-body" class="chat-body ${meeting?'meeting-novel-body':''}">${renderChatMessagesHtml(c)}</div><div id="chat-paused-banner-slot">${renderPausedTaskBanner()}</div><form id="chat-form" class="chat-compose"><textarea id="chat-input" rows="1" placeholder="${meeting?'写下你在见面时的动作、神态或台词……':'输入消息……'}" maxlength="4000" required></textarea><button class="send" type="submit" title="发送消息" ${isBusy?'disabled':''}>${I('send')}</button><button class="chat-plus-btn ${plusOpen?'active':''}" type="button" data-action="toggle-chat-plus" aria-label="更多功能" aria-expanded="${plusOpen?'true':'false'}" title="更多功能（照片、语音、表情包、电话、视频电话）">${I('plus')}</button></form><div id="chat-plus-panel" class="chat-plus-panel ${plusOpen?'open':''}" role="region" aria-label="聊天扩展功能面板"><div class="chat-plus-grid">${plusItemsHtml}</div></div><div class="chat-queue-status" id="chat-queue-status" aria-live="polite"></div>`;
 }
 function openCharacterHubModal(editingNick=false){
   const thread=state.threads.find(x=>x.character.id===state.threadId);
@@ -691,6 +770,10 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
   try{
     const data=await api('/surveillance',{profileId:state.activeId,characterId:c.id,date:selectedDate||'',refresh:Boolean(forceRefresh)});
     if(data.isToday!==false)state.surveillanceMap[c.id]=data;
+    if(forceRefresh&&data.apiError){
+      showApiErrorModal(data.apiError,null,{type:'surveillance',characterId:c.id,date:selectedDate||''});
+      return;
+    }
     const isToday=data.isToday!==false;
     const cur=data.current||{};
     const unlocked=data.unlockedSlots||[];
@@ -719,6 +802,7 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
           ${state.settings?.mode==='live'?`<button type="button" class="btn soft tiny-btn" data-action="refresh-surveillance" data-date="${esc(curDateVal)}">${I('refresh')} 同步</button>`:''}
         </div>
       </div>
+      ${data.bgError?`<div class="preset-diag-warn" style="margin-bottom:10px"><span>上次自动生成监控未成功（${esc(data.bgError.error_code)}：${esc(data.bgError.title)}），当前展示已保留的有效日程。</span></div>`:''}
       ${isToday?`<div class="surv-live-card">
         <div class="surv-live-head">
           <span class="surv-live-badge"><i class="surv-live-dot"></i> 此刻实时画面 · ${esc(cur.status||'日常活动')}</span>
@@ -762,6 +846,10 @@ async function openDiaryModal(selectedDate='',forceRefresh=false){
     const data=await api('/diary',{profileId:state.activeId,characterId:c.id,date:selectedDate||'',refresh:Boolean(forceRefresh)});
     state.diaryMap[c.id]=data;
     state.diarySummaryMap[c.id]={latestDate:data.latestDate,availableDates:data.availableDates,latestTitle:data.diary?.title||''};
+    if(forceRefresh&&data.apiError){
+      showApiErrorModal(data.apiError,null,{type:'diary',characterId:c.id,date:selectedDate||''});
+      return;
+    }
     const diary=data.diary||{};
     const isLatest=(diary.date===data.latestDate);
     const curDiaryDate=diary.date||data.latestDate||localDateStr();
@@ -782,6 +870,7 @@ async function openDiaryModal(selectedDate='',forceRefresh=false){
           ${state.settings?.mode==='live'?`<button type="button" class="btn soft tiny-btn" data-action="refresh-diary" data-date="${esc(curDiaryDate)}">${I('refresh')} 重新执笔</button>`:''}
         </div>
       </div>
+      ${data.bgError?`<div class="preset-diag-warn" style="margin-bottom:10px"><span>上次自动执笔日记未成功（${esc(data.bgError.error_code)}：${esc(data.bgError.title)}），当前展示已保留的日记内容。</span></div>`:''}
       <article class="diary-sheet">
         <header class="diary-sheet-head">
           <div class="diary-meta-pills">
@@ -979,24 +1068,50 @@ async function flushChat(force=false){if(state.flushBusy||state.chatBusy||state.
   if(state.tab==='messages'&&state.threadId===id)renderMessages();
   try{
     const r=await api('/chat-flush',{profileId,characterId:id,force});
-    if(r.warning)toast(r.warning);
     state.flushBusy=false;
+    if(r.apiError){
+      if(r.queue)state.queue=r.queue;
+      if(r.taskState)state.taskState=r.taskState;
+      if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages'){
+        await loadThreads(id);
+        showApiErrorModal(r.apiError,r.taskState,{type:'chat_flush',profileId,characterId:id,mode:'chat'});
+      }else{
+        await refreshInboxSnapshot(profileId);
+      }
+      return;
+    }
+    if(r.warning)toast(r.warning);
     if(r.replies&&r.replies.length>1){
       await revealMultipleBubbles(r.replies,profileId,id);
     }else if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages'){
       await loadThreads(id);
     }else if(state.activeId===profileId){await refreshInboxSnapshot(profileId);}
-  }catch(e){state.flushBusy=false;toast('发送失败：'+e.message);if(state.tab==='messages'&&state.threadId===id)renderMessages()}
+  }catch(e){
+    state.flushBusy=false;
+    if(e.apiError)showApiErrorModal(e.apiError,null,{type:'chat_flush',profileId,characterId:id,mode:'chat'});
+    else toast('发送失败：'+e.message);
+    if(state.tab==='messages'&&state.threadId===id)renderMessages();
+  }
 }
 async function flushBackgroundQueues(){
   if(state.flushBusy||state.chatBusy||state.revealingBubbles||!state.activeId)return;
   state.flushBusy=true;const profileId=state.activeId;
+  const activeCid=(state.tab==='messages'&&state.threadId)?state.threadId:'';
   try{
-    const r=await api('/chat-flush-due',{profileId});
+    const r=await api('/chat-flush-due',{profileId,activeCharacterId:activeCid});
     const list=r?.flushed||[];
     for(const item of list){
-      if(item.warning)toast(`${item.characterName} 回复失败：${item.warning}`);
-      else if(item.reply)toast(`收到来自 ${item.characterName} 的新消息`);
+      if(item.apiError){
+        if(!item.background&&state.tab==='messages'&&state.threadId===item.characterId){
+          showApiErrorModal(item.apiError,item.taskState,{type:'chat_flush',profileId,characterId:item.characterId,mode:'chat'});
+        }else{
+          toast(`${item.characterName} 后台回复已暂停（${item.apiError.title||item.apiError.error_code}）`);
+        }
+      }else if(item.warning){
+        toast(`${item.characterName} 回复失败：${item.warning}`);
+      }else if(item.reply){
+        toast(`收到来自 ${item.characterName} 的新消息`);
+      }
     }
     if(list.length&&state.activeId===profileId){
       if(state.tab==='messages')await loadThreads(state.threadId);
@@ -1052,14 +1167,14 @@ async function tickChatQueue(){
           state.diaryMap[state.threadId]=d;
           state.diarySummaryMap[state.threadId]={latestDate:d.latestDate,availableDates:d.availableDates,latestTitle:d.diary?.title||''};
         }
-        toast('已过零点 · 已根据前日监控自动生成角色最新日记');
+        if(d&&!d.bgError)toast('已过零点 · 已根据前日监控自动生成角色最新日记');
       }).catch(()=>{});
     }
   }
   if(state.tab==='messages'&&state.threadId&&state.chatMode==='chat'){
     updateQueueCountdown();
     const q=state.queue;
-    if(q?.count>0&&!q.blocked&&q.status!=='inflight'&&!state.chatBusy&&!state.flushBusy&&!state.revealingBubbles){
+    if(q?.count>0&&!q.blocked&&!q.paused&&q.status!=='paused'&&q.status!=='inflight'&&!isCurrentThreadPaused()&&!state.chatBusy&&!state.flushBusy&&!state.revealingBubbles){
       const now=Date.now();
       const isHot=Boolean(state.hotChat||q.paceMode==='hot');
       const effectiveDue=isHot?Math.max(Number(q.dueAt||0),(state.lastSendAt||0)+60000):Number(q.dueAt||0);
@@ -1098,18 +1213,51 @@ async function toggleHotChat(){
 async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
   const input=$('chat-input'),txt=input?.value.trim();if(!txt)return;
   state.chatBusy=true;const id=state.threadId,mode=state.chatMode,profileId=state.activeId;
+  const wasPaused=isCurrentThreadPaused();
   input.value='';state.draftInputs[id]='';state.lastSendAt=Date.now();
   const now=new Date().toISOString();state.messages.push({id:'pending',sender:'user',mode,text:txt,created_at:now,engine:'human'});
-  if(mode==='meeting')state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:now,engine:'human'});
+  if(mode==='meeting'&&!wasPaused)state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:now,engine:'human'});
   renderMessages();
-  try{const r=await api('/message',{profileId,characterId:id,text:txt});if(r.warning)toast(r.warning);if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);else refreshInboxQuietly(profileId)}
-  catch(e){toast(e.message);if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}
-  finally{state.chatBusy=false;if(state.tab==='messages'&&state.threadId===id){renderMessages();const el=$('chat-input');if(el)el.focus()}}
+  try{
+    const r=await api('/message',{profileId,characterId:id,text:txt});
+    if(r.queue)state.queue=r.queue;
+    if(r.taskState)state.taskState=r.taskState;
+    if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);
+    else refreshInboxQuietly(profileId);
+    if(r.apiError){
+      showApiErrorModal(r.apiError,r.taskState,{type:'message',profileId,characterId:id,mode});
+    }else if(r.paused&&wasPaused){
+      toast('消息已保存并按顺序加入待回复队列（当前处于暂停状态，点击「点击恢复」后发送）');
+    }else if(r.warning){
+      toast(r.warning);
+    }
+  }catch(e){
+    if(e.apiError)showApiErrorModal(e.apiError,null,{type:'message',profileId,characterId:id,mode});
+    else toast(e.message);
+    if(state.activeId===profileId&&state.threadId===id)await loadThreads(id);
+  }finally{state.chatBusy=false;if(state.tab==='messages'&&state.threadId===id){renderMessages();const el=$('chat-input');if(el)el.focus()}}
 }
 async function continueReply(){if(state.chatBusy||state.flushBusy||state.queue?.status==='inflight'||!state.threadId)return;
   if(state.chatMode==='chat'&&state.queue?.count){return flushChat(true)}
   state.chatBusy=true;const id=state.threadId,profileId=state.activeId,mode=state.chatMode;state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:new Date().toISOString(),engine:'human'});renderMessages();
-  try{const r=await api('/reply',{profileId,characterId:id});if(r.warning)toast(r.warning);if(r.replies&&r.replies.length>1){state.chatBusy=false;await revealMultipleBubbles(r.replies,profileId,id);return}if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);else refreshInboxQuietly(profileId)}catch(e){toast(e.message);if(state.activeId===profileId&&state.threadId===id)await loadThreads(id)}finally{state.chatBusy=false;if(state.tab==='messages'&&state.activeId===profileId&&state.threadId===id)renderMessages()}
+  try{
+    const r=await api('/reply',{profileId,characterId:id});
+    if(r.taskState)state.taskState=r.taskState;
+    if(r.apiError){
+      state.chatBusy=false;
+      if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);
+      showApiErrorModal(r.apiError,r.taskState,{type:'reply',profileId,characterId:id,mode});
+      return;
+    }
+    if(r.warning)toast(r.warning);
+    if(r.replies&&r.replies.length>1){state.chatBusy=false;await revealMultipleBubbles(r.replies,profileId,id);return}
+    if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);
+    else refreshInboxQuietly(profileId);
+  }catch(e){
+    if(e.apiError)showApiErrorModal(e.apiError,null,{type:'reply',profileId,characterId:id,mode});
+    else toast(e.message);
+    if(state.activeId===profileId&&state.threadId===id)await loadThreads(id);
+  }finally{state.chatBusy=false;if(state.tab==='messages'&&state.activeId===profileId&&state.threadId===id)renderMessages()}
 }
 async function deleteMessage(mid){
   if(!mid||!state.threadId||state.chatBusy)return;
@@ -1138,14 +1286,19 @@ async function changeMode(){
       state.flushBusy=true;
       renderMessages();
       const r=await api('/mode',{profileId,characterId:id,mode:'meeting',triggerOpening:true});
-      if(r.warning)toast(r.warning);
       state.flushBusy=false;
       await loadThreads(id);
-      toast('已进入面对面文字小说页面');
+      if(r.apiError){
+        showApiErrorModal(r.apiError,r.taskState,{type:'meeting_opening',profileId,characterId:id,mode:'meeting'});
+      }else{
+        if(r.warning)toast(r.warning);
+        toast('已进入面对面文字小说页面');
+      }
     }catch(e){
       state.flushBusy=false;
       renderMessages();
-      toast(e.message);
+      if(e.apiError)showApiErrorModal(e.apiError,null,{type:'meeting_opening',profileId,characterId:id,mode:'meeting'});
+      else toast(e.message);
     }
     return;
   }
@@ -1169,7 +1322,7 @@ function renderPortableBackup(){return `<div class="terminal-card"><div class="k
 function exportBackup(){const raw=globalThis.ParallelOffline.exportData(),blob=new Blob([raw],{type:'application/json'}),href=URL.createObjectURL(blob),a=document.createElement('a');a.href=href;a.download='Parallel_Backup_'+new Date().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),2000);toast('存档已导出（不包含 API Key）')}
 let pendingRestoreText='';
 async function importBackup(file){if(!file)return;try{pendingRestoreText=await file.text();modal(`<h2>恢复存档确认</h2><p>这将用备份文件 <b>${esc(file.name)}</b> 覆盖当前存档。确定继续吗？</p>`,`<button class="btn ghost" data-action="close-modal">取消</button><button class="btn primary" data-action="confirm-restore-backup">确认恢复</button>`)}catch(e){toast('读取备份失败：'+e.message)}}
-async function confirmRestoreBackup(){if(!pendingRestoreText)return;try{const r=globalThis.ParallelOffline.importData(pendingRestoreText);pendingRestoreText='';closeModal();state.activeId='';state.profileDraft=null;state.threadId='';state.renderedThreadId='';state.draftInputs={};discoverDecks.clear();discoverRequests.clear();state.candidates=[];state.deckIndex=0;state.threads=[];state.messages=[];await bootstrap();toast(`已恢复 ${r.profiles} 个 Profile、${r.messages} 条消息，请重新填写 API Key`)}catch(e){toast('恢复失败：'+e.message)}}
+async function confirmRestoreBackup(){if(!pendingRestoreText)return;try{const r=globalThis.ParallelOffline.importData(pendingRestoreText);pendingRestoreText='';closeModal();state.activeId='';state.profileDraft=null;state.threadId='';state.renderedThreadId='';state.draftInputs={};discoverDecks.clear();discoverRequests.clear();discoverAllSources.clear();state.candidates=[];state.deckIndex=0;state.threads=[];state.messages=[];await bootstrap();toast(`已恢复 ${r.profiles} 个 Profile、${r.messages} 条消息，请重新填写 API Key`)}catch(e){toast('恢复失败：'+e.message)}}
 
 const modelPickerConfig={
   chat:{input:'api-model',url:'api-url',key:'api-key',settingUrl:'base_url',hasKey:'has_key',route:'/models',label:'聊天模型'},
@@ -1417,7 +1570,192 @@ async function savePreset(id){try{await api('/preset',{id:id||undefined,mode:sta
 async function togglePreset(id){const p=state.presets.find(x=>x.id===id);if(!p)return;await api('/preset', {...p,enabled:!p.enabled});await refreshPresets()}
 async function movePreset(id,dir){const list=state.presets.filter(x=>x.mode===state.presetMode).sort((a,b)=>a.sort_order-b.sort_order),idx=list.findIndex(x=>x.id===id);if(idx<0||idx+dir<0||idx+dir>=list.length)return;[list[idx],list[idx+dir]]=[list[idx+dir],list[idx]];await api('/preset',{action:'order',ids:list.map(x=>x.id)});await refreshPresets()}
 function modal(html,buttons){$('modal-root').innerHTML=`<div class="modal-overlay" id="modal-overlay"><div class="modal" role="dialog" aria-modal="true"><button class="icon-btn modal-close" data-action="close-modal">${I('x')}</button>${html}<div class="modal-actions">${buttons||`<button class="btn soft" data-action="close-modal">好的</button>`}</div></div></div>`}
-function closeModal(){$('modal-root').innerHTML=''}
+function closeModal(){
+  if(state.activeErrorContext){
+    state.activeErrorContext=null;
+    if(state.tab==='messages')renderMessages();
+  }
+  $('modal-root').innerHTML='';
+}
+function showApiErrorModal(apiError,taskState=null,retryContext=null){
+  const ts=taskState||state.taskState||state.queue?.taskState||null;
+  const err=apiError||ts?.last_error||{
+    error_code:'API_ERROR',
+    http_status:0,
+    title:'模型接口调用未成功',
+    message:'当前请求未能获得有效的模型回复，已被统一错误网关拦截。',
+    character_name:state.threads.find(x=>x.character.id===state.threadId)?.character?.name||'',
+    task_label:state.chatMode==='meeting'?'面对面小说推进':'手机聊天回复',
+    user_message_saved:true
+  };
+  const charName=err.character_name||ts?.character_name||state.threads.find(x=>x.character.id===(err.character_id||state.threadId))?.character?.name||'全局任务';
+  const taskLabel=err.task_label||ts?.task_label||'模型生成任务';
+  const statusBadge=err.http_status?`HTTP ${err.http_status} · ${err.error_code||'ERROR'}`:(err.error_code||'API_ERROR');
+  const needsTerminal=Boolean(err.suggest_terminal||[400,401,403,404].includes(Number(err.http_status))||/CONFIG|KEY|AUTH|401|403|404|PROXY/i.test(String(err.error_code||'')));
+  const retryAfterSec=Number(err.retry_after)||0;
+  state.activeErrorContext={
+    apiError:err,
+    taskState:ts,
+    retryContext:retryContext||{
+      type:state.chatMode==='meeting'?'meeting':'chat_flush',
+      profileId:err.profile_id||ts?.profile_id||state.activeId,
+      characterId:err.character_id||ts?.character_id||state.threadId,
+      mode:ts?.mode||state.chatMode||'chat'
+    }
+  };
+  const html=`<div class="api-error-modal-body" data-testid="api-error-modal">
+    <div class="api-error-top-row">
+      <span class="kicker">API ERROR GATEWAY · 错误拦截保护</span>
+      <span class="api-error-code-badge" data-testid="api-error-code">${esc(statusBadge)}</span>
+    </div>
+    <h2 class="api-error-title" data-testid="api-error-title">${esc(err.title||'模型接口请求失败')}</h2>
+    <p class="api-error-message" data-testid="api-error-message">${esc(err.message||'请求未能完成，已拦截异常响应以保护聊天存档与角色记忆。')}</p>
+    <div class="api-error-meta-card">
+      <div class="api-error-meta-item">
+        <small>涉及角色</small>
+        <b data-testid="api-error-character">${esc(charName)}</b>
+      </div>
+      <div class="api-error-meta-item">
+        <small>失败任务类型</small>
+        <b data-testid="api-error-task-type">${esc(taskLabel)}</b>
+      </div>
+      <div class="api-error-meta-item">
+        <small>状态码 / 错误类型</small>
+        <b>${esc(statusBadge)}</b>
+      </div>
+      <div class="api-error-meta-item">
+        <small>重试次数</small>
+        <b>第 ${Number(ts?.attempt||1)} 次尝试</b>
+      </div>
+    </div>
+    <div class="api-error-safe-banner" data-testid="api-error-saved-notice">
+      ${I('shield','inline-doodle-ic')}
+      <span><b>你的消息已安全保存，未丢失。</b>异常响应已被拦截，不会写入角色气泡、聊天上下文或角色记忆档案。</span>
+    </div>
+    ${retryAfterSec>0?`<div class="api-error-hint-box is-rate-limit" data-testid="api-error-retry-after">
+      ${I('clock','inline-doodle-ic')}
+      <span>服务商建议等待时间（Retry-After）：建议等待约 <b>${retryAfterSec} 秒</b> 后再点击重试。</span>
+    </div>`:''}
+    ${err.may_consume_tokens?`<div class="api-error-hint-box is-token-warn" data-testid="api-error-token-warn">
+      ${I('info','inline-doodle-ic')}
+      <span>注意：请求超时或网络中断时，上游服务商可能已处理该请求，手动重试可能产生额外 Token 消耗。</span>
+    </div>`:''}
+    ${err.detail?`<details class="api-error-detail-fold">
+      <summary>查看上游接口原始报错摘要</summary>
+      <pre class="syslog-pre">${esc(err.detail)}</pre>
+    </details>`:''}
+    <div class="api-error-quick-links">
+      <button type="button" class="btn ghost tiny-btn" data-action="api-error-open-logs" data-testid="api-error-logs-btn">${I('monitor')} 查看系统日志</button>
+      ${needsTerminal?`<button type="button" class="btn soft tiny-btn" data-action="api-error-go-terminal" data-testid="api-error-terminal-btn">${I('terminal')} 前往终端检查 API 配置</button>`:''}
+    </div>
+  </div>`;
+  const buttons=`<button type="button" class="btn soft" data-action="api-error-pause" data-testid="api-error-pause-btn">暂停调用</button><button type="button" class="btn primary" data-action="api-error-retry" data-testid="api-error-retry-btn" ${state.retryInflight?'disabled':''}>${I('refresh')} ${state.retryInflight?'正在重试…':'重试'}</button>`;
+  modal(html,buttons);
+}
+async function pauseFailedApiTask(toastMsg='已暂停当前对话的模型调用；点击聊天页「点击恢复」可随时继续'){
+  const ctx=state.activeErrorContext;
+  const pid=ctx?.retryContext?.profileId||state.activeId;
+  const cid=ctx?.retryContext?.characterId||state.threadId;
+  const mode=ctx?.retryContext?.mode||state.chatMode||'chat';
+  state.activeErrorContext=null;
+  closeModal();
+  if(pid&&cid&&!['discover_refresh','swipe','portrait','photo_description'].includes(ctx?.retryContext?.type)){
+    try{
+      const r=await api('/task-action',{profileId:pid,characterId:cid,mode,action:'pause'});
+      if(cid===state.threadId){
+        if(r.queue)state.queue=r.queue;
+        if(r.taskState)state.taskState=r.taskState;
+      }
+      if(state.tab==='messages')await loadThreads(state.threadId||cid);
+    }catch{}
+  }
+  if(toastMsg)toast(toastMsg);
+}
+async function retryFailedApiTask(){
+  if(state.retryInflight)return;
+  const ctx=state.activeErrorContext;
+  const rCtx=ctx?.retryContext||{
+    type:state.chatMode==='meeting'?'meeting':'chat_flush',
+    profileId:state.activeId,
+    characterId:state.threadId,
+    mode:state.chatMode||'chat'
+  };
+  const pid=rCtx.profileId||state.activeId;
+  const cid=rCtx.characterId||state.threadId;
+  const mode=rCtx.mode||state.chatMode||'chat';
+  state.retryInflight=true;
+  const retryBtn=document.querySelector('[data-action="api-error-retry"]');
+  if(retryBtn){retryBtn.disabled=true;retryBtn.textContent='正在重试…';}
+  try{
+    if(rCtx.type==='discover_refresh'){
+      if(pid!==state.activeId||state.tab!=='discover'){state.activeErrorContext=null;closeModal();toast('请回到原身份的发现页再刷新。');return;}
+      state.activeErrorContext=null;
+      closeModal();
+      await loadCandidates(true);
+      return;
+    }
+    if(rCtx.type==='swipe'){
+      state.activeErrorContext=null;closeModal();
+      if(pid===state.activeId&&state.tab==='discover'&&state.candidates[state.deckIndex]?.id===cid)await doSwipe(rCtx.direction);else toast('原候选已变化，请回到对应卡片再尝试。');
+      return;
+    }
+    if(rCtx.type==='portrait'){
+      state.activeErrorContext=null;
+      closeModal();
+      await generateCardPortrait(Boolean(rCtx.regenerate),false);
+      return;
+    }
+    if(rCtx.type==='photo_description'){
+      state.activeErrorContext=null;
+      closeModal();
+      await photoDescriptionModal(true,true);
+      return;
+    }
+    if(rCtx.type==='surveillance'){
+      state.activeErrorContext=null;
+      closeModal();
+      await openSurveillanceModal(true,rCtx.date||'');
+      return;
+    }
+    if(rCtx.type==='diary'){
+      state.activeErrorContext=null;
+      closeModal();
+      await openDiaryModal(rCtx.date||'',true);
+      return;
+    }
+    state.activeErrorContext=null;
+    closeModal();
+    if(state.tab==='messages'&&state.threadId===cid){
+      state.flushBusy=true;
+      renderMessages();
+    }
+    const res=await api('/task-action',{profileId:pid,characterId:cid,mode,action:'retry'});
+    state.flushBusy=false;
+    if(res.queue&&cid===state.threadId)state.queue=res.queue;
+    state.taskState=res.taskState||null;
+    if(res.apiError){
+      if(state.tab==='messages'&&state.activeId===pid)await loadThreads(state.threadId||cid);
+      showApiErrorModal(res.apiError,res.taskState,rCtx);
+      return;
+    }
+    if(res.replies&&res.replies.length>1&&state.tab==='messages'&&state.threadId===cid){
+      await revealMultipleBubbles(res.replies,pid,cid);
+    }else if(state.tab==='messages'&&state.activeId===pid){
+      await loadThreads(state.threadId||cid);
+    }else{
+      await refreshInboxSnapshot(pid);
+    }
+    toast('重试成功 · 角色回复已生成');
+  }catch(e){
+    state.flushBusy=false;
+    if(e.apiError)showApiErrorModal(e.apiError,state.taskState,rCtx);
+    else toast('重试失败：'+e.message);
+    if(state.tab==='messages')renderMessages();
+  }finally{
+    state.retryInflight=false;
+    if(state.tab==='messages')renderMessages();
+  }
+}
 // Central action delegation
 addEventListener('click',async e=>{
 if(state.profileMenuOpen&&!e.target.closest('#topbar-profile-dropdown')){
@@ -1511,7 +1849,45 @@ if(a==='choose-api-mode'){
   if(state.tab==='terminal')renderTerminal();
   return toast(useDemo?'已进入演示模式':'已保持正常模式（未连接 API）');
 }
-if(a==='close-modal')return closeModal();
+if(a==='close-modal'){
+  if(state.activeErrorContext){
+    return await pauseFailedApiTask('');
+  }
+  return closeModal();
+}
+if(a==='api-error-retry')return await retryFailedApiTask();
+if(a==='api-error-pause')return await pauseFailedApiTask();
+if(a==='api-error-show-detail'){
+  const ts=state.taskState||state.queue?.taskState||null;
+  return showApiErrorModal(ts?.last_error||null,ts,{
+    type:state.chatMode==='meeting'?'meeting':'chat_flush',
+    profileId:state.activeId,
+    characterId:state.threadId,
+    mode:state.chatMode||'chat'
+  });
+}
+if(a==='api-error-open-logs'){
+  if(state.activeErrorContext)await pauseFailedApiTask('');
+  else closeModal();
+  state.terminalTab='logs';
+  await navigate('terminal');
+  await refreshSystemLogs();
+  return;
+}
+if(a==='api-error-go-terminal'){
+  if(state.activeErrorContext)await pauseFailedApiTask('');
+  else closeModal();
+  state.terminalTab='api';
+  return await navigate('terminal');
+}
+if(a==='dismiss-bg-error'){
+  if(state.activeId&&state.threadId){
+    await api('/task-action',{profileId:state.activeId,characterId:state.threadId,action:'dismiss-bg'});
+    state.bgErrors=null;
+    renderMessages();
+  }
+  return;
+}
 if(a==='open-match'){const id=el.dataset.id;closeModal();state.threadId=id;return navigate('messages')}
 if(a==='select-thread')return loadThread(el.dataset.id);
 if(a==='back-threads'){++threadRequestSeq;state.threadId='';state.renderedThreadId='';return renderMessages()}

@@ -49,6 +49,7 @@ function createPortableEngine(options?: {
         options?: Record<string, unknown>
       ) => Array<{ role: string; content: string }>;
       diagnosePresets: (mode?: string) => any;
+      splitChatBubbles: (raw: string) => string[];
       getSystemLogs: () => any[];
       clearSystemLogs: () => any[];
       exportData: () => string;
@@ -1504,5 +1505,1045 @@ test('ROUND-02a: System Log isolation from localStorage, legacy migration, log t
     'Formal episodic memories persist to localStorage even after prior QuotaExceededError'
   );
 });
+
+test('13. ROUND-03A: Mobile chat quality optimization — Leon RE6 baseline vs optimized payload comparison & 10-scenario verification', async () => {
+  const capturedRequests: Array<{ url: string; body: any }> = [];
+  const mockReplies: string[] = [];
+
+  const { engine } = createPortableEngine({
+    fetchImpl: async (url: string, init?: any) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      capturedRequests.push({ url, body });
+      const content =
+        mockReplies.shift() ||
+        'Pretty much a glorified night-shift security guard, minus the mall cameras and with a lot more international travel.\n\nNice to meet you too, Lin.';
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 420, completion_tokens: 34, total_tokens: 454 },
+        }),
+      };
+    },
+  });
+
+  // Configure live API settings to verify sampling parameter fidelity
+  await engine.request('/settings', {
+    base_url: 'https://api.example.com/v1',
+    api_key: 'sk-round03a-test-key',
+    model: 'gemini-2.5-pro',
+    temperature: 0.88,
+    top_p: 0.95,
+    max_tokens: 4096,
+    demo_enabled: false,
+  });
+
+  // Profile for base scenario (newly matched stranger; profile display name differs from in-chat English self-intro "Lin")
+  const pBase = (
+    await engine.request('/profile', {
+      name: 'User01',
+      age: 24,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 99,
+      intent: '',
+      sources: [],
+      bio: 'New in town.',
+      interests: [],
+    })
+  ).profile;
+
+  const leonCid = 're-game:leon:re6';
+  mockReplies.push('{"match":true}', 'Just wrapped up a long shift. Finally off duty.');
+  const matchRes = await engine.request('/swipe', {
+    profileId: pBase.id,
+    characterId: leonCid,
+    direction: 'right',
+  });
+  assert.equal(matchRes.matched, true, 'Leon RE6 matched');
+
+  // User sends the 4 consecutive English messages from the ROUND-03A specification
+  const leonInputs = [
+    'Nice to hear that',
+    'wait, off duty?',
+    'Sounds like agent LOL',
+    "by the way I'm Lin, nice to meet you.",
+  ];
+  for (const text of leonInputs) {
+    const qRes = await engine.request('/message', {
+      profileId: pBase.id,
+      characterId: leonCid,
+      text,
+    });
+    assert.equal(qRes.queued, true);
+  }
+
+  // Preview the compiled mobile chat payload before flushing
+  const afterMessages = engine.buildPromptPreview(pBase.id, leonCid, 'chat') as Array<{
+    role: string;
+    content: string;
+  }>;
+
+  // Verify structure and ordering of the optimized mobile chat payload
+  assert.equal(afterMessages.length, 6, '1 system + 1 initial AI greeting + 4 consecutive user turns (no trailing system message)');
+  assert.equal(afterMessages[0].role, 'system');
+  assert.equal(afterMessages[1].role, 'assistant');
+  assert.equal(afterMessages[1].content, 'Just wrapped up a long shift. Finally off duty.');
+  for (let i = 0; i < leonInputs.length; i++) {
+    assert.equal(afterMessages[2 + i].role, 'user');
+    assert.equal(afterMessages[2 + i].content, leonInputs[i], `User message #${i + 1} preserved verbatim in order`);
+  }
+  assert.equal(
+    afterMessages[afterMessages.length - 1].role,
+    'user',
+    'Final message in chat payload must be the user turn, never a trailing system message'
+  );
+
+  // Verify zero duplicate injection of user messages inside system prompt
+  const sysContent = afterMessages[0].content;
+  for (const text of leonInputs) {
+    assert.equal(
+      sysContent.includes(text),
+      false,
+      `System prompt must not duplicate user message text "${text}" via batchHint or today's daily-summary self-recall`
+    );
+  }
+  assert.ok(
+    !sysContent.includes('聊天归档：'),
+    'Today active chat messages must not be self-recalled into Layer 3 as a past daily-summary archive'
+  );
+  assert.ok(
+    !sysContent.includes('现场细节：'),
+    'Mobile chat mode must not inject third-person novelistic surveillance scene prose'
+  );
+  assert.ok(
+    !sysContent.includes('交友目的：未填写'),
+    'Empty profile fields must not clutter Layer 1'
+  );
+  assert.ok(
+    sysContent.includes('【连续消息提示】对方刚刚连续发来了最后 4 条消息'),
+    'Includes concise non-duplicative multi-message continuity hint'
+  );
+
+  // Flush the queued messages and verify API payload & bubble parsing
+  mockReplies.push(
+    'Pretty much a glorified night-shift security guard, minus the mall cameras and with a lot more international travel.\n\nNice to meet you too, Lin.'
+  );
+  const flushLeon = await engine.request('/chat-flush', {
+    profileId: pBase.id,
+    characterId: leonCid,
+    force: true,
+  });
+  const lastApiCall = capturedRequests[capturedRequests.length - 1].body;
+  assert.equal(lastApiCall.model, 'gemini-2.5-pro');
+  assert.equal(lastApiCall.temperature, 0.88);
+  assert.equal(lastApiCall.top_p, 0.95);
+  assert.equal(lastApiCall.max_tokens, 4096);
+  assert.equal(lastApiCall.messages.length, 6);
+  assert.equal(lastApiCall.messages[lastApiCall.messages.length - 1].role, 'user');
+  assert.equal(
+    lastApiCall.messages[lastApiCall.messages.length - 1].content,
+    "by the way I'm Lin, nice to meet you."
+  );
+
+  assert.equal(flushLeon.replies.length, 2, 'Reference two-paragraph reply splits cleanly into 2 chat bubbles');
+  assert.equal(
+    flushLeon.replies[0].text,
+    'Pretty much a glorified night-shift security guard, minus the mall cameras and with a lot more international travel.'
+  );
+  assert.equal(flushLeon.replies[1].text, 'Nice to meet you too, Lin.');
+
+  // Verify single-bubble English reply containing a question mark is NOT prematurely chopped at 32 chars
+  assert.deepEqual(
+    Array.from(engine.splitChatBubbles('Off duty? Pretty much just catching up on sleep after a long week.')),
+    ['Off duty? Pretty much just catching up on sleep after a long week.']
+  );
+
+  // 9 additional scenarios across diverse works, personalities, languages, relationship stages, corrections, jokes, awkwardness, disagreement, and topic switches
+  const additionalScenarios: Array<{
+    label: string;
+    cid: string;
+    reunited?: boolean;
+    hotChat?: boolean;
+    seedMemory?: string;
+    userMessages: string[];
+    mockAiReply: string;
+    expectedBubbles: string[];
+  }> = [
+    {
+      label: 'Scenario 2: Ada Wong (RE4) — English teasing & probing secretive identity',
+      cid: 're-game:ada:re4',
+      userMessages: [
+        "Let me guess, your 'business trip' isn't exactly a corporate conference?",
+        'Do I need security clearance just to ask what you drink?',
+      ],
+      mockAiReply: 'Curiosity can be a dangerous habit.\n\nRed wine, if you are paying.',
+      expectedBubbles: ['Curiosity can be a dangerous habit.', 'Red wine, if you are paying.'],
+    },
+    {
+      label: 'Scenario 3: Geralt of Rivia (Witcher 3) — Chinese banter + sudden topic switch',
+      cid: 'witcher:game:geralt-3',
+      userMessages: [
+        '今天城里那帮吟游诗人吵得我头疼。',
+        '算了不说这个，你今晚去酒馆喝麦酒还是继续在郊外喂萝卜？',
+      ],
+      mockAiReply: '吟游诗人确实很少知道什么时候该闭嘴。|||先喂完萝卜，再去喝一杯。',
+      expectedBubbles: ['吟游诗人确实很少知道什么时候该闭嘴。', '先喂完萝卜，再去喝一杯。'],
+    },
+    {
+      label: 'Scenario 4: Yennefer (Witcher 3) — Disagreement & pushback on boundaries',
+      cid: 'witcher:game:yennefer-3',
+      userMessages: ['我可不觉得凡事都要按你的规矩来，偶尔失控一下也没什么不好。'],
+      mockAiReply: '失控和鲁莽是两回事。不过如果你能承担后果，我倒不介意在旁边看着。',
+      expectedBubbles: ['失控和鲁莽是两回事。不过如果你能承担后果，我倒不介意在旁边看着。'],
+    },
+    {
+      label: 'Scenario 5: Tony Stark (MCU Iron Man 3) — Bilingual teasing & wit',
+      cid: 'marvel:mcu:tony-im3',
+      userMessages: [
+        'Heard your workshop coffee tastes like motor oil.',
+        'Bet my corner cafe espresso beats Stark tech any day.',
+      ],
+      mockAiReply: 'That was one time, and technically it was hydraulic fluid adjacent.|||Send me the address. If it is mediocre, you owe me a lab tour.',
+      expectedBubbles: [
+        'That was one time, and technically it was hydraulic fluid adjacent.',
+        'Send me the address. If it is mediocre, you owe me a lab tour.',
+      ],
+    },
+    {
+      label: 'Scenario 6: Natasha Romanoff (MCU Winter Soldier) — Awkward moment & graceful pivot',
+      cid: 'marvel:mcu:natasha-ws',
+      userMessages: [
+        '刚才那句我是不是问得太冒昧了……',
+        '如果不想提以前的事，我们完全可以换个轻松点的话题。',
+      ],
+      mockAiReply: '别紧张，能让我觉得冒昧的问题可不多。\n你想聊什么轻松的？最近看过的烂片？',
+      expectedBubbles: ['别紧张，能让我觉得冒昧的问题可不多。', '你想聊什么轻松的？最近看过的烂片？'],
+    },
+    {
+      label: 'Scenario 7: Loki (MCU TVA) — Reunited after unmatch retains memory & reunion hint',
+      cid: 'marvel:mcu:loki-tva',
+      reunited: true,
+      userMessages: ['没想到又在这儿刷到你了，这次可别再突然消失。'],
+      mockAiReply: '消失通常是为了更戏剧性的登场。|||况且我可没忘记上次是谁先按了解除匹配。',
+      expectedBubbles: ['消失通常是为了更戏剧性的登场。', '况且我可没忘记上次是谁先按了解除匹配。'],
+    },
+    {
+      label: 'Scenario 8: Judy Alvarez (Cyberpunk 2077) — User memory correction ("你记错了...")',
+      cid: 'cyberpunk:game:judy',
+      seedMemory: '约定周末去荒坂塔附近拍夜景',
+      userMessages: ['你记错了，我上次说的是想去水下教堂拍超梦，不是去荒坂塔附近。'],
+      mockAiReply: '啊，我的脑子昨晚剪超梦剪糊涂了。|||水下教堂确实比荒坂塔那破地方有味道多了。',
+      expectedBubbles: ['啊，我的脑子昨晚剪超梦剪糊涂了。', '水下教堂确实比荒坂塔那破地方有味道多了。'],
+    },
+    {
+      label: 'Scenario 9: Panam Palmer (Cyberpunk 2077) — Hot Chat mode consecutive messages',
+      cid: 'cyberpunk:game:panam',
+      hotChat: true,
+      userMessages: ['恶土今晚风沙大不大？', '我带了两瓶冰啤酒，要不要出来坐坐？'],
+      mockAiReply: '风刚停，星空清楚得很。\n算你识相，我在营地外那辆车顶等你。',
+      expectedBubbles: ['风刚停，星空清楚得很。', '算你识相，我在营地外那辆车顶等你。'],
+    },
+    {
+      label: 'Scenario 10: Steve Rogers (MCU Winter Soldier) — Separate profile & cross-character memory isolation',
+      cid: 'marvel:mcu:steve-ws',
+      userMessages: ['Do you still keep a notebook of things to catch up on?'],
+      mockAiReply: 'Still adding to it every week. That list gets longer faster than I can cross things off.',
+      expectedBubbles: ['Still adding to it every week. That list gets longer faster than I can cross things off.'],
+    },
+  ];
+
+  // Create a second independent Profile for Scenario 10 to verify cross-Profile isolation
+  const pSecond = (
+    await engine.request('/profile', {
+      name: 'Clara',
+      age: 26,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 99,
+      intent: '认识新朋友',
+      sources: [],
+      bio: 'Museum archivist.',
+      interests: ['历史', '爵士乐'],
+    })
+  ).profile;
+
+  for (const sc of additionalScenarios) {
+    const activeProfile = sc.cid === 'marvel:mcu:steve-ws' ? pSecond : pBase;
+    mockReplies.push('{"match":true}', 'Hey.');
+    const mRes = await engine.request('/swipe', {
+      profileId: activeProfile.id,
+      characterId: sc.cid,
+      direction: 'right',
+    });
+    assert.equal(mRes.matched, true, `${sc.label}: matched`);
+
+    if (sc.reunited) {
+      await engine.request('/unmatch', {
+        profileId: activeProfile.id,
+        characterId: sc.cid,
+      });
+      mockReplies.push('{"match":true}', 'Well, look who is back.');
+      const remRes = await engine.request('/swipe', {
+        profileId: activeProfile.id,
+        characterId: sc.cid,
+        direction: 'right',
+      });
+      assert.equal(remRes.matched, true);
+      assert.equal(remRes.again, true);
+    }
+
+    if (sc.hotChat) {
+      await engine.request('/hot-chat', {
+        profileId: activeProfile.id,
+        characterId: sc.cid,
+        hotChat: true,
+      });
+    }
+
+    if (sc.seedMemory) {
+      await engine.request('/memory-action', {
+        profileId: activeProfile.id,
+        characterId: sc.cid,
+        action: 'add',
+        summary: sc.seedMemory,
+      });
+    }
+
+    for (const uTxt of sc.userMessages) {
+      await engine.request('/message', {
+        profileId: activeProfile.id,
+        characterId: sc.cid,
+        text: uTxt,
+      });
+    }
+
+    const preview = engine.buildPromptPreview(activeProfile.id, sc.cid, 'chat') as Array<{
+      role: string;
+      content: string;
+    }>;
+    assert.equal(
+      preview[preview.length - 1].role,
+      'user',
+      `${sc.label}: payload ends with user message`
+    );
+    assert.equal(
+      preview[preview.length - 1].content,
+      sc.userMessages[sc.userMessages.length - 1],
+      `${sc.label}: final message is verbatim latest user input`
+    );
+
+    if (sc.reunited) {
+      assert.ok(
+        preview[0].content.includes('曾解除匹配后再次重逢'),
+        `${sc.label}: includes reunion relationship state`
+      );
+    }
+    if (sc.seedMemory) {
+      assert.ok(
+        preview[0].content.includes('[已澄清纠正]'),
+        `${sc.label}: user correction recalled in Layer 3`
+      );
+    }
+    if (sc.cid === 'marvel:mcu:steve-ws') {
+      const fullStr = JSON.stringify(preview);
+      assert.ok(!fullStr.includes('User01') && !fullStr.includes('Lin'), 'Strict Profile isolation');
+      assert.ok(!fullStr.includes('Leon S. Kennedy'), 'Strict Character isolation');
+    }
+
+    mockReplies.push(sc.mockAiReply);
+    const fl = await engine.request('/chat-flush', {
+      profileId: activeProfile.id,
+      characterId: sc.cid,
+      force: true,
+    });
+    assert.deepEqual(
+      Array.from(fl.replies, (r: any) => r.text),
+      sc.expectedBubbles,
+      `${sc.label}: bubbles parsed cleanly`
+    );
+  }
+});
+
+test('14. ROUND-03B: API Error Gateway — 13 Mock-based error interception, retry, pause/resume, legacy isolation & zero false-positive tests', async () => {
+  type MockResponder = (url: string, init?: any) => Promise<any>;
+  const responderQueue: MockResponder[] = [];
+  let apiCallCount = 0;
+
+  const { engine, store } = createPortableEngine({
+    fetchImpl: async (url: string, init?: any) => {
+      apiCallCount++;
+      const next = responderQueue.shift();
+      if (next) {
+        return next(url, init);
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            choices: [{ message: { content: '默认成功回复。' }, finish_reason: 'stop' }],
+          }),
+        json: async () => ({
+          choices: [{ message: { content: '默认成功回复。' }, finish_reason: 'stop' }],
+        }),
+      };
+    },
+  });
+
+  // Configure live API mode
+  await engine.request('/settings', {
+    base_url: 'https://api.example.com/v1',
+    api_key: 'sk-gateway-test-key-9999',
+    model: 'gemini-2.5-pro',
+    temperature: 0.85,
+    top_p: 0.95,
+    max_tokens: 4096,
+    demo_enabled: false,
+  });
+
+  const profile = (
+    await engine.request('/profile', {
+      name: '苏梨',
+      age: 24,
+      gender: 'female',
+      interested_in: ['all'],
+      min_age: 18,
+      max_age: 99,
+      intent: '认识新朋友',
+      sources: [],
+      bio: '测试 API Error Gateway',
+      interests: ['摄影'],
+    })
+  ).profile;
+
+  const cid = 're-game:leon:re6';
+  const cidOther = 're-game:ada:re4';
+
+  // Match both characters cleanly
+  for (const targetCid of [cid, cidOther]) {
+    responderQueue.push(
+      async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ choices: [{ message: { content: '{"match":true}' }, finish_reason: 'stop' }] }),
+      }),
+      async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ choices: [{ message: { content: 'Hey, matched.' }, finish_reason: 'stop' }] }),
+      })
+    );
+    const sw = await engine.request('/swipe', {
+      profileId: profile.id,
+      characterId: targetCid,
+      direction: 'right',
+    });
+    assert.equal(sw.matched, true);
+  }
+
+  // Helper to get current non-legacy messages and memories count
+  const getThreadSnapshot = async (characterId = cid) => {
+    const th = await engine.request(`/thread?profileId=${profile.id}&characterId=${encodeURIComponent(characterId)}`);
+    const mem = await engine.request(`/memories?profileId=${profile.id}&characterId=${encodeURIComponent(characterId)}`);
+    return { th, mem };
+  };
+
+  // =========================================================================
+  // Case 1: HTTP 200 反代错误文本 (“所有API密钥均请求失败，具体错误请查看轮询日志”)
+  // =========================================================================
+  await engine.request('/message', {
+    profileId: profile.id,
+    characterId: cid,
+    text: '第一条测试：反代密钥全部失败时发出的消息',
+  });
+  const snapBefore1 = await getThreadSnapshot(cid);
+
+  responderQueue.push(async () => ({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        choices: [
+          {
+            message: { content: '所有API密钥均请求失败，具体错误请查看轮询日志' },
+            finish_reason: 'stop',
+          },
+        ],
+      }),
+  }));
+
+  const flush1 = await engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cid,
+    force: true,
+  });
+  assert.equal(flush1.reply, null, 'Case 1: Must not produce a character bubble');
+  assert.equal(flush1.replies.length, 0);
+  assert.ok(flush1.apiError, 'Case 1: Must return structured apiError for modal display');
+  assert.equal(flush1.apiError.error_type, 'PROXY_ALL_KEYS_FAILED');
+  assert.equal(flush1.apiError.character_id, cid);
+  assert.equal(flush1.apiError.task_type, 'chat');
+
+  const snapAfter1 = await getThreadSnapshot(cid);
+  assert.equal(
+    snapAfter1.th.messages.length,
+    snapBefore1.th.messages.length,
+    'Case 1: Zero error bubbles added to chat thread'
+  );
+  assert.equal(
+    snapAfter1.th.messages.some((m: any) => m.text.includes('所有API密钥均请求失败')),
+    false,
+    'Case 1: Proxy error text never enters chat history'
+  );
+  assert.equal(
+    snapAfter1.mem.memories.some((m: any) => m.summary.includes('所有API密钥均请求失败')),
+    false,
+    'Case 1: Proxy error text never enters episodic memories'
+  );
+  const logs1 = (await engine.request('/system-logs')).logs;
+  assert.equal(logs1[0].error_type, 'PROXY_ALL_KEYS_FAILED', 'Case 1: Recorded in System Log');
+
+  // =========================================================================
+  // Case 2: HTTP 200 但带 error 字段
+  // =========================================================================
+  responderQueue.push(async () => ({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        error: { message: 'Upstream quota exhausted on channel #4', type: 'upstream_error' },
+      }),
+  }));
+  const flush2 = await engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cid,
+    force: true,
+  });
+  assert.equal(flush2.reply, null, 'Case 2: No bubble created');
+  assert.ok(flush2.apiError);
+  assert.equal(flush2.apiError.error_type, 'HTTP_200_ERROR_OBJECT');
+  assert.ok(flush2.apiError.message.includes('Upstream quota exhausted'));
+
+  // =========================================================================
+  // Case 3: HTTP 401 / 403 / 404 / 429 (with Retry-After) / 500 / 502 / 503 / 504 / 529
+  // =========================================================================
+  const statusCases: Array<{
+    code: number;
+    retryAfter?: string;
+    expectTerminal?: boolean;
+    expectTokenWarn?: boolean;
+  }> = [
+    { code: 401, expectTerminal: true },
+    { code: 403, expectTerminal: true },
+    { code: 404, expectTerminal: true },
+    { code: 429, retryAfter: '18' },
+    { code: 500 },
+    { code: 502 },
+    { code: 503 },
+    { code: 504, expectTokenWarn: true },
+    { code: 529 },
+  ];
+
+  for (const sc of statusCases) {
+    responderQueue.push(async () => ({
+      ok: false,
+      status: sc.code,
+      headers: {
+        get: (h: string) => (h.toLowerCase() === 'retry-after' ? sc.retryAfter || null : null),
+      },
+      text: async () => JSON.stringify({ error: { message: `Simulated HTTP ${sc.code} failure` } }),
+    }));
+    const res = await engine.request('/chat-flush', {
+      profileId: profile.id,
+      characterId: cid,
+      force: true,
+    });
+    assert.equal(res.reply, null, `Case 3 (HTTP ${sc.code}): No character bubble or demo fallback`);
+    assert.ok(res.apiError, `Case 3 (HTTP ${sc.code}): Structured apiError returned`);
+    assert.equal(res.apiError.http_status, sc.code);
+    assert.equal(res.apiError.error_type, `HTTP_${sc.code}`);
+    if (sc.expectTerminal) {
+      assert.equal(res.apiError.suggest_terminal, true, `HTTP ${sc.code} guides user to Terminal settings`);
+    }
+    if (sc.retryAfter) {
+      assert.equal(res.apiError.retry_after, 18, 'HTTP 429 parses Retry-After seconds');
+      assert.ok(res.apiError.message.includes('18 秒'));
+    }
+    if (sc.expectTokenWarn) {
+      assert.equal(res.apiError.may_consume_tokens, true, `HTTP ${sc.code} warns about potential upstream token consumption`);
+    }
+  }
+
+  // =========================================================================
+  // Case 4: 网络失败与超时
+  // =========================================================================
+  responderQueue.push(async () => {
+    throw new TypeError('Failed to fetch: net::ERR_INTERNET_DISCONNECTED');
+  });
+  const netFail = await engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cid,
+    force: true,
+  });
+  assert.equal(netFail.reply, null);
+  assert.equal(netFail.apiError.error_type, 'NETWORK_ERROR');
+  assert.equal(netFail.apiError.may_consume_tokens, true);
+
+  responderQueue.push(async () => {
+    const err: any = new Error('The operation was aborted due to timeout');
+    err.name = 'AbortError';
+    throw err;
+  });
+  const timeoutFail = await engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cid,
+    force: true,
+  });
+  assert.equal(timeoutFail.reply, null);
+  assert.equal(timeoutFail.apiError.error_type, 'REQUEST_TIMEOUT');
+  assert.equal(timeoutFail.apiError.may_consume_tokens, true);
+  assert.equal(timeoutFail.queue.count, 1, 'Case 4: User pending message remains safely queued');
+
+  // =========================================================================
+  // Case 5: 空响应（空字符串、{}、content: ""）
+  // =========================================================================
+  for (const emptyBody of ['', '{}', JSON.stringify({ choices: [{ message: { content: '   ' }, finish_reason: 'stop' }] })]) {
+    responderQueue.push(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => emptyBody,
+    }));
+    const emptyRes = await engine.request('/chat-flush', {
+      profileId: profile.id,
+      characterId: cid,
+      force: true,
+    });
+    assert.equal(emptyRes.reply, null, 'Case 5: Empty response never creates blank or placeholder bubble');
+    assert.ok(emptyRes.apiError);
+    assert.ok(
+      ['EMPTY_RESPONSE', 'EMPTY_CHOICES', 'EMPTY_CONTENT'].includes(emptyRes.apiError.error_type),
+      `Case 5: Classified as ${emptyRes.apiError.error_type}`
+    );
+  }
+
+  // =========================================================================
+  // Case 6: 输出截断与结构化 JSON 损坏
+  // =========================================================================
+  responderQueue.push(async () => ({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        choices: [{ message: { content: '半句话就被截断' }, finish_reason: 'length' }],
+      }),
+  }));
+  const truncRes = await engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cid,
+    force: true,
+  });
+  assert.equal(truncRes.reply, null, 'Case 6: Severely truncated output intercepted');
+  assert.equal(truncRes.apiError.error_type, 'OUTPUT_TRUNCATED');
+
+  // Gemini-compatible proxies may use uppercase MAX_TOKENS; a bare narration marker is not a reply.
+  for (const [content, finish_reason, expected] of [
+    ['半句话', 'MAX_TOKENS', 'OUTPUT_TRUNCATED'],
+    ['半句话', 'max_tokens', 'OUTPUT_TRUNCATED'],
+    ['旁白', 'STOP', 'EMPTY_PARSED_CONTENT'],
+  ]) {
+    responderQueue.push(async () => ({ok: true, status: 200, text: async () => JSON.stringify({choices: [{message: {content}, finish_reason}]})}));
+    const before = await getThreadSnapshot(cid);
+    const result = await engine.request('/chat-flush', {profileId: profile.id, characterId: cid, force: true});
+    assert.equal(result.reply, null);
+    assert.equal(result.apiError.error_type, expected);
+    const after = await getThreadSnapshot(cid);
+    assert.equal(after.th.messages.length, before.th.messages.length);
+  }
+
+  // Also test structured JSON corruption on manual surveillance refresh
+  const survBefore = await engine.request(`/surveillance?profileId=${profile.id}&characterId=${encodeURIComponent(cid)}`);
+  assert.equal(survBefore.unlockedSlots.length > 0, true);
+  responderQueue.push(async () => ({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        choices: [{ message: { content: '{"slots": [{"start": "00:00", broken_json' }, finish_reason: 'length' }],
+      }),
+  }));
+  const survRefreshFail = await engine.request('/surveillance', {
+    profileId: profile.id,
+    characterId: cid,
+    refresh: true,
+  });
+  assert.ok(survRefreshFail.apiError, 'Case 6: Invalid JSON in structured task intercepted');
+  assert.equal(survRefreshFail.apiError.error_type, 'OUTPUT_TRUNCATED');
+  assert.equal(
+    survRefreshFail.unlockedSlots.length,
+    survBefore.unlockedSlots.length,
+    'Case 6: Corrupted structured JSON never overwrites existing valid surveillance slots'
+  );
+
+  // =========================================================================
+  // Case 7: 手动重试成功（不重复插入用户消息、队列按顺序恢复、不产生重复记忆）
+  // =========================================================================
+  responderQueue.push(async () => ({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        choices: [
+          {
+            message: { content: '抱歉刚信号不好，现在收到你那条消息了。|||我们周末约定的事我一直记着。' },
+            finish_reason: 'stop',
+          },
+        ],
+      }),
+  }));
+  const retrySuccess = await engine.request('/task-action', {
+    profileId: profile.id,
+    characterId: cid,
+    taskType: 'chat',
+    action: 'retry',
+  });
+  assert.ok(retrySuccess.reply, 'Case 7: Manual retry succeeded');
+  assert.equal(retrySuccess.replies.length, 2);
+  assert.equal(retrySuccess.queue.count, 0, 'Case 7: Pending queue cleared after retry success');
+
+  const snapAfter7 = await getThreadSnapshot(cid);
+  const userMsgsCase7 = snapAfter7.th.messages.filter(
+    (m: any) => m.sender === 'user' && m.text === '第一条测试：反代密钥全部失败时发出的消息'
+  );
+  assert.equal(userMsgsCase7.length, 1, 'Case 7: User message was never duplicated across retries');
+
+  // =========================================================================
+  // Case 8: 手动重试失败与快速连点去重
+  // =========================================================================
+  await engine.request('/message', {
+    profileId: profile.id,
+    characterId: cid,
+    text: '测试重试失败与连点去重',
+  });
+
+  responderQueue.push(async () => ({
+    ok: false,
+    status: 502,
+    text: async () => JSON.stringify({ error: { message: 'Bad Gateway attempt 1' } }),
+  }));
+  const firstFail8 = await engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cid,
+    force: true,
+  });
+  assert.equal(firstFail8.apiError.error_type, 'HTTP_502');
+  const firstTaskId = firstFail8.apiError.task_id;
+
+  // Second retry also fails, and test rapid concurrent double-click deduplication
+  let slowResolve: (() => void) | null = null;
+  const callsBeforeDoubleClick = apiCallCount;
+  responderQueue.push(
+    async () => {
+      await new Promise<void>((r) => {
+        slowResolve = r;
+      });
+      return {
+        ok: false,
+        status: 503,
+        text: async () => JSON.stringify({ error: { message: 'Service Unavailable attempt 2' } }),
+      };
+    }
+  );
+
+  const click1Promise = engine.request('/task-action', {
+    profileId: profile.id,
+    characterId: cid,
+    taskType: 'chat',
+    action: 'retry',
+  });
+  const click2Result = await engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cid,
+    force: true,
+    manualResume: true,
+  });
+  assert.equal(click2Result.inflight, true, 'Case 8: Rapid second click deduplicated while first retry is in-flight');
+  assert.equal(apiCallCount - callsBeforeDoubleClick, 1, 'Case 8: Only 1 network call issued on rapid double-click');
+
+  if (slowResolve) (slowResolve as () => void)();
+  const retryFail8 = await click1Promise;
+  assert.equal(retryFail8.apiError.error_type, 'HTTP_503');
+  assert.equal(retryFail8.apiError.retry_of_task_id, firstTaskId, 'Case 8: Retry log links to previous failed task_id');
+  assert.ok(retryFail8.apiError.attempt >= 2, 'Case 8: Attempt counter incremented');
+  assert.equal(retryFail8.queue.count, 1, 'Case 8: Queue still preserves pending message after second failure');
+
+  // =========================================================================
+  // Case 9: 手动暂停与关闭弹窗（仅针对当前失败任务生效，不影响其他角色）
+  // =========================================================================
+  const pauseRes = await engine.request('/task-action', {
+    profileId: profile.id,
+    characterId: cid,
+    taskType: 'chat',
+    action: 'pause',
+  });
+  assert.equal(pauseRes.paused, true);
+  assert.equal(pauseRes.queue.paused, true);
+  assert.equal(pauseRes.queue.status, 'paused');
+  assert.ok(pauseRes.queue.scheduleReason.includes('回复已暂停 · 点击恢复'));
+
+  // Verify auto-flush / background due flush does NOT fire API calls for paused character
+  const callsBeforePausedFlush = apiCallCount;
+  const autoFlushPaused = await engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cid,
+    force: true, // even force without manualResume must respect paused state
+  });
+  assert.equal(autoFlushPaused.paused, true);
+  assert.equal(apiCallCount, callsBeforePausedFlush, 'Case 9: Paused task never fires API call without manualResume');
+
+  // Verify another character (Ada Wong) can still chat normally while Leon is paused!
+  await engine.request('/message', {
+    profileId: profile.id,
+    characterId: cidOther,
+    text: 'Ada，Leon 那边暂停了，你这边正常吗？',
+  });
+  responderQueue.push(async () => ({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        choices: [{ message: { content: '我这边当然一切正常。' }, finish_reason: 'stop' }],
+      }),
+  }));
+  const otherFlush = await engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cidOther,
+    force: true,
+  });
+  assert.equal(otherFlush.reply.text, '我这边当然一切正常。', 'Case 9: Pausing Leon never blocks Ada');
+
+  // =========================================================================
+  // Case 10: 暂停期间继续发消息（保存为待回复、按时间顺序排队、不自动恢复；手动恢复后一并处理）
+  // =========================================================================
+  const callsBeforePausedSend = apiCallCount;
+  const sendWhilePaused1 = await engine.request('/message', {
+    profileId: profile.id,
+    characterId: cid,
+    text: '暂停期间补充的第二条消息',
+  });
+  const sendWhilePaused2 = await engine.request('/message', {
+    profileId: profile.id,
+    characterId: cid,
+    text: '暂停期间补充的第三条消息',
+  });
+  assert.equal(sendWhilePaused1.paused, true);
+  assert.equal(sendWhilePaused2.paused, true);
+  assert.equal(sendWhilePaused2.queue.count, 3, 'Case 10: All 3 messages queued in order while paused');
+  assert.equal(apiCallCount, callsBeforePausedSend, 'Case 10: Sending messages while paused does not trigger API');
+
+  // Now manually resume and verify all 3 queued messages are sent in chronological order in a single request
+  let capturedResumePayload: any = null;
+  responderQueue.push(async (_url, init) => {
+    capturedResumePayload = JSON.parse(init.body);
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          choices: [{ message: { content: '这三条消息我全都按顺序看到了。' }, finish_reason: 'stop' }],
+        }),
+    };
+  });
+  const manualResumeRes = await engine.request('/task-action', {
+    profileId: profile.id,
+    characterId: cid,
+    taskType: 'chat',
+    action: 'resume',
+  });
+  assert.equal(manualResumeRes.reply.text, '这三条消息我全都按顺序看到了。');
+  assert.equal(manualResumeRes.queue.paused, false);
+  assert.equal(manualResumeRes.queue.count, 0);
+  const tailUserContents = capturedResumePayload.messages.slice(-3).map((m: any) => m.content);
+  assert.deepEqual(
+    tailUserContents,
+    ['测试重试失败与连点去重', '暂停期间补充的第二条消息', '暂停期间补充的第三条消息'],
+    'Case 10: Manual resume processes all queued messages in exact chronological order'
+  );
+
+  // =========================================================================
+  // Case 11: 暂停或请求途中切换模式 / 解除匹配（旧响应被丢弃、状态清理、不跨场景写入）
+  // =========================================================================
+  await engine.request('/message', {
+    profileId: profile.id,
+    characterId: cid,
+    text: '切去见面模式前在手机上发的最后一条消息',
+  });
+  let releaseInflight11: (() => void) | null = null;
+  responderQueue.push(async () => {
+    await new Promise<void>((r) => {
+      releaseInflight11 = r;
+    });
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          choices: [{ message: { content: '这条迟到的手机回复应当被丢弃，绝不能混进见面模式。' }, finish_reason: 'stop' }],
+        }),
+    };
+  });
+
+  const inflightFlush11 = engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cid,
+    force: true,
+  });
+
+  // While chat-flush is in-flight, user switches to meeting mode
+  await engine.request('/mode', {
+    profileId: profile.id,
+    characterId: cid,
+    mode: 'meeting',
+    triggerOpening: false,
+  });
+  if (releaseInflight11) (releaseInflight11 as () => void)();
+  const finishedInflight11 = await inflightFlush11;
+  assert.equal(finishedInflight11.discarded, true, 'Case 11: Stale in-flight response discarded after mode switch');
+  assert.equal(finishedInflight11.reply, null);
+
+  const snapAfter11 = await getThreadSnapshot(cid);
+  assert.equal(
+    snapAfter11.th.messages.some((m: any) => m.text.includes('这条迟到的手机回复应当被丢弃')),
+    false,
+    'Case 11: Discarded response never written to thread'
+  );
+
+  // Switch back to chat mode
+  await engine.request('/mode', {
+    profileId: profile.id,
+    characterId: cid,
+    mode: 'chat',
+  });
+
+  // =========================================================================
+  // Case 12: 正常角色台词不误判（包含 “API”、“404”、“429”、“接口报错”、“超时” 等词语）
+  // =========================================================================
+  await engine.request('/message', {
+    profileId: profile.id,
+    characterId: cid,
+    text: '你刚才看那份技术报告写的是什么？',
+  });
+  const roleplayLineWithKeywords =
+    '报告里写着他们的旧终端出现 404 和 429 超时，甚至有人抱怨 API 接口报错。|||不过在战场上，我更相信手里的装备。';
+  responderQueue.push(async () => ({
+    ok: true,
+    status: 200,
+    text: async () =>
+      JSON.stringify({
+        choices: [{ message: { content: roleplayLineWithKeywords }, finish_reason: 'stop' }],
+      }),
+  }));
+  const normalRoleplayRes = await engine.request('/chat-flush', {
+    profileId: profile.id,
+    characterId: cid,
+    force: true,
+  });
+  assert.equal(normalRoleplayRes.apiError, null, 'Case 12: Normal roleplay mentioning API/404/429/接口报错/超时 is NEVER misclassified');
+  assert.equal(normalRoleplayRes.replies.length, 2, 'Case 12: Normal roleplay bubbles created properly');
+  assert.ok(normalRoleplayRes.replies[0].text.includes('404 和 429 超时'));
+
+  // =========================================================================
+  // Case 13: 旧存档已存在错误气泡的兼容隔离
+  // =========================================================================
+  const STORE_KEY = 'parallel-portable-v2';
+  const rawDb = JSON.parse(store.get(STORE_KEY) || '{}');
+  const normalCountBefore13 = (await getThreadSnapshot(cid)).th.messages.length;
+
+  // Inject legacy polluted error bubbles directly into saved db
+  rawDb.messages.push(
+    {
+      id: 'legacy_err_1',
+      profile_id: profile.id,
+      character_id: cid,
+      sender: 'ai',
+      mode: 'chat',
+      text: '（生成失败：模型接口返回 HTTP 502；请检查终端中的 API 地址、密钥、模型名称与额度。）',
+      engine: 'error',
+      created_at: new Date().toISOString(),
+    },
+    {
+      id: 'legacy_proxy_err_2',
+      profile_id: profile.id,
+      character_id: cid,
+      sender: 'ai',
+      mode: 'chat',
+      text: '所有API密钥均请求失败，具体错误请查看轮询日志',
+      engine: 'live',
+      created_at: new Date().toISOString(),
+    }
+  );
+  rawDb.episodicMemories.push({
+    id: 'legacy_mem_err_1',
+    owner_id: cid,
+    profile_id: profile.id,
+    source_type: 'dialogue',
+    source_key: 'turn:legacy_proxy_err_2',
+    knowledge_mode: 'stated',
+    summary: 'Leon 提到：「所有API密钥均请求失败，具体错误请查看轮询日志」',
+    tags: ['API', '密钥'],
+    importance: 4,
+    emotional_weight: 3,
+    unresolved: 0,
+    disputed: 0,
+    raw_msg_ids: ['legacy_proxy_err_2'],
+    event_at: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+  });
+  store.set(STORE_KEY, JSON.stringify(rawDb));
+
+  // Reload engine from the legacy-polluted store
+  const { engine: reloadedEngine } = createPortableEngine({
+    store,
+  });
+
+  const reloadedThread = await reloadedEngine.request(
+    `/thread?profileId=${profile.id}&characterId=${encodeURIComponent(cid)}`
+  );
+  assert.equal(
+    reloadedThread.messages.length,
+    normalCountBefore13,
+    'Case 13: All normal user/AI messages are preserved while legacy error bubbles are hidden'
+  );
+  assert.equal(
+    reloadedThread.messages.some(
+      (m: any) => m.id === 'legacy_err_1' || m.id === 'legacy_proxy_err_2'
+    ),
+    false,
+    'Case 13: Legacy error bubbles are excluded from chat display'
+  );
+
+  const reloadedPreview = JSON.stringify(reloadedEngine.buildPromptPreview(profile.id, cid, 'chat'));
+  assert.equal(
+    reloadedPreview.includes('所有API密钥均请求失败') || reloadedPreview.includes('生成失败：模型接口返回'),
+    false,
+    'Case 13: Legacy error bubbles & polluted memories never enter next-turn messages payload'
+  );
+
+  const reloadedThreadsList = (
+    await reloadedEngine.request(`/threads?profileId=${profile.id}`)
+  ).threads;
+  const leonThreadSummary = reloadedThreadsList.find((t: any) => t.character.id === cid);
+  assert.ok(leonThreadSummary);
+  assert.notEqual(
+    leonThreadSummary.last?.id,
+    'legacy_proxy_err_2',
+    'Case 13: Thread preview and unread tracker ignore legacy error bubbles'
+  );
+});
+
+
 
 

@@ -361,7 +361,59 @@ class ParallelAPITest(unittest.TestCase):
         self.call('/system-logs-clear',{})
         self.assertEqual(len(self.call('/system-logs')['logs']),0)
 
+    def test_11_api_error_gateway_and_legacy_isolation(self):
+        # 1. Proxy wrapped error detection
+        p1=server.detect_proxy_wrapped_error('所有API密钥均请求失败，具体错误请查看轮询日志')
+        self.assertIsNotNone(p1)
+        self.assertEqual(p1['code'],'PROXY_ALL_KEYS_FAILED')
+        p2=server.detect_proxy_wrapped_error('[API Error] Upstream channel #3 failed')
+        self.assertIsNotNone(p2)
+        self.assertEqual(p2['code'],'PROXY_WRAPPED_ERROR')
+        # Normal roleplay mentioning API / 404 / 429 / 超时 / 接口报错 must NOT be misclassified
+        normal_line='他们的旧终端经常出现 404 或 429 超时，甚至抱怨 API 接口报错。'
+        self.assertIsNone(server.detect_proxy_wrapped_error(normal_line))
+        self.assertFalse(server.is_legacy_error_artifact({'sender':'ai','engine':'live','text':normal_line}))
+        self.assertTrue(server.is_legacy_error_artifact({'sender':'ai','engine':'error','text':'（生成失败：模型接口返回 HTTP 502）'}))
+        self.assertTrue(server.is_legacy_error_artifact({'sender':'ai','engine':'live','text':'所有API密钥均请求失败，具体错误请查看轮询日志'}))
+
+        # 2. HTTP status classification
+        c401=server.classify_http_status_error(401,'Invalid API key',{})
+        self.assertEqual(c401['error_code'],'HTTP_401')
+        self.assertTrue(c401['suggest_terminal'])
+        c429=server.classify_http_status_error(429,'Rate limit exceeded',{'Retry-After':'24'})
+        self.assertEqual(c429['error_code'],'HTTP_429')
+        self.assertEqual(c429['retry_after'],24)
+        c504=server.classify_http_status_error(504,'Gateway timeout',{})
+        self.assertEqual(c504['error_code'],'HTTP_504')
+        self.assertTrue(c504['may_consume_tokens'])
+
+        # 3. Legacy error bubble isolation in SQLite DB
+        pid=self.__class__.steph['id'];cid='re-game:leon:re2'
+        self.call('/mode',{'profileId':pid,'characterId':cid,'mode':'chat'})
+        before_msgs=self.call(f'/thread?profileId={pid}&characterId={urllib.parse.quote(cid)}')['messages']
+        with server.connect() as db:
+            server.write_message(db,pid,cid,'ai','chat','所有API密钥均请求失败，具体错误请查看轮询日志','live')
+            server.write_message(db,pid,cid,'ai','chat','（生成失败：模型接口返回 HTTP 500）','error')
+            db.commit()
+        after_msgs=self.call(f'/thread?profileId={pid}&characterId={urllib.parse.quote(cid)}')['messages']
+        self.assertEqual(len(after_msgs),len(before_msgs),'Legacy/proxy error bubbles are hidden from thread view while normal history is intact')
+        with server.connect() as db:
+            compiled_str=json.dumps(server.compile_messages(db,server.profile_get(db,pid),server.BY_ID[cid],'chat'),ensure_ascii=False)
+        self.assertNotIn('所有API密钥均请求失败',compiled_str)
+        self.assertNotIn('生成失败：模型接口返回',compiled_str)
+
+        # 4. Task pause & clear via /task-action
+        pause_res=self.call('/task-action',{'profileId':pid,'characterId':cid,'mode':'chat','action':'pause'})
+        self.assertTrue(pause_res['ok'])
+        self.assertTrue(pause_res['paused'])
+        ts_res=self.call(f'/task-state?profileId={pid}&characterId={urllib.parse.quote(cid)}&mode=chat')
+        self.assertEqual(ts_res['taskState']['status'],'paused')
+        clear_res=self.call('/task-action',{'profileId':pid,'characterId':cid,'mode':'chat','action':'clear'})
+        self.assertTrue(clear_res['ok'])
+        self.assertIsNone(clear_res['taskState'])
+
 if __name__=='__main__':unittest.main()
+
 
 
 

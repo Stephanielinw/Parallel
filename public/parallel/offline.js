@@ -19,8 +19,56 @@
   const uid=()=>typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'p'+Math.random().toString(36).slice(2)+Date.now().toString(36);
   const pairKey=(p,c)=>p+'|'+c;
   const DEFAULT_PRESET_IDS=new Set(DEFAULT_PRESETS.map(x=>x.id));
-  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,auto_portraits:false,proactive_mode:'daily'}});
+  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},taskStates:{},bgErrors:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,auto_portraits:false,proactive_mode:'daily'}});
   let db;let storageAvailable=true;let mainStoreReadable=true;
+  const LEGACY_ERROR_BUBBLE_RE=/^(?:（模型连接失败，历史已保存。请检查终端设置，再尝试角色回复。）|（模型连接失败，请检查终端设置后重试。）)$/;
+  const PROXY_ERROR_SIGNATURE_RE=/(?:所有\s*API\s*密钥均请求失败|具体错误请查看轮询日志|所有(?:渠道|密钥|节点|令牌|账号)(?:均|都)?(?:请求|调用|连接)?失败[\s\S]{0,80}(?:轮询日志|配额|额度|重试|失败))/i;
+  const PROXY_HEADER_ERROR_RE=/^\s*(?:\[\s*(?:API|Upstream|Proxy|Gateway|OpenAI|Gemini|Claude|Anthropic|DeepSeek|OneAPI|NewAPI)\s*(?:Error|Exception|Fault)\s*\]|【\s*(?:API|接口|反代|上游|网关|系统)(?:错误|报错|异常|请求失败)\s*】)\s*[:：\-]?/i;
+  const PROXY_PREFIX_CODE_RE=/^\s*(?:Error|接口错误|调用失败|请求失败|上游错误|反代错误)\s*[:：]\s*(?:HTTP\s*[45]\d{2}|status\s*code\s*[45]\d{2}|All\s+API\s+keys|insufficient_quota|model_not_found|invalid_api_key|rate_limit_exceeded|upstream_error|bad_gateway|service_unavailable|quota_exceeded)/i;
+  const detectProxyWrappedError=raw=>{
+    const s=String(raw??'').trim();
+    if(!s)return null;
+    if(PROXY_ERROR_SIGNATURE_RE.test(s)){
+      return {
+        code:'PROXY_ALL_KEYS_FAILED',
+        error_type:'proxy_wrapped_error',
+        title:'反代服务所有 API 密钥均请求失败',
+        summary:'上游反代返回了 HTTP 200，但正文中包装了报错文本（「所有API密钥均请求失败 / 具体错误请查看轮询日志」），已被统一错误网关拦截，未写入聊天记录。'
+      };
+    }
+    if(PROXY_HEADER_ERROR_RE.test(s)||PROXY_PREFIX_CODE_RE.test(s)){
+      return {
+        code:'PROXY_WRAPPED_ERROR',
+        error_type:'proxy_wrapped_error',
+        title:'反代服务将报错信息包装为回复正文',
+        summary:`上游接口返回 HTTP 200，但正文内容为服务商错误提示（${s.slice(0,90)}），已被统一错误网关拦截。`
+      };
+    }
+    if(/^\s*\{\s*"error"\s*:\s*[\s\S]+\}\s*$/.test(s)){
+      try{
+        const parsed=JSON.parse(s);
+        if(parsed&&parsed.error){
+          const msg=typeof parsed.error==='string'?parsed.error:(parsed.error.message||parsed.error.code||JSON.stringify(parsed.error));
+          return {
+            code:'PROXY_JSON_ERROR',
+            error_type:'proxy_wrapped_error',
+            title:'反代服务在回复正文中返回了错误 JSON',
+            summary:`上游接口在正文中返回了 error 结构（${String(msg).slice(0,90)}），已被统一错误网关拦截。`
+          };
+        }
+      }catch{}
+    }
+    return null;
+  };
+  const isLegacyErrorArtifact=m=>{
+    if(!m||m.sender!=='ai')return false;
+    if(m.engine==='error'||m.isolated_error)return true;
+    const txt=String(m.text??'').trim();
+    if(!txt)return false;
+    if(LEGACY_ERROR_BUBBLE_RE.test(txt))return true;
+    if(detectProxyWrappedError(txt))return true;
+    return false;
+  };
   const PROTOCOL_LEADING_TAG_RE=/^(?:[ \t]*(?:\[|【)\s*(?:短信|见面)(?:[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?)?\s*(?:\]|】)[ \t]*)+/gm;
   const INLINE_TIMED_TAG_SEQ_RE=/(?:(?:\[|【)\s*(?:短信|见面)[\s:：·・\-]*(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}[\sT]*)?\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?\s*(?:\]|】)[ \t]*)+/g;
   const PROSE_CONTINUATION_AFTER_TAG_RE=/^(?:[”"』」）》】\]，,。！？!?；;、：:]|那条|这条|该条|一条|哪条|每条|那段|这段|那个|这个|那封|这封|的|里|中|上|后|前|内|外|记录|消息|内容|截图|气泡|通知|提醒|历史|存档|文本|字样|标记|标签)/;
@@ -68,7 +116,6 @@
     if(!s)return '…';
     return stripProtocolTags(s,{preserveParagraphs:true})||'…';
   };
-  // Standalone narration markers are protocol artifacts, not phone messages.
   const isNarrationMarker=raw=>/^(?:旁白|【旁白】|\[旁白\]|（旁白）|\(旁白\)|\*旁白\*|narrator|narration)\s*[:：。.!！]?\s*$/i.test(String(raw??'').trim());
   const isBareChatDivider=raw=>/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(String(raw??''));
   const pipeChatParts=line=>{
@@ -87,13 +134,21 @@
   const explicitChatParts=raw=>String(raw??'').replace(/\r\n?/g,'\n').split('\n')
     .flatMap(line=>pipeChatParts(splitInlineProtocolLine(line))).map(s=>cleanChatBubbleText(s)).filter(s=>s&&!isBareChatDivider(s)&&!isNarrationMarker(s));
   const storedChatText=raw=>explicitChatParts(raw).join('\n');
-  const isChatArtifact=m=>m?.sender==='ai'&&m.mode!=='meeting'&&m.engine!=='recalled'&&!m.recalled&&(isBareChatDivider(cleanChatBubbleText(m.text))||isNarrationMarker(cleanChatBubbleText(m.text)));
+  const isChatArtifact=m=>isLegacyErrorArtifact(m)||(m?.sender==='ai'&&m.mode!=='meeting'&&m.engine!=='recalled'&&!m.recalled&&(isBareChatDivider(cleanChatBubbleText(m.text))||isNarrationMarker(cleanChatBubbleText(m.text))));
   const sanitizeStoredData=target=>{
     if(!target||typeof target!=='object')return false;
     let changed=false;
     if(Array.isArray(target.messages)){
       for(const m of target.messages){
         if(!m||typeof m.text!=='string'||m.sender==='user'||m.engine==='recalled'||m.recalled)continue;
+        if(isLegacyErrorArtifact(m)){
+          if(m.engine!=='error'||!m.isolated_error){
+            m.engine='error';
+            m.isolated_error=true;
+            changed=true;
+          }
+          continue;
+        }
         const cleaned=m.mode==='meeting'?cleanMeetingNovelText(m.text):(storedChatText(m.text)||m.text);
         if(cleaned!==m.text){m.text=cleaned;changed=true;}
       }
@@ -122,6 +177,9 @@
     if(Array.isArray(target.episodicMemories)){
       for(const mem of target.episodicMemories){
         if(!mem||typeof mem!=='object')continue;
+        if(typeof mem.summary==='string'&&(LEGACY_ERROR_BUBBLE_RE.test(mem.summary.trim())||PROXY_ERROR_SIGNATURE_RE.test(mem.summary))){
+          if(!mem.isolated_error){mem.isolated_error=true;changed=true;}
+        }
         if(typeof mem.summary==='string'&&mem.source_type!=='correction'&&mem.source_type!=='manual'){
           const cs=stripProtocolTags(mem.summary,{preserveParagraphs:false});
           if(cs&&cs!==mem.summary){mem.summary=cs;changed=true;}
@@ -185,6 +243,8 @@
   const ensureDbFields=target=>{
     target.photoDescriptions ||= {};
     target.queue ||= {};
+    target.taskStates ||= {};
+    target.bgErrors ||= {};
     target.portraits ||= {};
     target.bios ||= {};
     target.bioTags ||= {};
@@ -193,6 +253,41 @@
     target.diaries ||= {};
     target.meetings ||= [];
     target.episodicMemories ||= [];
+    for(const q of Object.values(target.queue)){
+      if(!q||typeof q!=='object')continue;
+      q.pending=Array.isArray(q.pending)?q.pending:[];
+      if(q.status==='inflight'){
+        q.status=q.paused?'paused':'idle';
+        q.inflight='';
+        if(q.paused)q.blocked=true;
+      }
+      if(q.paused){
+        q.blocked=true;
+        q.status='paused';
+        q.dueAt=0;
+      }
+    }
+    for(const [tk,t] of Object.entries(target.taskStates)){
+      if(!t||typeof t!=='object'){delete target.taskStates[tk];continue;}
+      if(t.status==='inflight'){
+        t.status='paused';
+        t.paused=true;
+        t.inflight_token='';
+      }
+      if(t.paused&&t.mode==='chat'&&t.profile_id&&t.character_id){
+        const qk=pairKey(t.profile_id,t.character_id);
+        const q=target.queue[qk]||(target.queue[qk]={pending:[],dueAt:0,status:'paused',blocked:true,paused:true,revision:1,inflight:'',paceMode:'daily',delayMinutes:1,targetTimeLabel:'',scheduleReason:''});
+        if(Array.isArray(t.pending_ids)){
+          for(const mid of t.pending_ids){
+            if(mid&&!q.pending.includes(mid))q.pending.push(mid);
+          }
+        }
+        q.paused=true;
+        q.blocked=true;
+        q.status='paused';
+        q.dueAt=0;
+      }
+    }
     if(target.connection){
       target.connection.image_base_url ||= '';
       target.connection.image_api_key ||= '';
@@ -403,14 +498,14 @@
     if(!rawStr)return ['…'];
     let parts=explicitChatParts(rawStr);
     if(!parts.length&&(isBareChatDivider(rawStr.replace(PROTOCOL_LEADING_TAG_RE,''))||isNarrationMarker(cleanChatBubbleText(rawStr))))return [];
-    if(parts.length===1&&parts[0].length>=32){
+    if(parts.length===1&&parts[0].length>=120){
       const sentences=parts[0].match(/[^。！？!?]+[。！？!?]+|[^。！？!?]+$/g)?.map(s=>cleanChatBubbleText(s)).filter(Boolean)||[parts[0]];
       if(sentences.length>=2){
         parts=[];
         let buf='';
         for(const s of sentences){
           if(!buf)buf=s;
-          else if((buf+s).length<=26&&parts.length>0)buf+=s;
+          else if((buf+s).length<=48||buf.length<24)buf+=s;
           else{parts.push(buf);buf=s;}
         }
         if(buf)parts.push(buf);
@@ -444,35 +539,122 @@
     const base=12+((h>>>0)%24); // 12 to 35 minutes
     return {delayMinutes:base,reason:`日常模式 · ${c?.name||'对方'}正在忙手头的事，预计 ${fmtHHMM(Date.now()+base*60000)} 左右看手机并统一回复`};
   };
+  const TASK_LABELS={
+    chat:'手机聊天回复',
+    chat_flush:'手机聊天回复',
+    chat_message:'手机聊天回复',
+    chat_continue:'手机聊天继续生成',
+    chat_first_message:'首次匹配打招呼',
+    chat_proactive:'角色主动发消息',
+    meeting:'面对面小说推进',
+    meeting_message:'面对面小说推进',
+    meeting_continue:'面对面小说续写',
+    meeting_opening:'面对面小说开场',
+    meeting_finalize:'见面总结归档',
+    meeting_summary:'见面总结归档',
+    discover_bios:'候选角色档案生成',
+    bio:'候选角色档案生成',
+    match_decision:'匹配意愿判定',
+    match:'匹配意愿判定',
+    portrait:'角色照片生成',
+    photo_description:'照片描述生成',
+    photo:'照片描述生成',
+    surveillance:'每日监控行踪生成',
+    diary:'角色私密日记生成'
+  };
+  const inflightControllers=new Map();
+  const taskKeyOf=(pid,cid,mode='chat')=>`${pid||'_'}|${cid||'_'}|${mode||'chat'}`;
+  const getTaskState=(pid,cid,mode='chat')=>{
+    db.taskStates ||= {};
+    return db.taskStates[taskKeyOf(pid,cid,mode)]||null;
+  };
+  const clearTaskState=(pid,cid,mode='chat')=>{
+    db.taskStates ||= {};
+    const k=taskKeyOf(pid,cid,mode);
+    const ctrl=inflightControllers.get(k);
+    if(ctrl){try{ctrl.abort();}catch{}inflightControllers.delete(k);}
+    delete db.taskStates[k];
+  };
+  const clearTaskStatesForPair=(pid,cid)=>{
+    clearTaskState(pid,cid,'chat');
+    clearTaskState(pid,cid,'meeting');
+  };
+  const recordBgError=(pid,cid,taskType,errObj)=>{
+    db.bgErrors ||= {};
+    const k=pairKey(pid||'_',cid||'_');
+    const existing=db.bgErrors[k]||{};
+    existing[taskType]={
+      task_type:taskType,
+      task_label:TASK_LABELS[taskType]||taskType,
+      profile_id:pid||'',
+      character_id:cid||'',
+      error_code:errObj?.error_code||'API_ERROR',
+      http_status:errObj?.http_status||0,
+      title:errObj?.title||'后台任务调用失败',
+      message:errObj?.message||String(errObj||'请求失败'),
+      count:((existing[taskType]?.count)||0)+1,
+      updated_at:stamp()
+    };
+    db.bgErrors[k]=existing;
+    save();
+  };
+  const clearBgError=(pid,cid,taskType='')=>{
+    if(!db.bgErrors)return;
+    const k=pairKey(pid||'_',cid||'_');
+    if(!db.bgErrors[k])return;
+    if(taskType)delete db.bgErrors[k][taskType];
+    else delete db.bgErrors[k];
+  };
   const queueInfo=(pid,cid)=>{
     const r=relation(pid,cid);
     const hotChat=Boolean(r?.hot_chat);
     const q=db.queue[pairKey(pid,cid)];
-    if(!q)return {count:0,pendingIds:[],dueAt:0,remainingMs:0,status:'idle',blocked:false,paceMode:hotChat?'hot':'daily',hotChat,delayMinutes:hotChat?1:0,targetTimeLabel:'',scheduleReason:''};
+    const ts=getTaskState(pid,cid,'chat');
+    if(!q)return {count:0,pendingIds:[],dueAt:0,remainingMs:0,status:ts?.status==='paused'?'paused':'idle',blocked:Boolean(ts?.status==='paused'),paused:Boolean(ts?.status==='paused'),taskState:ts,paceMode:hotChat?'hot':'daily',hotChat,delayMinutes:hotChat?1:0,targetTimeLabel:'',scheduleReason:''};
     const dueAt=Number(q.dueAt||0);
+    const isPaused=Boolean(q.paused||(ts&&ts.status==='paused'));
     return {
       count:q.pending.length,
       pendingIds:q.pending.slice(),
       dueAt,
-      remainingMs:Math.max(0,dueAt-Date.now()),
-      status:q.status,
-      blocked:!!q.blocked,
+      remainingMs:isPaused?0:Math.max(0,dueAt-Date.now()),
+      status:isPaused?'paused':q.status,
+      blocked:!!q.blocked||isPaused,
+      paused:isPaused,
+      taskState:ts,
       paceMode:q.paceMode||(hotChat?'hot':'daily'),
       hotChat,
       delayMinutes:q.delayMinutes||(hotChat?1:20),
       targetTimeLabel:dueAt?fmtHHMM(dueAt):(q.targetTimeLabel||''),
-      scheduleReason:q.scheduleReason||''
+      scheduleReason:isPaused?(ts?.last_error?.title?`回复已暂停 · 点击恢复（${ts.last_error.title}）`:'回复已暂停 · 点击恢复'):(q.scheduleReason||'')
     };
   };
-  const clearQueue=(pid,cid)=>{const k=pairKey(pid,cid),q=db.queue[k];if(q){q.pending=[];q.dueAt=0;q.status='idle';q.blocked=false;q.revision=(q.revision||0)+1;q.inflight='';q.targetTimeLabel='';q.scheduleReason='';}};
+  const clearQueue=(pid,cid)=>{
+    const k=pairKey(pid,cid),q=db.queue[k];
+    if(q){q.pending=[];q.dueAt=0;q.status='idle';q.blocked=false;q.paused=false;q.revision=(q.revision||0)+1;q.inflight='';q.targetTimeLabel='';q.scheduleReason='';}
+    clearTaskState(pid,cid,'chat');
+  };
   const enqueue=(pid,cid,id,msgText='')=>{
     const k=pairKey(pid,cid);
     const r=relation(pid,cid);
     const hotChat=Boolean(r?.hot_chat);
     const c=byId.get(cid);
-    const q=db.queue[k]||(db.queue[k]={pending:[],dueAt:0,status:'idle',blocked:false,revision:0,inflight:'',paceMode:hotChat?'hot':'daily',delayMinutes:1,targetTimeLabel:'',scheduleReason:''});
+    const q=db.queue[k]||(db.queue[k]={pending:[],dueAt:0,status:'idle',blocked:false,paused:false,revision:0,inflight:'',paceMode:hotChat?'hot':'daily',delayMinutes:1,targetTimeLabel:'',scheduleReason:''});
+    const ts=getTaskState(pid,cid,'chat');
+    const isPaused=Boolean(q.paused||(ts&&ts.status==='paused'));
     const wasEmpty=q.pending.length===0;
     if(!q.pending.includes(id))q.pending.push(id);
+    if(isPaused){
+      q.paused=true;
+      q.blocked=true;
+      q.status='paused';
+      if(ts){
+        ts.pending_ids=q.pending.slice();
+        ts.updated_at=stamp();
+      }
+      q.scheduleReason='回复已暂停 · 新消息已按顺序加入待回复队列，点击恢复后将一并发送';
+      return queueInfo(pid,cid);
+    }
     q.blocked=false;
     const now=Date.now();
     if(hotChat){
@@ -490,33 +672,137 @@
         q.targetTimeLabel=fmtHHMM(q.dueAt);
         q.scheduleReason=sched.reason;
       }
-      // If !wasEmpty and q.dueAt > now, keep the existing q.dueAt so all messages in this window are bundled together!
     }
     return queueInfo(pid,cid);
   };
-  async function flushQueue(p,c,force){
+  async function flushQueue(p,c,force,retryOpts={}){
     const key=pairKey(p.id,c.id),q=db.queue[key];
+    const tKey=taskKeyOf(p.id,c.id,'chat');
+    const ts=getTaskState(p.id,c.id,'chat');
     if(!q)return {reply:null,replies:[],queued:false,queue:queueInfo(p.id,c.id)};
-    if(q.status==='inflight')return {reply:null,replies:[],queued:true,inflight:true,queue:queueInfo(p.id,c.id)};
+    if(q.status==='inflight'||ts?.status==='inflight'){
+      return {reply:null,replies:[],queued:true,inflight:true,deduplicated:true,queue:queueInfo(p.id,c.id),taskState:ts};
+    }
+    if((!q.pending||!q.pending.length)&&Array.isArray(ts?.pending_ids)&&ts.pending_ids.length){
+      q.pending=ts.pending_ids.slice();
+    }
     if(!q.pending.length)return {reply:null,replies:[],queued:false,queue:queueInfo(p.id,c.id)};
-    if(!force&&(q.blocked||Date.now()<q.dueAt))return {reply:null,replies:[],queued:true,queue:queueInfo(p.id,c.id)};
+    if((q.userPaused||ts?.userPaused)&&!retryOpts.manualResume){
+      return {reply:null,replies:[],queued:true,paused:true,queue:queueInfo(p.id,c.id),taskState:ts};
+    }
+    if(!force&&(q.paused||ts?.status==='paused'||q.blocked||Date.now()<q.dueAt)){
+      return {reply:null,replies:[],queued:true,paused:Boolean(q.paused||ts?.status==='paused'),queue:queueInfo(p.id,c.id),taskState:ts};
+    }
     const curMode=pub().mode;
     if(curMode==='normal'){
       q.blocked=true;save();
       return {reply:null,replies:[],queued:true,warning:'当前处于正常模式且尚未连接 API，请先在「终端」填写 API 地址、密钥和模型。',queue:queueInfo(p.id,c.id)};
     }
-    const pending=q.pending.slice(),generation=q.revision||0,token=uid();q.pending=[];q.dueAt=0;q.status='inflight';q.inflight=token;save();
-    const r=relation(p.id,c.id);let txt,engine='demo',warning='';
-    // Compile before the first await: a later message never leaks into this request's history.
+    q.paused=false;
+    q.userPaused=false;
+    q.blocked=false;
+    const pending=q.pending.slice();
+    const generation=(q.revision||0)+1;
+    q.revision=generation;
+    const token=uid();
+    const taskId=ts?.id||('task_'+uid());
+    const retryOfTaskId=retryOpts.retryOfTaskId||(ts?.id||'');
+    const attempt=(Number(ts?.attempt)||0)+1;
+    q.pending=[];q.dueAt=0;q.status='inflight';q.inflight=token;
+    const abortCtrl=typeof AbortController!=='undefined'?new AbortController():null;
+    if(abortCtrl)inflightControllers.set(tKey,abortCtrl);
+    db.taskStates ||= {};
+    db.taskStates[tKey]={
+      id:taskId,
+      retry_of_task_id:retryOfTaskId,
+      profile_id:p.id,
+      character_id:c.id,
+      character_name:c.name,
+      mode:'chat',
+      task_type:'chat_flush',
+      task_label:TASK_LABELS.chat_flush,
+      status:'inflight',
+      attempt,
+      pending_ids:pending.slice(),
+      inflight_token:token,
+      revision:generation,
+      last_error:null,
+      updated_at:stamp()
+    };
+    save();
+    const r=relation(p.id,c.id);let txt,engine='demo',warning='',apiError=null;
     const msgs=prompt(p,c,'chat',pending,{entry_point:'chat_flush'});
-    if(curMode==='live'){try{txt=await llm(msgs,{profile:p,character:c,mode:'chat',entry_point:'chat_flush'});engine='live'}catch(e){warning=String(e.message||e);engine='error'}}else txt=demo(p,c,'chat');
-    if(q.inflight!==token||q.revision!==generation||r?.mode!=='chat'||r?.status!=='matched')return {reply:null,replies:[],discarded:true,queue:queueInfo(p.id,c.id)};
-    q.status='idle';q.inflight='';let reply=null,replies=[];
+    if(curMode==='live'){
+      try{
+        txt=await llm(msgs,{
+          profile:p,
+          character:c,
+          mode:'chat',
+          entry_point:'chat_flush',
+          task_id:taskId,
+          retry_of_task_id:retryOfTaskId,
+          attempt,
+          signal:abortCtrl?.signal
+        });
+        engine='live';
+      }catch(e){
+        warning=String(e.message||e);
+        apiError=e.apiError||null;
+        engine='error';
+      }
+    }else txt=demo(p,c,'chat');
+    inflightControllers.delete(tKey);
+    if(q.inflight!==token||q.revision!==generation||r?.mode!=='chat'||r?.status!=='matched'){
+      if(r?.mode==='chat'&&r?.status==='matched'&&q.status==='paused'){
+        const newer=q.pending.slice();
+        q.pending=[...pending.filter(m=>!newer.includes(m)),...newer];
+        if(db.taskStates[tKey])db.taskStates[tKey].pending_ids=q.pending.slice();
+        save();
+      }
+      return {reply:null,replies:[],discarded:true,queue:queueInfo(p.id,c.id)};
+    }
+    q.inflight='';
+    let reply=null,replies=[];
     if(engine==='error'){
       const newer=q.pending.slice();
       q.pending=[...pending.filter(m=>!newer.includes(m)),...newer];
-      if(!newer.length){q.dueAt=Date.now();q.blocked=true;}
+      q.dueAt=0;
+      q.blocked=true;
+      q.paused=true;
+      q.status='paused';
+      db.taskStates[tKey]={
+        ...(db.taskStates[tKey]||{}),
+        id:taskId,
+        profile_id:p.id,
+        character_id:c.id,
+        character_name:c.name,
+        mode:'chat',
+        task_type:'chat_flush',
+        task_label:TASK_LABELS.chat_flush,
+        status:'paused',
+        attempt,
+        pending_ids:q.pending.slice(),
+        inflight_token:'',
+        last_error:apiError||{
+          error_code:'API_ERROR',
+          http_status:0,
+          title:'手机聊天回复生成失败',
+          message:warning||'模型请求失败',
+          character_id:c.id,
+          character_name:c.name,
+          task_type:'chat_flush',
+          task_label:TASK_LABELS.chat_flush
+        },
+        updated_at:stamp()
+      };
+      save();
+      return {reply:null,replies:[],queued:true,paused:true,warning,apiError:db.taskStates[tKey].last_error,taskState:db.taskStates[tKey],queue:queueInfo(p.id,c.id)};
     }else{
+      q.status='idle';
+      q.paused=false;
+      q.blocked=false;
+      clearTaskState(p.id,c.id,'chat');
+      clearBgError(p.id,c.id,'chat_flush_bg');
       const bubbleTexts=splitChatBubbles(txt);
       replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine));
       reply=replies[replies.length-1]||null;
@@ -528,18 +814,35 @@
         syncSurveillanceFromChat(p,c,userRows,combinedTxt);
       }
       if(r)r.updated_at=stamp();
+      save();
+      return {reply,replies,queued:false,warning:'',apiError:null,queue:queueInfo(p.id,c.id)};
     }
-    save();return {reply,replies,queued:false,warning,queue:queueInfo(p.id,c.id)};
   }
-  async function flushDueQueues(p){
+  async function flushDueQueues(p,activeCid=''){
     const now=Date.now(),flushed=[];
     for(const [k,q] of Object.entries(db.queue)){
       if(!k.startsWith(p.id+'|'))continue;
-      if(!q||!q.pending?.length||q.status==='inflight'||q.blocked||!q.dueAt||q.dueAt>now)continue;
-      const cid=k.slice(p.id.length+1),c=byId.get(cid),r=relation(p.id,cid);
+      const cid=k.slice(p.id.length+1);
+      const ts=getTaskState(p.id,cid,'chat');
+      if(!q||!q.pending?.length||q.status==='inflight'||q.paused||ts?.status==='paused'||q.blocked||!q.dueAt||q.dueAt>now)continue;
+      const c=byId.get(cid),r=relation(p.id,cid);
       if(!c||!r||r.status!=='matched'||r.mode!=='chat')continue;
+      const isBackground=Boolean(activeCid&&activeCid!==cid);
       const res=await flushQueue(p,c,false);
-      if(res.reply||res.warning)flushed.push({characterId:cid,characterName:c.name,reply:res.reply,warning:res.warning||''});
+      if(res.apiError&&isBackground){
+        recordBgError(p.id,cid,'chat_flush_bg',res.apiError);
+      }
+      if(res.reply||res.warning||res.apiError){
+        flushed.push({
+          characterId:cid,
+          characterName:c.name,
+          reply:res.reply,
+          warning:res.warning||'',
+          apiError:res.apiError||null,
+          taskState:res.taskState||null,
+          background:isBackground
+        });
+      }
     }
     return {flushed};
   }
@@ -971,6 +1274,7 @@
     const today=localDateStr();
     const dStr=(targetDate&&/^\d{4}-\d{2}-\d{2}$/.test(targetDate))?targetDate:today;
     const rec=getOrInitSurveillance(p,c,dStr);
+    delete rec._lastApiError;
     if(pub().mode!=='live')return rec;
     if(rec.engine==='live'&&!forceRefresh)return rec;
     try{
@@ -980,7 +1284,7 @@
 1. 严密贴合 ${c.name} 的原作职业、性格与独立生活习惯，角色有自己的工作、同伴与日常，不要整天围着 ${p.name} 转（当前关系：${relSummary}）。
 2. 每个时间段包含：start ("HH:MM"), end ("HH:MM"), location (具体地点，不超过14字), status (简短状态标签，4-6字), activity (正在做的事，不超过16字), scene (极具画面感的第三人称现场微描写，35-70字，描写环境光影、小动作或神态，严禁使用任何 emoji)。
 3. 只输出 JSON 对象，格式严格为：{"slots":[{"start":"00:00","end":"07:00","location":"...","status":"...","activity":"...","scene":"..."}]}`;
-      const out=await llm([{role:'system',content:sys},{role:'user',content:`请生成 ${c.name} 在 ${dStr} 的全天足迹 JSON。`}],{json_mode:true,max_tokens:1200});
+      const out=await llm([{role:'system',content:sys},{role:'user',content:`请生成 ${c.name} 在 ${dStr} 的全天足迹 JSON。`}],{json_mode:true,max_tokens:1200,profile:p,character:c,mode:'surveillance',entry_point:'surveillance',background:!forceRefresh});
       const parsed=JSON.parse(out);
       if(Array.isArray(parsed?.slots)&&parsed.slots.length>=5){
         const preserved=rec.slots.filter(s=>s.source==='meeting'||s.source==='chat_update');
@@ -1004,9 +1308,13 @@
         rec.slots=aiSlots;
         rec.engine='live';
         rec.updated_at=stamp();
+        clearBgError(p.id,c.id,'surveillance');
         save();
       }
-    }catch(e){}
+    }catch(e){
+      recordBgError(p.id,c.id,'surveillance',e.apiError||{message:String(e.message||e)});
+      if(forceRefresh)rec._lastApiError=e.apiError||null;
+    }
     return rec;
   }
   const buildSurveillancePayload=(p,c,requestedDate='')=>{
@@ -1034,6 +1342,9 @@
     if(isToday&&current?.isMeetingLive&&!unlocked.some(u=>u.source==='meeting'&&u.location===current.location)){
       unlocked.push({...current,isCurrent:true});
     }
+    const bgErr=db.bgErrors?.[pairKey(p.id,c.id)]?.surveillance||null;
+    const apiErr=rec._lastApiError||null;
+    delete rec._lastApiError;
     return {
       date:rec.date,
       today,
@@ -1047,7 +1358,9 @@
       unlockedSlots:unlocked.slice().reverse(),
       totalSlots:rec.slots.length,
       totalSlotsCount:rec.slots.length,
-      lockedCount
+      lockedCount,
+      bgError:bgErr,
+      apiError:apiErr
     };
   };
   const computeIntimacyInfo=(p,c)=>{
@@ -1158,6 +1471,7 @@
       diaryStore.byDate[dStr]=buildDefaultDiary(p,c,dStr,survRec);
     }
     const entry=diaryStore.byDate[dStr];
+    delete entry._lastApiError;
     if(pub().mode!=='live')return entry;
     if(entry.engine==='live'&&!forceRefresh)return entry;
     try{
@@ -1174,7 +1488,7 @@
    - 只有当阶段为 deep_love（爱到不行了）时，才会在记录日常之余流露出对 ${p.name} 浓烈的爱意与反复回味。
 3. 严禁使用任何 emoji 表情符号！文风必须符合 ${c.name} 的性格（第一人称“我”，分 3 个自然段，段与段之间用 \\n\\n 分隔）。
 4. 只输出 JSON 对象，格式为：{"title":"《...》","weather":"纯文字天气（如：夜风微凉）","mood":"纯文字心情（如：平静专注）","content":"第一人称日记正文（3段）"}`;
-      const out=await llm([{role:'system',content:sys},{role:'user',content:`【${dStr} 你的全天监控行踪】：\n${slotsTxt}\n\n【${dStr} 与 ${p.name} 的互动记录】：\n${chatTxt}\n\n请生成该日日记 JSON。`}],{json_mode:true,max_tokens:900});
+      const out=await llm([{role:'system',content:sys},{role:'user',content:`【${dStr} 你的全天监控行踪】：\n${slotsTxt}\n\n【${dStr} 与 ${p.name} 的互动记录】：\n${chatTxt}\n\n请生成该日日记 JSON。`}],{json_mode:true,max_tokens:900,profile:p,character:c,mode:'diary',entry_point:'diary',background:!forceRefresh});
       const parsed=JSON.parse(out);
       if(parsed&&parsed.content&&String(parsed.content).trim().length>=30){
         entry.title=String(parsed.title||entry.title).trim().slice(0,40);
@@ -1187,9 +1501,13 @@
         entry.intimacy_score=intimacy.score;
         entry.engine='live';
         entry.updated_at=stamp();
+        clearBgError(p.id,c.id,'diary');
         save();
       }
-    }catch(e){}
+    }catch(e){
+      recordBgError(p.id,c.id,'diary',e.apiError||{message:String(e.message||e)});
+      if(forceRefresh)entry._lastApiError=e.apiError||null;
+    }
     return entry;
   }
   const buildDiaryPayload=(p,c,requestedDate='')=>{
@@ -1203,6 +1521,9 @@
     const availableDates=Object.keys(diaryStore.byDate).sort((a,b)=>b.localeCompare(a));
     const diary=diaryStore.byDate[selectedDate];
     const intimacy=computeIntimacyInfo(p,c);
+    const bgErr=db.bgErrors?.[pairKey(p.id,c.id)]?.diary||null;
+    const apiErr=diary?._lastApiError||null;
+    if(diary)delete diary._lastApiError;
     return {
       characterId:c.id,
       characterName:c.name,
@@ -1212,7 +1533,9 @@
       availableDates,
       newlyGenerated,
       intimacy,
-      diary
+      diary,
+      bgError:bgErr,
+      apiError:apiErr
     };
   };
   const inferMeetingLocation=(pid,cid,customLoc='')=>{
@@ -1367,7 +1690,7 @@
     }
   };
   const retrieveRelevantMemories=(pid,cid,queryText='',excludeMsgIds=new Set(),limit=4,maxChars=1200)=>{
-    const allItems=db.episodicMemories.filter(x=>x.owner_id===cid&&x.profile_id===pid).sort((a,b)=>b.event_at.localeCompare(a.event_at));
+    const allItems=db.episodicMemories.filter(x=>x.owner_id===cid&&x.profile_id===pid&&!x.isolated_error).sort((a,b)=>b.event_at.localeCompare(a.event_at));
     if(!allItems.length)return [];
     const byMemId=new Map(allItems.map(x=>[x.id,x]));
     const corrByTarget=new Map();
@@ -1382,7 +1705,7 @@
     const scored=[];
     for(const item of allItems){
       const rawIds=item.raw_msg_ids||[];
-      if(rawIds.length&&rawIds.every(id=>excludeMsgIds.has(id))&&item.source_type==='dialogue')continue;
+      if(rawIds.length&&((item.source_type==='dialogue'&&rawIds.every(id=>excludeMsgIds.has(id)))||(item.source_type==='daily-summary'&&rawIds.some(id=>excludeMsgIds.has(id)))))continue;
       if(item.disputed&&!corrByTarget.has(item.id)&&!qTerms.size)continue;
       const itemTags=new Set(item.tags||[]);
       const itemTerms=new Set([...extractQueryTerms(item.summary),...itemTags]);
@@ -1411,7 +1734,7 @@
         entry.disputed_original=orig.summary;usedIds.add(orig.id);
       }
       if(overlapScore>=6&&(item.raw_msg_ids||[]).length){
-        const rawRows=(item.raw_msg_ids||[]).slice(0,2).map(id=>db.messages.find(m=>m.id===id)).filter(Boolean);
+        const rawRows=(item.raw_msg_ids||[]).slice(0,2).map(id=>db.messages.find(m=>m.id===id&&!isLegacyErrorArtifact(m))).filter(Boolean);
         if(rawRows.length)entry.raw_excerpt=rawRows.map(r=>(r.sender==='user'?'对方：':'你：')+(r.sender==='user'?String(r.text??'').trim():cleanChatBubbleText(r.text)).slice(0,70)).join(' | ');
       }
       const estLen=entry.summary.length+(entry.correction_note||'').length+(entry.raw_excerpt||'').length+30;
@@ -1503,7 +1826,8 @@
     db.messages.push(m);
     return m;
   };
-  const messagesOf=(pid,cid)=>db.messages.filter(m=>m.profile_id===pid&&m.character_id===cid);
+  const rawMessagesOf=(pid,cid)=>db.messages.filter(m=>m.profile_id===pid&&m.character_id===cid);
+  const messagesOf=(pid,cid)=>db.messages.filter(m=>m.profile_id===pid&&m.character_id===cid&&!isLegacyErrorArtifact(m));
   const sourceMatches=(tag,c)=>{
     let q=String(tag||'').toLocaleLowerCase().trim().replace(/\s+/g,' ').replace(/^[\s·・\-—]+|[\s·・\-—]+$/g,'');
     if(q.length<2)return false;
@@ -1582,17 +1906,26 @@
     const curSurv=getCurrentSurveillanceSlot(p,c);
     const meetingLoc=relation(p.id,c.id)?.meeting_location||curSurv?.location||'约定的街角咖啡馆';
     let sys='你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n';
-    sys+=`【第一层 · 身份记忆 (Identity Memory)】\n你的身份：${c.name}（角色ID：${c.id}）。来源：${c.source}。时期：${c.version}。已收录背景：${c.canon}。\n当前互动对象 Profile：${p.name}，${p.age}岁，性别${p.gender}，交友目的：${intentStr}，兴趣爱好：${interestsStr}；公开简介：${p.bio}。`;
+    if(mode==='meeting'){
+      sys+=`【第一层 · 身份记忆 (Identity Memory)】\n你的身份：${c.name}（角色ID：${c.id}）。来源：${c.source}。时期：${c.version}。已收录背景：${c.canon}。\n当前互动对象 Profile：${p.name}，${p.age}岁，性别${p.gender}，交友目的：${intentStr}，兴趣爱好：${interestsStr}；公开简介：${p.bio}。`;
+    }else{
+      const profileMeta=[p.name,p.age?`${p.age}岁`:'',p.gender?`性别${p.gender}`:'',p.intent?`交友目的：${p.intent}`:'',(p.interests&&p.interests.length)?`兴趣：${p.interests.join('、')}`:'',p.bio?`简介：${p.bio}`:''].filter(Boolean).join('，');
+      sys+=`【第一层 · 身份记忆 (Identity Memory)】\n你的身份：${c.name}（原作：${c.source} · ${c.version}）。背景设定：${c.canon}\n当前聊天对象资料：${profileMeta}。（注：若对方在下方实时聊天中重新做了自我介绍或使用英文/其他语言对话，请优先顺应对方在当前聊天中的自称、话题与语言。）`;
+    }
     if(p.role_character_id&&byId.has(p.role_character_id)){const x=byId.get(p.role_character_id);sys+=`\n对方扮演的原作人物：${x.name}（${x.source} ${x.version}），${x.canon}。`}
     else if(p.role_hint)sys+=`\n对方提供的身份说明（未验证）：${p.role_hint.slice(0,240)}`;
     sys+=`\n\n【第二层 · 关系记忆基线 (Relationship Memory)】\n${relSummary}`;
+    if(mode==='chat'){
+      if(relSummary.includes('再次重逢'))sys+='\n关系阶段提示：你们曾解除匹配后重新匹配，你清楚记得过往相处经历，不必装作初次认识。';
+      else if(messagesOf(p.id,c.id).length<=8)sys+='\n关系阶段提示：你们刚通过交友软件匹配不久，请保持角色自然的社交边界、幽默感或分寸，不要过度自来熟，也不要像客服一样生硬盘问或长篇解释个人设定。';
+    }
     if(mode==='meeting'){
       sys+=`\n当前见面地点：「${meetingLoc}」${curSurv?`（实时状态同步：${curSurv.activity}）`:''}。`;
     }
     if(recalled.length){
       sys+=`\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n`+recalled.map(formatEpisodicEntry).join('\n');
     }else{
-      sys+=`\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n（当前话题未触发额外远期档案，仅依靠下方今日活跃上下文连贯交流）`;
+      sys+=`\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n`+(mode==='meeting'?'（当前话题未触发额外远期档案，仅依靠下方今日活跃上下文连贯交流）':'（无额外远期档案命中，请直接聚焦下方当前聊天。）');
     }
     if(mode==='meeting'&&preChatContext.length){
       const smsLines=preChatContext.map(m=>{
@@ -1654,18 +1987,19 @@
       chat.push(finalUserTurn);
       return chat;
     }
-    sys+='\n\n'+presets.filter(x=>x.role==='system').map(x=>macros(x.content)).join('\n\n');
-    const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)})),...historyTurns];
+    const sysPresetsText=presets.filter(x=>x.role==='system').map(x=>macros(x.content)).join('\n\n');
+    if(sysPresetsText)sys+='\n\n'+sysPresetsText;
     let batchHint='';
-    if(mode==='chat'&&Array.isArray(pendingIds)&&pendingIds.length>1){
-      const bundledRows=pendingIds.map(id=>db.messages.find(x=>x.id===id)).filter(Boolean);
+    const effectivePending=(Array.isArray(pendingIds)&&pendingIds.length)?pendingIds:(queueInfo(p.id,c.id).pendingIds||[]);
+    if(mode==='chat'&&effectivePending.length>1){
+      const bundledRows=effectivePending.map(id=>db.messages.find(x=>x.id===id)).filter(Boolean);
       if(bundledRows.length>1){
-        const timelineStr=bundledRows.map(x=>`${fmtHHMM(x.created_at)}「${(x.sender==='user'?String(x.text??'').trim():cleanChatBubbleText(x.text)).slice(0,60)}」`).join(' -> ');
-        batchHint=`\n【打包消息时间线】你在未看手机的这段时间里，对方陆续给你发来了 ${bundledRows.length} 条消息（按发送时间先后：${timelineStr}）。你现在刚拿起手机把这些消息一次性读完，请结合这些消息各自的时间戳跨度与内容，像真人一样自然连贯地统一回复。`;
+        batchHint=`\n【连续消息提示】对方刚刚连续发来了最后 ${bundledRows.length} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。`;
       }
     }
-    const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】当前时间 ${fmtHHMM(Date.now())||'12:00'}，你此刻身处「${curSurv.location}」，状态：「${curSurv.activity}」（现场细节：${curSurv.scene}）。若对方问起你在哪、在做什么或提出现在见面，请严格以此真实位置与状态为准，保持世界观与地点一致。`:'';
-    chat.push({role:'system',content:'【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint});
+    const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「${curSurv.location}」·「${curSurv.activity}」（仅供对方主动问起你在哪或在忙什么、且与当前聊天话题不冲突时自然参考；不必主动汇报行踪或生硬解释日程）。`:'';
+    sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint;
+    const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)})),...historyTurns];
     return chat;
   };
   function getApiUrl(suffix){const b=db.connection.base_url.trim().replace(/\/+$/,'');if(!/^https?:\/\//.test(b))bodyErr('API Base URL 需要以 http:// 或 https:// 开头');if(/^http:\/\//.test(b)&&!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(?:\/|$)/.test(b))bodyErr('远程 API 必须使用 HTTPS');return b+suffix}
@@ -1684,15 +2018,150 @@
     }catch{}
     return entry;
   };
+  const createApiError=({error_code='API_ERROR',http_status=0,title='模型接口请求失败',message='API 请求失败',detail='',retry_after=0,suggest_terminal=false,may_consume_tokens=false,character_id='',character_name='',profile_id='',task_type='chat',task_label='',task_id='',retry_of_task_id='',attempt=1,log_id='',background=false})=>({
+    error_code,
+    error_type:error_code,
+    http_status:Number(http_status)||0,
+    title,
+    message,
+    detail:String(detail||'').slice(0,600),
+    retry_after:Number(retry_after)||0,
+    suggest_terminal:Boolean(suggest_terminal),
+    may_consume_tokens:Boolean(may_consume_tokens),
+    character_id:character_id||'',
+    character_name:character_name||'',
+    profile_id:profile_id||'',
+    task_type:task_type||'chat',
+    task_label:task_label||TASK_LABELS[task_type]||'模型生成任务',
+    task_id:task_id||'',
+    retry_of_task_id:retry_of_task_id||'',
+    attempt:Number(attempt)||1,
+    log_id:log_id||'',
+    background:Boolean(background),
+    user_message_saved:true,
+    created_at:stamp()
+  });
+  const throwApiError=(info,logBase,startedMs,extraLog={})=>{
+    const apiErr=createApiError({
+      ...info,
+      character_id:logBase.character_id,
+      character_name:logBase.character_name,
+      profile_id:logBase.profile_id,
+      task_type:info.task_type||logBase.mode||logBase.entry_point,
+      task_label:TASK_LABELS[logBase.entry_point]||TASK_LABELS[logBase.mode]||'模型生成任务',
+      task_id:logBase.task_id||'',
+      retry_of_task_id:logBase.retry_of_task_id||'',
+      attempt:logBase.attempt||1,
+      log_id:logBase.id
+    });
+    recordSystemLog({
+      ...logBase,
+      status:'error',
+      http_status:apiErr.http_status,
+      error_code:apiErr.error_code,
+      error_type:apiErr.error_code,
+      duration_ms:Date.now()-startedMs,
+      error:`[${apiErr.error_code}${apiErr.http_status?` HTTP ${apiErr.http_status}`:''}] ${apiErr.title}：${apiErr.message}${apiErr.detail?` (${apiErr.detail})`:''}`,
+      raw_response:extraLog.raw_response??null,
+      raw_content:extraLog.raw_content??'',
+      reasoning_content:extraLog.reasoning_content??'',
+      parsed_content:'',
+      char_count_raw:typeof extraLog.raw_content==='string'?extraLog.raw_content.length:0,
+      char_count_parsed:0,
+      finish_reason:extraLog.finish_reason||apiErr.error_code.toLowerCase(),
+      usage:extraLog.usage||null,
+      truncation_warning:extraLog.truncation_warning||''
+    });
+    const err=new Error(`${apiErr.title}：${apiErr.message}`);
+    err.status=400;
+    err.apiError=apiErr;
+    throw err;
+  };
+  const extractRetryAfter=(res,errBodyStr='',errJson=null)=>{
+    try{
+      const hdr=res?.headers?.get?.('retry-after')||res?.headers?.get?.('Retry-After')||res?.headers?.['retry-after']||res?.headers?.['Retry-After'];
+      if(hdr){
+        const n=Number(hdr);
+        if(Number.isFinite(n)&&n>0)return Math.ceil(n);
+      }
+    }catch{}
+    const bodyVal=errJson?.error?.retry_after??errJson?.retry_after??null;
+    if(bodyVal!==null&&Number.isFinite(Number(bodyVal))&&Number(bodyVal)>0)return Math.ceil(Number(bodyVal));
+    const m=String(errBodyStr||'').match(/retry[\s_-]*after[:\s]+(\d+)/i)||String(errBodyStr||'').match(/请在\s*(\d+)\s*秒后重试/);
+    if(m&&Number(m[1])>0)return Number(m[1]);
+    return 0;
+  };
+  const classifyHttpStatusError=(status,errBodyStr='',res=null)=>{
+    let errJson=null;
+    try{errJson=errBodyStr?JSON.parse(errBodyStr):null;}catch{}
+    const upstreamMsg=String(errJson?.error?.message||errJson?.message||errBodyStr||'').trim().slice(0,360);
+    const proxyCheck=detectProxyWrappedError(upstreamMsg||errBodyStr);
+    const retryAfter=extractRetryAfter(res,errBodyStr,errJson);
+    if(proxyCheck&&proxyCheck.code==='PROXY_ALL_KEYS_FAILED'){
+      return {
+        error_code:'PROXY_ALL_KEYS_FAILED',
+        http_status:status,
+        title:`反向代理密钥池全部失败 (HTTP ${status})`,
+        message:'反代服务提示“所有API密钥均请求失败，具体错误请查看轮询日志”。上游渠道或密钥池当前不可用。',
+        detail:upstreamMsg,
+        retry_after:retryAfter,
+        suggest_terminal:true,
+        may_consume_tokens:false
+      };
+    }
+    switch(Number(status)){
+      case 400:
+        return {error_code:'HTTP_400',http_status:400,title:'请求参数异常 (HTTP 400)',message:'模型接口拒绝了本次请求参数（可能是模型不支持某个参数或上下文长度超限）。',detail:upstreamMsg,retry_after:0,suggest_terminal:true};
+      case 401:
+        return {error_code:'HTTP_401',http_status:401,title:'API 认证失败 (HTTP 401)',message:'API Key 无效、已过期或未正确填写，请前往「终端」检查 API 密钥配置。',detail:upstreamMsg,retry_after:0,suggest_terminal:true};
+      case 403:
+        return {error_code:'HTTP_403',http_status:403,title:'访问权限不足 (HTTP 403)',message:'当前 API Key 没有权限访问该模型或接口，或账户余额/权限受限。',detail:upstreamMsg,retry_after:0,suggest_terminal:true};
+      case 404:
+        return {error_code:'HTTP_404',http_status:404,title:'模型或接口地址不存在 (HTTP 404)',message:'未找到对应的 API 路径或模型名称（请检查 Base URL 是否包含 /v1 以及模型 ID 是否拼写正确）。',detail:upstreamMsg,retry_after:0,suggest_terminal:true};
+      case 408:
+        return {error_code:'HTTP_408',http_status:408,title:'请求超时 (HTTP 408)',message:'上游模型服务响应超时。注意：服务商可能已开始处理本次请求，重试可能产生额外 Token 消耗。',detail:upstreamMsg,retry_after:retryAfter,suggest_terminal:false,may_consume_tokens:true};
+      case 429:
+        return {error_code:'HTTP_429',http_status:429,title:'请求频率或额度受限 (HTTP 429)',message:retryAfter?`触发频率或配额限制，建议等待约 ${retryAfter} 秒后再手动重试。`:'触发 API 速率限制（Rate Limit）或账户配额耗尽，请稍候再试或检查额度。',detail:upstreamMsg,retry_after:retryAfter,suggest_terminal:false};
+      case 500:
+        return {error_code:'HTTP_500',http_status:500,title:'模型服务器内部错误 (HTTP 500)',message:'上游模型服务发生内部故障，请稍后手动重试。',detail:upstreamMsg,retry_after:retryAfter,suggest_terminal:false};
+      case 502:
+        return {error_code:'HTTP_502',http_status:502,title:'网关错误 (HTTP 502)',message:'API 网关或反代无法从上游模型收到有效响应（Bad Gateway）。',detail:upstreamMsg,retry_after:retryAfter,suggest_terminal:false};
+      case 503:
+        return {error_code:'HTTP_503',http_status:503,title:'模型服务暂不可用 (HTTP 503)',message:'上游模型节点正在维护或暂时不可用（Service Unavailable）。',detail:upstreamMsg,retry_after:retryAfter,suggest_terminal:false};
+      case 504:
+        return {error_code:'HTTP_504',http_status:504,title:'网关超时 (HTTP 504)',message:'反代或网关等待上游模型生成超时（Gateway Timeout）。注意：上游可能已处理请求，重试可能产生额外 Token 消耗。',detail:upstreamMsg,retry_after:retryAfter,suggest_terminal:false,may_consume_tokens:true};
+      case 529:
+        return {error_code:'HTTP_529',http_status:529,title:'模型服务商过载 (HTTP 529)',message:'上游模型集群当前负载过高（Site is overloaded），请稍等片刻后重试。',detail:upstreamMsg,retry_after:retryAfter||15,suggest_terminal:false};
+      default:
+        return {error_code:`HTTP_${status||0}`,http_status:Number(status)||0,title:`模型接口返回异常状态 (HTTP ${status})`,message:`服务器返回了非 2xx 状态码（HTTP ${status}）。`,detail:upstreamMsg,retry_after:retryAfter,suggest_terminal:status>=400&&status<500};
+    }
+  };
+  const readResTextAndJson=async res=>{
+    let rawText='',data=null,parseErr=null;
+    if(typeof res.text==='function'){
+      try{
+        rawText=await res.text();
+        if(rawText&&rawText.trim()){
+          try{data=JSON.parse(rawText);}catch(pe){parseErr=pe;}
+        }
+      }catch(te){parseErr=te;}
+    }else if(typeof res.json==='function'){
+      try{
+        data=await res.json();
+        rawText=JSON.stringify(data);
+      }catch(je){parseErr=je;}
+    }
+    return {rawText,data,parseErr};
+  };
   async function llm(messages,options={}){
-    const s=db.connection;if(!s.base_url||!s.api_key||!s.model)bodyErr('还没有配置可用的 API 地址、密钥及模型');
-    const reqMaxTokens=Number(options.max_tokens||s.max_tokens||4096);
-    const payload={model:s.model,messages,temperature:s.temperature,top_p:s.top_p,max_tokens:reqMaxTokens};
-    if(options.json_mode)payload.response_format={type:'json_object'};
-    const mode=options.mode|| (options.json_mode?'json':'chat');
+    const s=db.connection;
+    const mode=options.mode||(options.json_mode?'json':'chat');
     const pObj=options.profile||null;
     const cObj=options.character||null;
     const entryPoint=options.entry_point||mode;
+    const reqMaxTokens=Number(options.max_tokens||s.max_tokens||4096);
+    const payload={model:s.model,messages,temperature:s.temperature,top_p:s.top_p,max_tokens:reqMaxTokens};
+    if(options.json_mode)payload.response_format={type:'json_object'};
     const presetMode=(mode==='meeting'||mode==='chat')?mode:null;
     const modePresets=presetMode?(db.presets||[]).filter(x=>x.mode===presetMode).sort((a,b)=>a.sort_order-b.sort_order):[];
     const enabledPresets=modePresets.filter(x=>x.enabled);
@@ -1708,11 +2177,44 @@
       chars:String(x.content||'').length,
       char_count:String(x.content||'').length
     }));
-    const endpoint=getApiUrl('/chat/completions');
     const startedMs=Date.now();
+    let endpoint='';
+    try{
+      if(!s.base_url||!s.api_key||!s.model)bodyErr('还没有配置可用的 API 地址、密钥及模型');
+      endpoint=getApiUrl('/chat/completions');
+    }catch(cfgErr){
+      const logBaseCfg={
+        id:'log_'+uid(),
+        created_at:stamp(),
+        task_id:options.task_id||'',
+        retry_of_task_id:options.retry_of_task_id||'',
+        attempt:options.attempt||1,
+        background:Boolean(options.background),
+        profile_id:pObj?.id||'',
+        profile_name:pObj?.name||'',
+        character_id:cObj?.id||'',
+        character_name:cObj?.name||'',
+        mode,
+        entry_point:entryPoint,
+        model:s.model||'',
+        endpoint:s.base_url||''
+      };
+      throwApiError({
+        error_code:'CONFIG_MISSING',
+        http_status:0,
+        title:'API 配置不完整',
+        message:String(cfgErr?.message||cfgErr||'请先在「终端」填写有效的 API 地址、密钥及模型'),
+        suggest_terminal:true,
+        background:Boolean(options.background)
+      },logBaseCfg,startedMs);
+    }
     const logBase={
       id:'log_'+uid(),
       created_at:stamp(),
+      task_id:options.task_id||'',
+      retry_of_task_id:options.retry_of_task_id||'',
+      attempt:options.attempt||1,
+      background:Boolean(options.background),
       profile_id:pObj?.id||'',
       profile_name:pObj?.name||'',
       character_id:cObj?.id||'',
@@ -1738,56 +2240,126 @@
     };
     let res;
     try{
-      res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.api_key},body:JSON.stringify(payload)});
+      const fetchOpts={method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.api_key},body:JSON.stringify(payload)};
+      if(options.signal)fetchOpts.signal=options.signal;
+      res=await fetch(endpoint,fetchOpts);
     }catch(e){
-      const errMsg='浏览器无法直连模型（可能是 API 不允许跨域 CORS）。可改用随项目提供的 Python 本地服务器版。';
-      recordSystemLog({
-        ...logBase,
-        status:'error',
+      const rawErr=String(e?.message||e||'Failed to fetch');
+      const isTimeout=/timeout|timed\s*out|超时|etimedout/i.test(rawErr);
+      const isAbort=(e?.name==='AbortError'||/abort|cancelled|canceled/i.test(rawErr))&&!isTimeout;
+      throwApiError({
+        error_code:isAbort?'REQUEST_ABORTED':(isTimeout?'REQUEST_TIMEOUT':'NETWORK_ERROR'),
         http_status:0,
-        duration_ms:Date.now()-startedMs,
-        error:errMsg+' ('+String(e?.message||e)+')',
-        raw_response:null,
-        raw_content:'',
-        reasoning_content:'',
-        parsed_content:'',
-        char_count_raw:0,
-        char_count_parsed:0,
-        finish_reason:'network_error',
-        usage:null,
-        truncation_warning:''
-      });
-      bodyErr(errMsg);
+        title:isAbort?'请求已中止':(isTimeout?'网络连接或响应超时':'网络连接失败 / 无法连接模型接口'),
+        message:isAbort
+          ?'当前请求已被手动暂停或由于场景切换而中止。'
+          :(isTimeout
+            ?'等待模型服务响应超时。注意：上游服务商可能已收到请求，重试可能产生额外 Token 消耗。'
+            :'浏览器无法连接至模型接口（可能是网络断开、域名不可达或 API 不允许跨域 CORS）。'),
+        detail:rawErr,
+        suggest_terminal:!isAbort&&!isTimeout,
+        may_consume_tokens:!isAbort,
+        background:Boolean(options.background)
+      },logBase,startedMs,{finish_reason:isAbort?'aborted':(isTimeout?'timeout':'network_error')});
+    }
+    if(!res||typeof res.ok!=='boolean'){
+      throwApiError({
+        error_code:'EMPTY_RESPONSE',
+        http_status:0,
+        title:'接口返回了无效响应对象',
+        message:'未收到有效的 HTTP 响应。',
+        background:Boolean(options.background)
+      },logBase,startedMs,{finish_reason:'invalid_response'});
     }
     if(!res.ok){
-      let errBody='';
-      try{errBody=await res.text();}catch(e){}
-      const errMsg='模型接口错误 HTTP '+res.status;
-      recordSystemLog({
-        ...logBase,
-        status:'error',
-        http_status:res.status,
-        duration_ms:Date.now()-startedMs,
-        error:errMsg+(errBody?`: ${errBody.slice(0,500)}`:''),
-        raw_response:errBody?errBody.slice(0,2000):null,
-        raw_content:'',
-        reasoning_content:'',
-        parsed_content:'',
-        char_count_raw:0,
-        char_count_parsed:0,
-        finish_reason:'http_'+res.status,
-        usage:null,
-        truncation_warning:''
+      const {rawText}=await readResTextAndJson(res);
+      const classified=classifyHttpStatusError(res.status,rawText,res);
+      throwApiError({
+        ...classified,
+        background:Boolean(options.background)
+      },logBase,startedMs,{
+        raw_response:rawText?rawText.slice(0,2000):null,
+        finish_reason:'http_'+res.status
       });
-      bodyErr(errMsg);
     }
-    const data=await res.json();
-    const choice=(data?.choices||[])[0]||{};
+    const {rawText,data,parseErr}=await readResTextAndJson(res);
+    if(parseErr||!data||typeof data!=='object'){
+      if(!rawText||!String(rawText).trim()){
+        throwApiError({
+          error_code:'EMPTY_RESPONSE',
+          http_status:res.status||200,
+          title:'模型接口返回空响应',
+          message:'HTTP 状态码为 200，但响应体为空。',
+          background:Boolean(options.background)
+        },logBase,startedMs,{raw_response:rawText||null,finish_reason:'empty_body'});
+      }
+      const proxyWrap=detectProxyWrappedError(rawText);
+      if(proxyWrap){
+        throwApiError({
+          error_code:proxyWrap.code,
+          http_status:res.status||200,
+          title:'反向代理返回了错误文本',
+          message:proxyWrap.reason,
+          detail:String(rawText).slice(0,360),
+          suggest_terminal:true,
+          background:Boolean(options.background)
+        },logBase,startedMs,{raw_response:String(rawText).slice(0,2000),finish_reason:'proxy_error'});
+      }
+      throwApiError({
+        error_code:'INVALID_RESPONSE_JSON',
+        http_status:res.status||200,
+        title:'无法解析模型接口响应',
+        message:'接口返回了非 JSON 格式的数据（可能是反代报错网页或网关拦截页）。',
+        detail:String(rawText||'').slice(0,360),
+        suggest_terminal:true,
+        background:Boolean(options.background)
+      },logBase,startedMs,{raw_response:String(rawText||'').slice(0,2000),finish_reason:'invalid_json_response'});
+    }
+    // Check HTTP 200 but with top-level error object or status === 'error'
+    if(data.error||(data.status==='error'&&!Array.isArray(data.choices))){
+      const errObj=data.error;
+      const errMsgStr=typeof errObj==='string'?errObj:(errObj?.message||data.message||JSON.stringify(errObj));
+      const errCodeStr=String(errObj?.code||errObj?.type||'HTTP_200_ERROR').toUpperCase();
+      const proxyCheck=detectProxyWrappedError(errMsgStr);
+      const retryAfter=extractRetryAfter(res,errMsgStr,data);
+      throwApiError({
+        error_code:proxyCheck?.code||'HTTP_200_ERROR_OBJECT',
+        http_status:res.status||200,
+        title:proxyCheck?.code==='PROXY_ALL_KEYS_FAILED'?'反向代理密钥池全部失败':'接口返回包含 Error 字段的异常响应',
+        message:proxyCheck?.reason||`HTTP 状态为 200，但响应体包含 error 错误信息：${String(errMsgStr).slice(0,180)}`,
+        detail:String(errMsgStr).slice(0,400),
+        retry_after:retryAfter,
+        suggest_terminal:Boolean(proxyCheck||/key|auth|model|permission|quota/i.test(errMsgStr)),
+        background:Boolean(options.background)
+      },logBase,startedMs,{raw_response:data,finish_reason:'http_200_error_field'});
+    }
+    if(!Array.isArray(data?.choices)||data.choices.length===0){
+      throwApiError({
+        error_code:'EMPTY_CHOICES',
+        http_status:res.status||200,
+        title:'接口未返回候选回复 (Choices 为空)',
+        message:'接口响应中缺少 choices 列表或列表为空。',
+        background:Boolean(options.background)
+      },logBase,startedMs,{raw_response:data,finish_reason:'empty_choices'});
+    }
+    const choice=data.choices[0]||{};
+    if(choice.error){
+      const cErrMsg=typeof choice.error==='string'?choice.error:(choice.error?.message||JSON.stringify(choice.error));
+      throwApiError({
+        error_code:'CHOICE_ERROR',
+        http_status:res.status||200,
+        title:'模型生成节点中断报错',
+        message:`响应 choices[0] 包含错误字段：${String(cErrMsg).slice(0,180)}`,
+        detail:String(cErrMsg).slice(0,400),
+        background:Boolean(options.background)
+      },logBase,startedMs,{raw_response:data,finish_reason:'choice_error'});
+    }
     const msgObj=choice.message||{};
     let result=msgObj.content;
     if(Array.isArray(result))result=result.map(x=>x.text||'').join('');
     const reasoningRaw=[msgObj.reasoning_content,msgObj.reasoning,choice.reasoning].find(x=>typeof x==='string'&&x.length)||'';
     const finishReason=choice.finish_reason||data?.finish_reason||null;
+    const isTruncated=['length','max_tokens'].includes(String(finishReason||'').toLowerCase());
     const usageRaw=data?.usage||null;
     const reasoningTokens=usageRaw?.completion_tokens_details?.reasoning_tokens??usageRaw?.reasoning_tokens??null;
     const usage=usageRaw?{
@@ -1797,35 +2369,116 @@
       reasoning_tokens:reasoningTokens
     }:null;
     if(typeof result!=='string'||!result.trim()){
-      const emptyReason=finishReason==='length'
-        ?'模型因达到 max_tokens 长度上限而被截断（可能是思维链/推理消耗了全部 max_tokens 预算，建议调大 Max tokens 至 4096–8192）'
-        :'模型未返回可用文本';
-      recordSystemLog({
-        ...logBase,
-        status:'error',
-        http_status:res.status,
-        duration_ms:Date.now()-startedMs,
-        error:emptyReason,
+      const isLen=isTruncated;
+      throwApiError({
+        error_code:isLen?'OUTPUT_TRUNCATED':'EMPTY_CONTENT',
+        http_status:res.status||200,
+        title:isLen?'输出因达到 max_tokens 上限被截断为空':'模型未返回可用文本内容',
+        message:isLen
+          ?'模型因达到 max_tokens 长度上限而被截断（可能是思维链/推理消耗了全部 max_tokens 预算，建议调大 Max tokens 至 4096–8192）。'
+          :'接口返回了空内容（choices[0].message.content 为空），未生成任何角色回复。',
+        suggest_terminal:isLen,
+        background:Boolean(options.background)
+      },logBase,startedMs,{
         raw_response:data,
         raw_content:typeof result==='string'?result:'',
         reasoning_content:reasoningRaw,
-        parsed_content:'',
-        char_count_raw:typeof result==='string'?result.length:0,
-        char_count_parsed:0,
-        finish_reason:finishReason,
+        finish_reason:finishReason||'empty_content',
         usage,
-        truncation_warning:finishReason==='length'?'finish_reason=length：输出因达到 max_tokens 上限被截断':''
+        truncation_warning:isLen?'finish_reason=length：输出因达到 max_tokens 上限被截断':''
       });
-      bodyErr(emptyReason);
     }
     const rawTrimmed=result.trim();
+    // Check if HTTP 200 assistant content is actually a reverse-proxy wrapped error string
+    const proxyWrapped=detectProxyWrappedError(rawTrimmed);
+    if(proxyWrapped){
+      throwApiError({
+        error_code:proxyWrapped.code,
+        http_status:res.status||200,
+        title:proxyWrapped.code==='PROXY_ALL_KEYS_FAILED'?'反向代理密钥池请求失败 (HTTP 200 包装错误)':'反向代理将错误提示包装为了模型回复',
+        message:`已拦截反代伪装成角色回复的错误文本（${proxyWrapped.reason}），未写入聊天记录与记忆。`,
+        detail:rawTrimmed.slice(0,360),
+        suggest_terminal:true,
+        background:Boolean(options.background)
+      },logBase,startedMs,{
+        raw_response:data,
+        raw_content:rawTrimmed,
+        reasoning_content:reasoningRaw,
+        finish_reason:'proxy_wrapped_error',
+        usage
+      });
+    }
+    // Check structured JSON task validity when json_mode is true
+    if(options.json_mode&&!options.skip_json_gateway){
+      let jsonCandidate=rawTrimmed;
+      const fenced=jsonCandidate.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+      if(fenced&&fenced[1])jsonCandidate=fenced[1].trim();
+      try{
+        const parsedJson=JSON.parse(jsonCandidate);
+        if(!parsedJson||typeof parsedJson!=='object'){
+          throw new Error('JSON root is not an object');
+        }
+      }catch(je){
+        throwApiError({
+          error_code:isTruncated?'OUTPUT_TRUNCATED':'INVALID_STRUCTURED_JSON',
+          http_status:res.status||200,
+          title:isTruncated?'结构化输出因长度截断导致 JSON 损坏':'结构化任务返回了无效的 JSON',
+          message:isTruncated
+            ?'模型在输出结构化 JSON 时达到 max_tokens 上限被截断，导致 JSON 不完整。'
+            :'模型返回的内容不是有效的 JSON 结构，已拦截以防污染存档。',
+          detail:rawTrimmed.slice(0,300),
+          suggest_terminal:isTruncated,
+          background:Boolean(options.background)
+        },logBase,startedMs,{
+          raw_response:data,
+          raw_content:rawTrimmed,
+          reasoning_content:reasoningRaw,
+          finish_reason:finishReason||'invalid_json',
+          usage,
+          truncation_warning:isTruncated?'finish_reason=length：JSON 因达到 max_tokens 上限被截断':''
+        });
+      }
+    }
     const parsedPreview=mode==='meeting'
       ?cleanMeetingNovelText(rawTrimmed)
       :(mode==='chat'?splitChatBubbles(rawTrimmed).join('\n'):rawTrimmed);
+    if((mode==='chat'||mode==='meeting')&&!parsedPreview.trim()){
+      throwApiError({
+        error_code:'EMPTY_PARSED_CONTENT',
+        http_status:res.status||200,
+        title:'模型未返回可显示的正文',
+        message:'清洗空白或分隔符后没有可显示的角色正文内容，请重试。',
+        detail:rawTrimmed.slice(0,200),
+        background:Boolean(options.background)
+      },logBase,startedMs,{
+        raw_response:data,
+        raw_content:rawTrimmed,
+        reasoning_content:reasoningRaw,
+        finish_reason:finishReason||'empty_parsed',
+        usage
+      });
+    }
+    // Check severe truncation on chat/meeting when finish_reason === 'length' and content is severely cut off (< 80 chars or explicit reject_truncated)
+    if(isTruncated&&(options.json_mode||options.reject_truncated||parsedPreview.trim().length<80)){
+      throwApiError({
+        error_code:'OUTPUT_TRUNCATED',
+        http_status:res.status||200,
+        title:'回复内容被严重截断 (finish_reason=length)',
+        message:'模型因达到 max_tokens 上限导致回复未完成即被截断，已拦截残缺文本。建议在「终端」调大 Max tokens 后重试。',
+        detail:parsedPreview.slice(0,240),
+        suggest_terminal:true,
+        background:Boolean(options.background)
+      },logBase,startedMs,{
+        raw_response:data,
+        raw_content:rawTrimmed,
+        reasoning_content:reasoningRaw,
+        finish_reason:finishReason,
+        usage,
+        truncation_warning:'finish_reason=length：输出被严重截断并已拦截'
+      });
+    }
     const truncWarnings=[];
-    const invalidChat=mode==='chat'&&!parsedPreview.trim();
-    if(invalidChat)truncWarnings.push('模型仅返回了分隔符或旁白占位符，没有可显示的短信正文。');
-    if(finishReason==='length'){
+    if(isTruncated){
       truncWarnings.push('模型返回 finish_reason="length"，说明正文因达到 max_tokens 上限而被中途截断，建议在「终端 -> 连接与模型」调大 Max tokens。');
     }
     if(reasoningTokens&&reqMaxTokens&&(!Number.isFinite(usage?.completion_tokens)||reasoningTokens<=usage.completion_tokens)&&(reasoningTokens/reqMaxTokens)>0.6){
@@ -1834,15 +2487,15 @@
     if(usage&&Number.isFinite(usage.reasoning_tokens)&&Number.isFinite(usage.completion_tokens)&&usage.reasoning_tokens>usage.completion_tokens){
       truncWarnings.push('供应商返回的 reasoning_tokens 大于 completion_tokens，统计口径可能不一致；请查看原始 usage。');
     }
-    if(mode==='meeting'&&finishReason!=='length'&&parsedPreview.length<rawTrimmed.length&&parsedPreview.replace(/\s/g,'')!==rawTrimmed.replace(/\s/g,'')){
+    if(mode==='meeting'&&!isTruncated&&parsedPreview.length<rawTrimmed.length&&parsedPreview.replace(/\s/g,'')!==rawTrimmed.replace(/\s/g,'')){
       truncWarnings.push('原始内容与解析正文存在非空白差异，请对照两者；不代表模型被截断。');
     }
     recordSystemLog({
       ...logBase,
-      status:invalidChat?'error':'success',
+      status:'success',
       http_status:res.status,
       duration_ms:Date.now()-startedMs,
-      error:invalidChat?'模型没有返回有效短信正文，请重试。':'',
+      error:'',
       raw_response:data,
       raw_content:rawTrimmed,
       reasoning_content:reasoningRaw,
@@ -1853,17 +2506,16 @@
       usage,
       truncation_warning:truncWarnings.join(' ')
     });
-    if(invalidChat)bodyErr('模型没有返回有效短信正文，请重试。');
-    return rawTrimmed;
+    return options.json_mode?rawTrimmed.replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i,'$1').trim():rawTrimmed;
   }
   async function generateBios(selected,forceRefresh=false){
-    if(pub().mode!=='live')return 'catalog-demo';
+    if(pub().mode!=='live')return {generation:'catalog-demo',apiError:null};
     const pending=forceRefresh?selected:selected.filter(c=>!db.bios[c.id]);
-    if(!pending.length)return 'cached-ai-bios';
+    if(!pending.length)return {generation:'cached-ai-bios',apiError:null};
     const compact=pending.map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,canon:c.canon,current_bio:db.bios[c.id]||c.bio,tags:c.tags}));
     const rules='根据给定的、已收录的原作人物身份，为他们各写一条符合当下性格与心境的约会软件公开档案（包含一句自然独特的个人简介 bio，以及 2–3 个个性标签 tags）。不得编造新的角色、错误时间线或伪造重要原作事实；若是刷新，请换一个贴合人设的新角度描写。每条中文 bio 不超过80字，真实自然。只输出 JSON 对象，形如 {"profiles":[{"id":"exact-id","bio":"...","tags":["标签1","标签2"]}]}，只用输入中的ID。';
     try{
-      const out=await llm([{role:'system',content:rules},{role:'user',content:JSON.stringify(compact)}],{json_mode:true,max_tokens:950,mode:'bio',entry_point:'discover_bios'});
+      const out=await llm([{role:'system',content:rules},{role:'user',content:JSON.stringify(compact)}],{json_mode:true,max_tokens:950,mode:'bio',entry_point:'discover_bios',background:!forceRefresh});
       const val=JSON.parse(out);
       const valid=new Set(pending.map(c=>c.id));let count=0;
       for(const x of (val?.profiles||[])){
@@ -1880,8 +2532,12 @@
         }
       }
       if(count)save();
-      return count?'live-generated':'catalog-demo';
-    }catch(e){return 'catalog-demo'}
+      clearBgError('_','_','discover_bios');
+      return {generation:count?'live-generated':'catalog-demo',apiError:null};
+    }catch(e){
+      if(!forceRefresh)recordBgError('_','_','discover_bios',e.apiError||{message:String(e.message||e)});
+      return {generation:'catalog-demo',apiError:forceRefresh?(e.apiError||null):null,warning:String(e.message||e)};
+    }
   }
   const demo=(p,c,mode)=>{
     const allMsgs=messagesOf(p.id,c.id);
@@ -1902,58 +2558,184 @@
     }
     return past<3?'嗯，我在。|||你想先从什么聊起？':['这点倒是挺有意思。|||不过……你为什么会突然这么想？','等一下。|||我刚忙完手头的事，现在空下来了。|||你刚刚说的那个，我其实一直记得。','我可能需要想一想再回答你。','真的？|||你有时候真的会让我意外。|||那下次见面的时候，当面跟我细说吧。'][past%4];
   };
-  async function produceReply(p,c,mode,userMsg=null,entryPoint=''){
+  async function produceReply(p,c,mode,userMsg=null,entryPoint='',retryOpts={}){
     const curMode=pub().mode;
     if(curMode==='normal'){
       return {reply:null,replies:[],warning:'当前处于正常模式且尚未连接 API，请先在「终端」配置 API 后再试。'};
     }
+    const tKey=taskKeyOf(p.id,c.id,mode);
+    const existingTs=getTaskState(p.id,c.id,mode);
+    if(existingTs&&existingTs.status==='inflight'){
+      return {reply:null,replies:[],inflight:true,deduplicated:true,taskState:existingTs};
+    }
+    const r=relation(p.id,c.id);
+    const activeMid=mode==='meeting'?(r?.active_meeting_id||''):'';
     const ep=entryPoint||(mode==='meeting'?(userMsg?'meeting_message':'meeting_continue'):(userMsg?'chat_message':'chat_continue'));
-    let engine='demo',warning='',txt;
+    const taskId=existingTs?.id||('task_'+uid());
+    const retryOfTaskId=retryOpts.retryOfTaskId||(existingTs?.id||'');
+    const attempt=(Number(existingTs?.attempt)||0)+1;
+    const generation=(Number(existingTs?.revision)||0)+1;
+    const token=uid();
+    const pendingIds=userMsg?[userMsg.id]:(existingTs?.pending_ids||[]);
+    const abortCtrl=typeof AbortController!=='undefined'?new AbortController():null;
+    if(abortCtrl)inflightControllers.set(tKey,abortCtrl);
+    db.taskStates ||= {};
+    db.taskStates[tKey]={
+      id:taskId,
+      retry_of_task_id:retryOfTaskId,
+      profile_id:p.id,
+      character_id:c.id,
+      character_name:c.name,
+      mode,
+      meeting_id:activeMid,
+      task_type:ep,
+      task_label:TASK_LABELS[ep]||TASK_LABELS[mode]||'模型生成',
+      status:'inflight',
+      attempt,
+      pending_ids:pendingIds,
+      latest_text:userMsg?.text||(existingTs?.latest_text||''),
+      inflight_token:token,
+      revision:generation,
+      last_error:null,
+      updated_at:stamp()
+    };
+    save();
+    let engine='demo',warning='',txt='',apiError=null;
     if(curMode==='live'){
       try{
-        const compiled=prompt(p,c,mode,[],{entry_point:ep,latestText:userMsg?.text||''});
-        txt=await llm(compiled,{profile:p,character:c,mode,entry_point:ep});
+        const compiled=prompt(p,c,mode,[],{entry_point:ep,latestText:userMsg?.text||(existingTs?.latest_text||'')});
+        txt=await llm(compiled,{
+          profile:p,
+          character:c,
+          mode,
+          entry_point:ep,
+          task_id:taskId,
+          retry_of_task_id:retryOfTaskId,
+          attempt,
+          signal:abortCtrl?.signal
+        });
         engine='live';
       }catch(e){
         warning=String(e.message||e);
-        if(mode==='chat')return {reply:null,replies:[],warning};
-        txt='（模型连接失败，历史已保存。请检查终端设置，再尝试角色回复。）';
+        apiError=e.apiError||null;
         engine='error';
       }
+    }else txt=demo(p,c,mode);
+    inflightControllers.delete(tKey);
+    const curRel=relation(p.id,c.id);
+    const curTs=getTaskState(p.id,c.id,mode);
+    if(!curTs||curTs.inflight_token!==token||curTs.revision!==generation||curRel?.status!=='matched'||curRel?.mode!==mode||(mode==='meeting'&&activeMid&&curRel?.active_meeting_id!==activeMid)){
+      return {reply:null,replies:[],discarded:true,taskState:getTaskState(p.id,c.id,mode)};
     }
-    else txt=demo(p,c,mode);
-    const bubbleTexts=engine==='error'?[txt]:(mode==='chat'?splitChatBubbles(txt):[cleanMeetingNovelText(txt)]);
+    if(engine==='error'){
+      db.taskStates[tKey]={
+        ...curTs,
+        status:'paused',
+        inflight_token:'',
+        last_error:apiError||createApiError({
+          error_code:'API_ERROR',
+          http_status:0,
+          title:`${TASK_LABELS[ep]||'模型生成'}失败`,
+          message:warning||'请求失败',
+          character_id:c.id,
+          character_name:c.name,
+          profile_id:p.id,
+          task_type:ep,
+          task_label:TASK_LABELS[ep]
+        }),
+        updated_at:stamp()
+      };
+      if(mode==='chat'){
+        const q=db.queue[pairKey(p.id,c.id)]||(db.queue[pairKey(p.id,c.id)]={pending:[],dueAt:0,status:'paused',blocked:true,paused:true,revision:generation,inflight:''});
+        for(const pid of pendingIds)if(pid&&!q.pending.includes(pid))q.pending.push(pid);
+        q.paused=true;q.blocked=true;q.status='paused';q.dueAt=0;
+      }
+      save();
+      return {reply:null,replies:[],paused:true,warning,apiError:db.taskStates[tKey].last_error,taskState:db.taskStates[tKey]};
+    }
+    clearTaskState(p.id,c.id,mode);
+    const bubbleTexts=mode==='chat'?splitChatBubbles(txt):[cleanMeetingNovelText(txt)];
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai',mode,bTxt,engine));
     const reply=replies[replies.length-1]||null;
-    if(engine!=='error'&&reply){
+    if(reply){
       const combinedTxt=bubbleTexts.join(' / ');
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180));
       const uList=userMsg?[userMsg]:messagesOf(p.id,c.id).filter(m=>m.sender==='user').slice(-1);
       recordDialogueEpisode(p,c,uList,{...reply,text:combinedTxt},mode);
       if(mode==='chat')syncSurveillanceFromChat(p,c,uList,combinedTxt);
     }
-    return {reply,replies,warning};
+    save();
+    return {reply,replies,warning:'',apiError:null};
   }
-  async function matchDecision(p,c,attempt){if(pub().mode==='live'){try{const interestsStr=(p.interests||[]).join('、')||'未填写',intentStr=p.intent||'未填写';const text=await llm([{role:'system',content:`你是 ${c.name}（${c.source} ${c.version}）。原作身份：${c.canon}。对方 ${p.name}，${p.age}岁，交友目的：${intentStr}，兴趣爱好：${interestsStr}，简介 ${p.bio}。你有自己的择偶标准，可自由决定是否右滑同意匹配。只输出 JSON 对象 {"match":true/false}。`},{role:'user',content:'你是否想匹配？'}],{json_mode:true,max_tokens:70,profile:p,character:c,mode:'match',entry_point:'match_decision'});return {matched:!!JSON.parse(text).match,engine:'live'}}catch(e){/* fallback */}}
-    let h=Math.imul(attempt,2654435761)|0;for(const ch of p.id+c.id+String(attempt))h=(Math.imul(31,h)+ch.charCodeAt(0))|0;return {matched:attempt>=4||((h>>>0)%100<72),engine:pub().mode==='live'?'live':'demo'};
+  async function matchDecision(p,c,attempt){
+    if(pub().mode==='live'){
+      try{
+        const interestsStr=(p.interests||[]).join('、')||'未填写',intentStr=p.intent||'未填写';
+        const text=await llm([
+          {role:'system',content:`你是 ${c.name}（${c.source} ${c.version}）。原作身份：${c.canon}。对方 ${p.name}，${p.age}岁，交友目的：${intentStr}，兴趣爱好：${interestsStr}，简介 ${p.bio}。你有自己的择偶标准，可自由决定是否右滑同意匹配。只输出 JSON 对象 {"match":true/false}。`},
+          {role:'user',content:'你是否想匹配？'}
+        ],{json_mode:true,skip_json_gateway:true,max_tokens:70,profile:p,character:c,mode:'match',entry_point:'match_decision'});
+        return {matched:!!JSON.parse(text).match,engine:'live'};
+      }catch(e){/* fallback for match decision boolean */}
+    }
+    let h=Math.imul(attempt,2654435761)|0;for(const ch of p.id+c.id+String(attempt))h=(Math.imul(31,h)+ch.charCodeAt(0))|0;
+    return {matched:attempt>=4||((h>>>0)%100<72),engine:pub().mode==='live'?'live':'demo'};
   }
-  async function firstMessage(p,c,again){
+  async function firstMessage(p,c,again,retryOpts={}){
     const curMode=pub().mode;
     if(curMode==='normal'){
       return {bubbles:[],engine:'normal-pending'};
     }
     if(curMode==='live'){
+      const tKey=taskKeyOf(p.id,c.id,'chat');
+      const existingTs=getTaskState(p.id,c.id,'chat');
+      const taskId=existingTs?.id||('task_'+uid());
+      const retryOfTaskId=retryOpts.retryOfTaskId||(existingTs?.id||'');
+      const attempt=(Number(existingTs?.attempt)||0)+1;
       try{
         const ms=prompt(p,c,'chat',[],{entry_point:'chat_first_message'});
         ms.push({role:'user',content:again?`【系统事件：重逢匹配】你刚刚和 ${p.name} 重新匹配上了，你记得你们之前的经历。请根据你的性格与过往记忆，主动发 1～2 条有真实重逢感的手机开场消息（多条气泡之间用 ||| 分隔，绝不要用生硬套话）。`:`【系统事件：首次匹配】你刚刚在约会软件上与 ${p.name} 互相右滑匹配成功。请结合你的原作性格、所处境遇以及对方的公开资料（简介：${p.bio||'无'}；兴趣：${(p.interests||[]).join('、')||'无'}），主动给对方发 1～2 条自然、有个人特色的第一条手机消息（多条气泡之间用 ||| 分隔，绝对不要说“看来我们匹配上了”这种千篇一律的套话）。`});
-        const raw=await llm(ms,{max_tokens:220,profile:p,character:c,mode:'chat',entry_point:'chat_first_message'});
+        const raw=await llm(ms,{max_tokens:220,profile:p,character:c,mode:'chat',entry_point:'chat_first_message',task_id:taskId,retry_of_task_id:retryOfTaskId,attempt});
+        clearTaskState(p.id,c.id,'chat');
         return {bubbles:splitChatBubbles(raw),engine:'live'};
-      }catch(e){return {bubbles:[],engine:'error',warning:String(e.message||e)}}
+      }catch(e){
+        const apiError=e.apiError||createApiError({
+          error_code:'API_ERROR',
+          http_status:0,
+          title:'首次匹配打招呼生成失败',
+          message:String(e.message||e),
+          character_id:c.id,
+          character_name:c.name,
+          profile_id:p.id,
+          task_type:'chat_first_message',
+          task_label:TASK_LABELS.chat_first_message
+        });
+        db.taskStates ||= {};
+        db.taskStates[tKey]={
+          id:taskId,
+          retry_of_task_id:retryOfTaskId,
+          profile_id:p.id,
+          character_id:c.id,
+          character_name:c.name,
+          mode:'chat',
+          task_type:'chat_first_message',
+          task_label:TASK_LABELS.chat_first_message,
+          again:Boolean(again),
+          status:'paused',
+          attempt,
+          pending_ids:[],
+          inflight_token:'',
+          last_error:apiError,
+          updated_at:stamp()
+        };
+        save();
+        return {bubbles:[],engine:'error',warning:String(e.message||e),apiError,taskState:db.taskStates[tKey]};
+      }
     }
     const demoTxt=again?`${p.name}，没想到这么快又刷到你了。|||又见面了……上次的事我没有忘。`:`Hey，${p.name}。|||看来我们匹配上了。`;
     return {bubbles:splitChatBubbles(demoTxt),engine:'demo'};
   }
-  async function produceProactiveMessage(p,c,reason='idle',unresolvedMem=null){
+  async function produceProactiveMessage(p,c,reason='idle',unresolvedMem=null,isBackground=true){
     const curMode=pub().mode;
     if(curMode==='normal')return {replies:[],skipped:'no-api'};
     let engine='demo',txt='';
@@ -1962,10 +2744,12 @@
         const ms=prompt(p,c,'chat',[],{entry_point:'chat_proactive'});
         const memHint=unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
         ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
-        txt=await llm(ms,{max_tokens:220,profile:p,character:c,mode:'chat',entry_point:'chat_proactive'});
+        txt=await llm(ms,{max_tokens:220,profile:p,character:c,mode:'chat',entry_point:'chat_proactive',background:isBackground});
         engine='live';
+        clearBgError(p.id,c.id,'chat_proactive');
       }catch(e){
-        return {replies:[],warning:String(e.message||e)};
+        if(isBackground)recordBgError(p.id,c.id,'chat_proactive',e.apiError||{message:String(e.message||e)});
+        return {replies:[],warning:String(e.message||e),apiError:e.apiError||null,background:isBackground};
       }
     }else{
       if(unresolvedMem){
@@ -2045,9 +2829,9 @@
       case '/discover':case '/candidates':{
         const p=getP(data.profileId||params.get('profileId'));const pool=candidates(p),selected=shuffle(pool).slice(0,10);
         const forceRefresh=Boolean(data.refresh||params.get('refresh')==='1');
-        const generation=route==='/discover'?await generateBios(selected,forceRefresh):'catalog-demo';
+        const bioRes=route==='/discover'?await generateBios(selected,forceRefresh):{generation:'catalog-demo',apiError:null};
         const cs=selected.map(c=>({...char(c),previous_swipe:db.swipes[pairKey(p.id,c.id)]?.direction||null,relation_status:relation(p.id,c.id)?.status||null}));
-        return {candidates:cs,total_available:pool.length,requested:10,generation,demo:pub().mode==='demo'};
+        return {candidates:cs,total_available:pool.length,requested:10,generation:bioRes.generation,apiError:bioRes.apiError||null,warning:bioRes.warning||'',demo:pub().mode==='demo'};
       }
       case '/swipe':{
         const p=getP(data.profileId),c=getC(data.characterId),d=data.direction;if(p.role_character_id===c.id)bodyErr('当前扮演身份不能匹配同一原作角色版本的自己');if(!['left','right'].includes(d))bodyErr('滑卡方向无效');
@@ -2056,25 +2840,28 @@
         if(prior?.status==='matched'){save();return {direction:'right',matched:true,already_matched:true,character:char(c)}}
         const attempt=(prior?.attempts||0)+1,{matched,engine}=await matchDecision(p,c,attempt);
         db.relations[pairKey(p.id,c.id)]={profile_id:p.id,character_id:c.id,status:matched?'matched':'pending',mode:'chat',hot_chat:Boolean(prior?.hot_chat),attempts:attempt,updated_at:stamp()};
-        let greetingReplies=[],greetingWarning='';
+        let greetingReplies=[],apiError=null,taskState=null,warning='';
         if(matched){
           event(p.id,c.id,'matched',p.name+(again?' 重新匹配':' 首次匹配'));
           const first=await firstMessage(p,c,again);
-          greetingWarning=first.warning||'';
           if(first.bubbles&&first.bubbles.length){
             greetingReplies=first.bubbles.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,first.engine));
             const lastG=greetingReplies[greetingReplies.length-1];
             if(lastG)recordDialogueEpisode(p,c,[],{...lastG,text:first.bubbles.join(' / ')},'chat');
+          }else if(first.apiError){
+            apiError=first.apiError;
+            taskState=first.taskState||null;
+            warning=first.warning||'';
           }
         }
-        save();return {direction:d,matched,engine,character:char(c),again,replies:greetingReplies,warning:greetingWarning};
+        save();return {direction:d,matched,engine,character:char(c),again,replies:greetingReplies,apiError,taskState,warning};
       }
       case '/hot-chat':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id);
         const nextHot=('hotChat' in data)?Boolean(data.hotChat):!r.hot_chat;
         r.hot_chat=nextHot;
         const k=pairKey(p.id,c.id),q=db.queue[k];
-        if(q&&q.pending?.length&&q.status!=='inflight'){
+        if(q&&q.pending?.length&&q.status!=='inflight'&&!q.paused){
           const now=Date.now();
           if(nextHot){
             q.paceMode='hot';
@@ -2104,7 +2891,6 @@
         if(curMode==='normal')return {sent:[],skipped:'no-api'};
         if(pMode==='off'&&trigger!=='manual')return {sent:[],skipped:'off'};
         const now=Date.now();
-        // Staggered global cooldown: at most 1 proactive message across all characters every 30 minutes
         if(trigger!=='manual'){
           const recentGlobal=Object.entries(db.proactiveLog||{}).filter(([k])=>k.startsWith(p.id+'|')).map(([,ts])=>Number(ts)||0);
           const lastGlobalTs=recentGlobal.length?Math.max(...recentGlobal):0;
@@ -2117,13 +2903,13 @@
         for(const r of matchedRels){
           const cid=r.character_id;
           const q=queueInfo(p.id,cid);
-          if(q.status==='inflight'||(trigger!=='manual'&&q.count>0))continue;
+          if(q.status==='inflight'||q.paused||(trigger!=='manual'&&q.count>0))continue;
           const msgs=messagesOf(p.id,cid);
           const lastMsg=msgs[msgs.length-1];
           const lastTs=lastMsg?Date.parse(lastMsg.created_at)||0:Date.parse(r.updated_at)||0;
           const lastProactive=db.proactiveLog[pairKey(p.id,cid)]||0;
           const elapsedMs=now-Math.max(lastTs,lastProactive);
-          const unresolvedMem=(db.episodicMemories||[]).filter(m=>m.owner_id===cid&&m.profile_id===p.id&&m.unresolved&&!m.disputed).sort((a,b)=>b.event_at.localeCompare(a.event_at))[0]||null;
+          const unresolvedMem=(db.episodicMemories||[]).filter(m=>m.owner_id===cid&&m.profile_id===p.id&&m.unresolved&&!m.disputed&&!m.isolated_error).sort((a,b)=>b.event_at.localeCompare(a.event_at))[0]||null;
           let eligible=false,reason='idle',priority=0;
           if(trigger==='manual'){
             eligible=true;
@@ -2142,11 +2928,10 @@
           if(eligible)candidatesList.push({cid,c:getC(cid),reason,unresolvedMem,priority,lastTs});
         }
         candidatesList.sort((a,b)=>(b.priority-a.priority)||(b.lastTs-a.lastTs));
-        // Always pick at most 1 character per check so proactive messages never swarm at once
         const chosen=candidatesList.slice(0,1);
         const sent=[];
         for(const item of chosen){
-          const res=await produceProactiveMessage(p,item.c,item.reason,item.unresolvedMem);
+          const res=await produceProactiveMessage(p,item.c,item.reason,item.unresolvedMem,trigger!=='manual');
           if(res.replies&&res.replies.length){
             sent.push({characterId:item.cid,characterName:item.c.name,reason:item.reason,replies:res.replies,reply:res.reply});
           }
@@ -2154,7 +2939,20 @@
         return {delivered:sent,sent,matchedCount:matchedRels.length};
       }
       case '/threads':{
-        const p=getP(params.get('profileId'));return {threads:Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&byId.has(r.character_id)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(r=>({character:char(getC(r.character_id),p.id),relation:r,last:messagesOf(p.id,r.character_id).filter(m=>!isChatArtifact(m)).at(-1)||null,last_incoming:messagesOf(p.id,r.character_id).filter(m=>m.sender==='ai'&&m.engine!=='error'&&m.engine!=='recalled'&&!m.recalled&&!isChatArtifact(m)).at(-1)||null,queue:queueInfo(p.id,r.character_id)}))};
+        const p=getP(params.get('profileId'));return {threads:Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&byId.has(r.character_id)).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(r=>{
+          const cid=r.character_id;
+          const cleanMsgs=messagesOf(p.id,cid).filter(m=>!isChatArtifact(m));
+          const ts=getTaskState(p.id,cid,r.mode||'chat')||getTaskState(p.id,cid,'chat');
+          return {
+            character:char(getC(cid),p.id),
+            relation:r,
+            last:cleanMsgs.at(-1)||null,
+            last_incoming:cleanMsgs.filter(m=>m.sender==='ai'&&m.engine!=='error'&&m.engine!=='recalled'&&!m.recalled).at(-1)||null,
+            queue:queueInfo(p.id,cid),
+            taskState:ts,
+            bgErrors:db.bgErrors?.[pairKey(p.id,cid)]||null
+          };
+        })};
       }
       case '/thread':{
         const p=getP(params.get('profileId')),c=getC(params.get('characterId')),r=requireMatch(p.id,c.id);
@@ -2162,8 +2960,138 @@
         getOrInitSurveillance(p,c);
         const diaryPayload=buildDiaryPayload(p,c);
         const meetings=(db.meetings||[]).filter(x=>x.profile_id===p.id&&x.character_id===c.id);
+        const ts=getTaskState(p.id,c.id,r.mode||'chat')||getTaskState(p.id,c.id,'chat');
         save();
-        return {character:char(c,p.id),profile:p,relation:r,messages:messagesOf(p.id,c.id),meetings,queue:queueInfo(p.id,c.id),surveillance:buildSurveillancePayload(p,c),diarySummary:{latestDate:diaryPayload.latestDate,availableDates:diaryPayload.availableDates,latestTitle:diaryPayload.diary?.title||''}};
+        return {
+          character:char(c,p.id),
+          profile:p,
+          relation:r,
+          messages:messagesOf(p.id,c.id),
+          meetings,
+          queue:queueInfo(p.id,c.id),
+          taskState:ts,
+          bgErrors:db.bgErrors?.[pairKey(p.id,c.id)]||null,
+          surveillance:buildSurveillancePayload(p,c),
+          diarySummary:{latestDate:diaryPayload.latestDate,availableDates:diaryPayload.availableDates,latestTitle:diaryPayload.diary?.title||''}
+        };
+      }
+      case '/task-state':{
+        const pid=String(params.get('profileId')||data.profileId||'');
+        const cid=String(params.get('characterId')||data.characterId||'');
+        const mode=String(params.get('mode')||data.mode||'chat');
+        return {
+          taskState:getTaskState(pid,cid,mode),
+          chatTaskState:getTaskState(pid,cid,'chat'),
+          meetingTaskState:getTaskState(pid,cid,'meeting'),
+          queue:pid&&cid?queueInfo(pid,cid):null,
+          bgErrors:db.bgErrors?.[pairKey(pid||'_',cid||'_')]||null
+        };
+      }
+      case '/task-action':{
+        const p=getP(data.profileId),c=getC(data.characterId);
+        const r=relation(p.id,c.id);
+        const mode=String(data.mode||r?.mode||'chat');
+        const act=String(data.action||'');
+        const tKey=taskKeyOf(p.id,c.id,mode);
+        const curTs=getTaskState(p.id,c.id,mode);
+        if(act==='pause'){
+          const ctrl=inflightControllers.get(tKey);
+          if(ctrl){try{ctrl.abort();}catch{}inflightControllers.delete(tKey);}
+          const q=db.queue[pairKey(p.id,c.id)];
+          if(mode==='chat'&&q){
+            q.paused=true;
+            q.userPaused=true;
+            q.blocked=true;
+            q.status='paused';
+            q.dueAt=0;
+            q.revision=(q.revision||0)+1;
+            q.inflight='';
+            if(Array.isArray(curTs?.pending_ids)){
+              for(const pid of curTs.pending_ids)if(pid&&!q.pending.includes(pid))q.pending.unshift(pid);
+            }
+          }
+          db.taskStates ||= {};
+          db.taskStates[tKey]={
+            ...(curTs||{
+              id:'task_'+uid(),
+              profile_id:p.id,
+              character_id:c.id,
+              character_name:c.name,
+              mode,
+              task_type:mode==='meeting'?'meeting_message':'chat_flush',
+              task_label:TASK_LABELS[mode]
+            }),
+            status:'paused',
+            paused:true,
+            userPaused:true,
+            inflight_token:'',
+            revision:((curTs?.revision)||0)+1,
+            pending_ids:mode==='chat'?(db.queue[pairKey(p.id,c.id)]?.pending?.slice()||curTs?.pending_ids||[]):(curTs?.pending_ids||[]),
+            updated_at:stamp()
+          };
+          save();
+          return {ok:true,paused:true,taskState:db.taskStates[tKey],queue:queueInfo(p.id,c.id)};
+        }
+        if(act==='clear'||act==='dismiss-bg'){
+          if(act==='dismiss-bg'){
+            clearBgError(p.id,c.id,String(data.taskType||''));
+            save();
+            return {ok:true};
+          }
+          clearTaskState(p.id,c.id,mode);
+          const q=db.queue[pairKey(p.id,c.id)];
+          if(mode==='chat'&&q){q.paused=false;q.userPaused=false;q.blocked=false;if(q.status==='paused')q.status='idle';}
+          save();
+          return {ok:true,taskState:null,queue:queueInfo(p.id,c.id)};
+        }
+        if(act==='resume'||act==='retry'){
+          requireMatch(p.id,c.id);
+          if(curTs?.status==='inflight'){
+            return {ok:true,inflight:true,deduplicated:true,taskState:curTs,queue:queueInfo(p.id,c.id)};
+          }
+          if(curTs?.task_type==='chat_first_message'){
+            const first=await firstMessage(p,c,Boolean(curTs.again),{retryOfTaskId:curTs.id});
+            let greetingReplies=[];
+            if(first.bubbles&&first.bubbles.length){
+              greetingReplies=first.bubbles.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,first.engine));
+              const lastG=greetingReplies[greetingReplies.length-1];
+              if(lastG)recordDialogueEpisode(p,c,[],{...lastG,text:first.bubbles.join(' / ')},'chat');
+              save();
+            }
+            return {
+              ok:!first.apiError,
+              reply:greetingReplies[greetingReplies.length-1]||null,
+              replies:greetingReplies,
+              apiError:first.apiError||null,
+              taskState:first.taskState||getTaskState(p.id,c.id,'chat'),
+              warning:first.warning||'',
+              queue:queueInfo(p.id,c.id)
+            };
+          }
+          if(mode==='chat'){
+            const q=db.queue[pairKey(p.id,c.id)]||(db.queue[pairKey(p.id,c.id)]={pending:[],dueAt:0,status:'idle',blocked:false,paused:false,userPaused:false,revision:0,inflight:''});
+            q.userPaused=false;
+            if(curTs)curTs.userPaused=false;
+            if(!q.pending.length&&Array.isArray(curTs?.pending_ids)&&curTs.pending_ids.length){
+              q.pending=curTs.pending_ids.slice();
+            }
+            if(q.pending.length){
+              return await flushQueue(p,c,true,{retryOfTaskId:curTs?.id||'',manualResume:true});
+            }
+            const lastUser=messagesOf(p.id,c.id).filter(m=>m.mode==='chat'&&m.sender==='user').slice(-1)[0]||null;
+            return await produceReply(p,c,'chat',lastUser,curTs?.task_type||'chat_continue',{retryOfTaskId:curTs?.id||''});
+          }
+          const ep=curTs?.task_type||'meeting_continue';
+          const lastUserMsg=ep==='meeting_opening'?null:(messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.sender==='user').slice(-1)[0]||null);
+          const res=await produceReply(p,c,'meeting',lastUserMsg,ep,{retryOfTaskId:curTs?.id||''});
+          if(r?.active_meeting_id&&res.reply){
+            const mMsgs=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===r.active_meeting_id);
+            if(mMsgs.length)upsertMeetingRecord(p,c,r.active_meeting_id,mMsgs,r.meeting_location||'');
+          }
+          save();
+          return {...res,mode:'meeting',queue:queueInfo(p.id,c.id)};
+        }
+        bodyErr('未知任务操作：'+act);
       }
       case '/surveillance':{
         const p=getP(params.get('profileId')||data.profileId),c=getC(params.get('characterId')||data.characterId);
@@ -2200,7 +3128,7 @@
         ensureDailySummaries(p,c,activeIds);
         save();
         const allMsgs=messagesOf(p.id,c.id);
-        const items=(db.episodicMemories||[]).filter(m=>m.owner_id===c.id&&m.profile_id===p.id).sort((a,b)=>b.event_at.localeCompare(a.event_at)).map(m=>{
+        const items=(db.episodicMemories||[]).filter(m=>m.owner_id===c.id&&m.profile_id===p.id&&!m.isolated_error).sort((a,b)=>b.event_at.localeCompare(a.event_at)).map(m=>{
           if(m.source_type==='daily-summary'&&!m.day_messages){
             const rawSet=new Set(m.raw_msg_ids||[]);
             const dayStr=String(m.source_key||'').replace('day:','');
@@ -2264,7 +3192,13 @@
         bodyErr('未知记忆操作');
       }
       case '/unmatch':{
-        const p=getP(data.profileId),c=getC(data.characterId),r=relation(p.id,c.id);if(!r)bodyErr('还没有匹配过');r.status='unmatched';r.mode='chat';r.active_meeting_id='';clearQueue(p.id,c.id);r.updated_at=stamp();event(p.id,c.id,'unmatched','与 '+p.name+' 解除匹配，过去的经历不会消失');save();return {ok:true};
+        const p=getP(data.profileId),c=getC(data.characterId),r=relation(p.id,c.id);if(!r)bodyErr('还没有匹配过');
+        r.status='unmatched';r.mode='chat';r.active_meeting_id='';
+        clearQueue(p.id,c.id);
+        clearTaskStatesForPair(p.id,c.id);
+        r.updated_at=stamp();
+        event(p.id,c.id,'unmatched','与 '+p.name+' 解除匹配，过去的经历不会消失');
+        save();return {ok:true};
       }
       case '/mode':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id),m=data.mode;
@@ -2273,9 +3207,10 @@
         if(locInput){
           r.meeting_location=locInput;
         }
-        let meetingRecord=null,openingReply=null,warning='';
+        let meetingRecord=null,openingReply=null,warning='',apiError=null,taskState=null;
         if(r.mode!==m){
           clearQueue(p.id,c.id);
+          clearTaskStatesForPair(p.id,c.id);
           if(m==='meeting'){
             const inferredLoc=inferMeetingLocation(p.id,c.id,locInput);
             r.mode='meeting';
@@ -2289,6 +3224,8 @@
               const res=await produceReply(p,c,'meeting',null,'meeting_opening');
               openingReply=res.reply;
               warning=res.warning||'';
+              apiError=res.apiError||null;
+              taskState=res.taskState||null;
               const mMsgs=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===r.active_meeting_id);
               meetingRecord=upsertMeetingRecord(p,c,r.active_meeting_id,mMsgs,r.meeting_location);
             }
@@ -2311,11 +3248,13 @@
                   const sumJson=await llm([
                     {role:'system',content:`请根据以下 ${c.name} 与 ${p.name} 的见面互动记录，提取见面地点与一句温暖简练的见面梗概（如：和${p.name}在街角咖啡馆见面，聊了近况并度过了安静的傍晚）。只输出 JSON 对象：{"location":"地点（不超过12字）","summary":"见面梗概（不超过65字）"}`},
                     {role:'user',content:transcript}
-                  ],{json_mode:true,max_tokens:160,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize'});
+                  ],{json_mode:true,max_tokens:160,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true});
                   const parsed=JSON.parse(sumJson);
                   if(parsed.location&&!locInput)aiLoc=String(parsed.location).trim().slice(0,32);
                   if(parsed.summary)aiSum=String(parsed.summary).trim().slice(0,150);
-                }catch(e){}
+                }catch(e){
+                  recordBgError(p.id,c.id,'meeting_finalize',e.apiError||{message:String(e.message||e)});
+                }
               }
               meetingRecord=upsertMeetingRecord(p,c,mid,mMsgs,aiLoc,aiSum);
               if(meetingRecord)syncSurveillanceOnMeetingEnd(p,c,meetingRecord);
@@ -2323,6 +3262,7 @@
             r.mode='chat';
             r.active_meeting_id='';
             r.updated_at=stamp();
+            clearTaskState(p.id,c.id,'meeting');
             event(p.id,c.id,'return','与 '+p.name+' 返回手机聊天');
           }
         }else if(m==='meeting'&&r.active_meeting_id){
@@ -2331,15 +3271,15 @@
           if(mMsgs.length)meetingRecord=upsertMeetingRecord(p,c,r.active_meeting_id,mMsgs,r.meeting_location||'');
         }
         save();
-        return {mode:m,meetingId:r.active_meeting_id||'',active_meeting_id:r.active_meeting_id||'',location:r.meeting_location||'',meeting_location:r.meeting_location||'',meetingRecord,openingReply,warning,surveillance:buildSurveillancePayload(p,c)};
+        return {mode:m,meetingId:r.active_meeting_id||'',active_meeting_id:r.active_meeting_id||'',location:r.meeting_location||'',meeting_location:r.meeting_location||'',meetingRecord,openingReply,warning,apiError,taskState,surveillance:buildSurveillancePayload(p,c)};
       }
       case '/chat-flush':{
         const p=getP(data.profileId);
-        if(!data.characterId)return await flushDueQueues(p);
-        const c=getC(data.characterId),r=requireMatch(p.id,c.id);if(r.mode!=='chat')bodyErr('当前不是手机聊天模式');return await flushQueue(p,c,data.force===true);
+        if(!data.characterId)return await flushDueQueues(p,String(data.activeCharacterId||''));
+        const c=getC(data.characterId),r=requireMatch(p.id,c.id);if(r.mode!=='chat')bodyErr('当前不是手机聊天模式');return await flushQueue(p,c,data.force===true,{manualResume:Boolean(data.manualResume)});
       }
       case '/chat-flush-due':{
-        const p=getP(data.profileId);return await flushDueQueues(p);
+        const p=getP(data.profileId);return await flushDueQueues(p,String(data.activeCharacterId||''));
       }
       case '/message-delete':{
         const p=getP(data.profileId),c=getC(data.characterId),mid=String(data.messageId||'');
@@ -2358,6 +3298,8 @@
         }
         const q=db.queue[pairKey(p.id,c.id)];
         if(q){q.pending=q.pending.filter(x=>x!==mid);if(!q.pending.length)q.dueAt=0;}
+        const ts=getTaskState(p.id,c.id,'chat');
+        if(ts&&Array.isArray(ts.pending_ids)){ts.pending_ids=ts.pending_ids.filter(x=>x!==mid);}
         save();return {ok:true,recalled:true,queue:queueInfo(p.id,c.id)};
       }
       case '/message':case '/reply':{
@@ -2368,18 +3310,44 @@
           user=write(p.id,c.id,'user',mode,txt);
           detectAndApplyCorrection(p,c,user);
           event(p.id,c.id,'user_message','与 '+p.name+' 的'+(mode==='meeting'?'见面':'聊天')+'：'+txt.slice(0,180));
-          if(mode==='chat'){const queue=enqueue(p.id,c.id,user.id,txt);save();return {user,reply:null,replies:[],queued:true,mode,queue}}
+          if(mode==='chat'){
+            const queue=enqueue(p.id,c.id,user.id,txt);
+            save();
+            return {user,reply:null,replies:[],queued:true,paused:Boolean(queue.paused),taskState:getTaskState(p.id,c.id,'chat'),mode,queue};
+          }
+          const meetTs=getTaskState(p.id,c.id,'meeting');
+          if(meetTs&&meetTs.status==='paused'&&!data.forceResume){
+            meetTs.pending_ids=[...(meetTs.pending_ids||[]),user.id];
+            meetTs.latest_text=txt;
+            meetTs.updated_at=stamp();
+            save();
+            return {user,reply:null,replies:[],queued:true,paused:true,taskState:meetTs,mode};
+          }
           save();
         }
         const qi=queueInfo(p.id,c.id);
         if(mode==='chat'&&(qi.count||qi.status==='inflight'))return await flushQueue(p,c,true);
         const ep=route==='/message'?(mode==='meeting'?'meeting_message':'chat_message'):(mode==='meeting'?'meeting_continue':'chat_continue');
         const response=await produceReply(p,c,mode,user,ep);
-        if(mode==='meeting'&&r.active_meeting_id){
+        if(mode==='meeting'&&r.active_meeting_id&&response.reply){
           const mMsgs=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===r.active_meeting_id);
           if(mMsgs.length)upsertMeetingRecord(p,c,r.active_meeting_id,mMsgs,r.meeting_location||'');
         }
-        r.updated_at=stamp();save();return {user,reply:response.reply,replies:response.replies||[],auto_meeting:false,mode,warning:response.warning};
+        if(response.reply)r.updated_at=stamp();
+        save();
+        return {
+          user,
+          reply:response.reply,
+          replies:response.replies||[],
+          paused:Boolean(response.paused),
+          inflight:Boolean(response.inflight),
+          deduplicated:Boolean(response.deduplicated),
+          apiError:response.apiError||null,
+          taskState:response.taskState||getTaskState(p.id,c.id,mode),
+          auto_meeting:false,
+          mode,
+          warning:response.warning||''
+        };
       }
       case '/presets':return {
         entries:db.presets.slice().sort((a,b)=>a.mode.localeCompare(b.mode)||a.sort_order-b.sort_order),
@@ -2444,16 +3412,54 @@
         const c=getC(data.characterId||params.get('characterId'));
         const cached=db.portraits[c.id];if(cached&&!data.regenerate)return {portrait:cached,engine:'cached'};
         const s=db.connection;
-        if(!s.image_base_url||!s.image_api_key||!s.image_model)bodyErr('尚未填写完整的图片生成 API 链接、密钥与模型');
+        const startedMs=Date.now();
+        const logBase={
+          id:'log_'+uid(),
+          created_at:stamp(),
+          character_id:c.id,
+          character_name:c.name,
+          mode:'portrait',
+          entry_point:'portrait',
+          model:s.image_model||'',
+          endpoint:(s.image_base_url||'')+'/images/generations'
+        };
+        if(!s.image_base_url||!s.image_api_key||!s.image_model){
+          throwApiError({
+            error_code:'IMAGE_CONFIG_MISSING',
+            http_status:0,
+            title:'图片生成 API 配置不完整',
+            message:'尚未填写完整的图片生成 API 链接、密钥与模型，请前往「终端」配置。',
+            suggest_terminal:true
+          },logBase,startedMs);
+        }
         const b=s.image_base_url.trim().replace(/\/+$/,'');
         const promptTxt=`Candid dating app profile portrait photo of ${c.name} from ${c.source} (${c.version}). Character context: ${c.canon}. Natural lighting, authentic lifestyle photography, high quality portrait, no text or watermarks.`;
         let res;
         try{res=await fetch(b+'/images/generations',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.image_api_key},body:JSON.stringify({model:s.image_model,prompt:promptTxt,n:1,size:'1024x1024'})})}
-        catch(e){bodyErr('浏览器无法直连图片生成接口（可能是 CORS 限制）。可改用 Python 本地服务版。')}
-        if(!res.ok)bodyErr('图片生成接口错误 HTTP '+res.status);
-        const j=await res.json();const item=(j?.data||[])[0]||{};
+        catch(e){
+          throwApiError({
+            error_code:'NETWORK_ERROR',
+            http_status:0,
+            title:'无法连接图片生成接口',
+            message:'浏览器无法直连图片生成接口（可能是网络异常或 CORS 跨域限制）。',
+            detail:String(e?.message||e),
+            suggest_terminal:true
+          },logBase,startedMs);
+        }
+        if(!res.ok){
+          const {rawText}=await readResTextAndJson(res);
+          const classified=classifyHttpStatusError(res.status,rawText,res);
+          throwApiError(classified,logBase,startedMs,{raw_response:rawText});
+        }
+        const {data:j,parseErr}=await readResTextAndJson(res);
+        if(parseErr||!j){
+          throwApiError({error_code:'INVALID_RESPONSE_JSON',http_status:res.status,title:'图片接口返回了无效 JSON',message:'无法解析图片接口响应数据。'},logBase,startedMs);
+        }
+        const item=(j?.data||[])[0]||{};
         const uri=item.b64_json?('data:image/png;base64,'+item.b64_json):(item.url||'');
-        if(!uri)bodyErr('图片接口未返回可用图像数据');
+        if(!uri){
+          throwApiError({error_code:'EMPTY_IMAGE_DATA',http_status:res.status,title:'图片接口未返回图像',message:'响应中不包含可用的 url 或 b64_json 图像数据。'},logBase,startedMs,{raw_response:j});
+        }
         db.portraits[c.id]=uri;save();
         return {portrait:uri,engine:'live-image'};
       }
@@ -2476,12 +3482,15 @@
     cleanChatBubbleText,
     storedChatText,
     isChatArtifact,
+    isLegacyErrorArtifact,
+    detectProxyWrappedError,
     cleanMeetingNovelText,
     splitChatBubbles,
     sanitizeStoredData,
     diagnosePresets,
+    getTaskState,
     getSystemLogs:()=>logState.logs.slice(),
-    buildPromptPreview:(pid,cid,mode='chat',opts={})=>prompt(getP(pid),getC(cid),mode,[],opts),
+    buildPromptPreview:(pid,cid,mode='chat',opts={})=>prompt(getP(pid),getC(cid),mode,Array.isArray(opts?.pendingIds)?opts.pendingIds:(queueInfo(pid,cid).pendingIds||[]),opts),
     get storageAvailable(){return storageAvailable},
     exportData:()=>{const copy=JSON.parse(JSON.stringify(db));copy.connection.api_key='';copy.connection.image_api_key='';delete copy.systemLogs;return JSON.stringify({format:'parallel-portable-backup',schemaVersion:1,createdAt:stamp(),data:copy},null,2)},
     importData:(raw)=>{
