@@ -2941,6 +2941,7 @@
         http_status:res.status||200,
         title:'模型将分析过程混入了聊天正文',
         message:'无法可靠分离正式台词，已阻止写入聊天与记忆。可手动重试；原始返回已保存在系统日志中。',
+        may_consume_tokens:true,
         background:Boolean(options.background)
       },logBase,startedMs,{
         raw_response:data,raw_content:rawTrimmed,reasoning_content:reasoningRaw,
