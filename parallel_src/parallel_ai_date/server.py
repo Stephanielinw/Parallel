@@ -1070,11 +1070,8 @@ def get_current_surveillance_slot(db,p,c):
             'isCurrent':True
         }
     slots=rec.get('slots') or []
-    active=slots[-1] if slots else None
-    for s in slots:
-        if hhmm_to_min(s['start'])<=now_m<=hhmm_to_min(s['end']):
-            active=s
-            break
+    idx=active_slot_index(slots,now_m)
+    active=slots[idx] if idx>=0 else (slots[-1] if slots else None)
     return dict(active,isCurrent=True) if active else {
         'start':'00:00','end':'23:59','location':f"{c['name']}的常去街角",'status':'日常活动','activity':'正在处理日常事务','scene':f"{c['name']}正在日常活动中。",'source':'schedule','isCurrent':True
     }
@@ -1138,27 +1135,43 @@ def sync_surveillance_on_meeting_end(db,p,c,meeting_rec):
             )
     rec['updated_at']=utc()
 
+def active_slot_index(slots,minute):
+    return next((i for i in range(len(slots)-1,-1,-1) if hhmm_to_min(slots[i]['start'])<=minute<=hhmm_to_min(slots[i]['end'])),-1)
+
+def overlay_actual_slots(base,actual):
+    result=list(base)
+    for observed in actual:
+        start,end=hhmm_to_min(observed['start']),hhmm_to_min(observed['end'])
+        if end<start:continue
+        nxt=[]
+        for slot in result:
+            a,b=hhmm_to_min(slot['start']),hhmm_to_min(slot['end'])
+            if b<=start or a>=end:nxt.append(slot);continue
+            if a<start:nxt.append(dict(slot,end=observed['start']))
+            if b>end:nxt.append(dict(slot,start=observed['end']))
+        nxt.append(observed)
+        result=sorted(nxt,key=lambda s:hhmm_to_min(s['start']))
+    return result
+
 def sync_surveillance_from_chat(db,p,c,ai_text=''):
     txt=str(ai_text or '').strip()
-    if not txt:return
-    pat=re.compile(r'(?:我在|我现在在|我刚到|我已经到|正坐在|正站在|刚走进|现在去|我先去|刚回到)([\u4e00-\u9fa5A-Za-z0-9]{2,14}?(?:咖啡馆|咖啡店|咖啡厅|酒吧|酒馆|书店|餐厅|公园|海边|江边|车站|天台|公寓|家里|安全屋|训练场|靶场|办公室|工作室|便利店|图书馆|街角))')
-    m=pat.search(txt)
-    if not m or not m.group(1):return
-    new_loc=m.group(1).strip()
+    rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
+    if not txt or (rel and rel['mode']=='meeting'):return
+    locations=[location_from_report(part) for part in re.split(r'\s+/\s+|\|\|\||\n',txt)]
+    new_loc=next((x for x in reversed(locations) if x),'')
+    if not new_loc:return
     rec=get_or_init_surveillance(db,p,c)
-    now_m=hhmm_to_min(fmt_hhmm())
+    now_hhmm=fmt_hhmm()
+    now_m=hhmm_to_min(now_hhmm)
     slots=rec.get('slots') or []
-    idx=next((i for i,s in enumerate(slots) if hhmm_to_min(s['start'])<=now_m<=hhmm_to_min(s['end'])),-1)
-    if idx>=0 and slots[idx].get('source')!='meeting':
-        snippet=re.sub(r'\s*\|\|\|\s*','，',txt)[:64]
-        slots[idx]=dict(slots[idx],
-            location=new_loc,
-            status='聊天动态同步',
-            activity=f"在「{new_loc}」与 {p['name']} 手机聊天（“{snippet}”）",
-            scene=f"{c['name']}此刻就在「{new_loc}」，手里拿着手机和 {p['name']} 发消息。",
-            source='chat_update'
-        )
-        rec['updated_at']=utc()
+    idx=active_slot_index(slots,now_m)
+    if idx<0:return
+    slot=slots[idx]
+    if slot.get('location')==new_loc and slot.get('source')=='chat_update':return
+    observed=dict(slot,start=now_hhmm,location=new_loc,status='聊天动态同步',activity=f"在「{new_loc}」活动（角色亲自提及）",scene=f"{c['name']}在消息里提到此刻身处「{new_loc}」。",source='chat_update')
+    if hhmm_to_min(slot['start'])<now_m:slots[idx:idx+1]=[dict(slot,end=now_hhmm),observed]
+    else:slots[idx]=observed
+    rec['updated_at']=utc()
 
 def ensure_live_surveillance(db,p,c,force=False,target_date=''):
     today=local_date_str()
@@ -1188,7 +1201,8 @@ def ensure_live_surveillance(db,p,c,force=False,target_date=''):
                     'source':'schedule'
                 })
             if len(cleaned)>=5:
-                rec['slots']=cleaned
+                preserved=[s for s in rec.get('slots',[]) if s.get('source') in ('meeting','chat_update')]
+                rec['slots']=overlay_actual_slots(cleaned,preserved)
                 rec['engine']='live'
                 rec['updated_at']=utc()
     except Exception:
@@ -1247,7 +1261,7 @@ def compute_intimacy_info(db,p,c):
 def build_default_diary(db,p,c,date_str,surv_rec):
     slots=(surv_rec or {}).get('slots') or build_default_surveillance_slots(c,p,date_str)
     intimacy=compute_intimacy_info(db,p,c)
-    day_msgs=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND substr(created_at,1,10)=? AND engine!='recalled'",(p['id'],c['id'],date_str)).fetchall()
+    day_msgs=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND date(created_at,'localtime')=? AND engine!='recalled'",(p['id'],c['id'],date_str)).fetchall()
     day_meets=db.execute("SELECT * FROM meetings WHERE profile_id=? AND character_id=? AND substr(started_at,1,10)=?",(p['id'],c['id'],date_str)).fetchall()
     s_morning=slots[1] if len(slots)>1 else slots[0]
     s_afternoon=slots[3] if len(slots)>3 else slots[-1]
@@ -1371,16 +1385,95 @@ def record_dialogue_episode(db,p,c,user_msgs,ai_msg,mode):
         event_at=ai_msg.get('created_at') or utc()
     )
 
+# Same local, conservative scene rules as the browser version.
+SCENE_RULES={
+    'cancel':re.compile("^(?:不去了|取消(?:见面|约会|计划)?|改天(?:吧|再见)?|算了(?:吧)?|我(?:不能|没法|不想)去|(?:let['’]s )?cancel|not coming|can['’]t make it|rain check|another day)",re.I),
+    'confirm':re.compile("^(?:好(?:啊|呀|的|吧|哦|，|,|。|！|!|$)|行(?:啊|呀|，|。|$)|可以(?:啊|呀|，|。|$)|没问题|就这么定了|不见不散|我会到|我会去|一言为定|okay\\b|ok\\b|sure\\b|deal\\b|sounds good\\b|see you there\\b|i['’]ll be there\\b|agreed\\b)",re.I),
+    'arrival':re.compile("^(?:我(?:已经|刚刚?)?(?:到了|到啦|抵达了)|(?:已经|刚刚?)?到(?:了|啦)|我到啦|i['’]m here|i am here|i(?:['’]ve| have| just)? arrived|made it)(?:[！!。.,，\\s…~～]*(?:你在哪(?:儿)?[？?]?|where are you[?]?|$))$",re.I),
+    'proposalZh':re.compile("(?:在|去|到|约在)\\s*[「『“\"]?([^，。！？；、\\n「」『』“”\"]{1,40}?)[」』”\"]?\\s*(?:见面|碰面|见吧|见你|等你|汇合)",re.I),
+    'proposalEn':re.compile("\\b(?:let['’]s meet|meet me|we (?:can|could|should) meet|shall we meet|how about meeting)\\s+(?:at|in|on|by|outside|inside)\\s+([^.!?;,\\n]{1,100})",re.I),
+    'stateZh':re.compile("^(?:我(?:现在|此刻|目前)?(?:正)?在|我(?:刚刚?|已经)?(?:抵达|到了|到达|回到|登上|来到)|(?:刚刚?|已经)(?:到了|抵达|回到|登上|来到)|(?:我)?正(?:坐|站|躺)在)\\s*[「『“\"]?([^，。！？；、\\n「」『』“”\"]{1,48})",re.I),
+    'stateEn':re.compile("^(?:i(?:['’]m| am)\\s+(?:(?:currently|right now|already)\\s+)?(?:at|in|on|inside|outside|by)|i\\s+(?:(?:just|already)\\s+)?(?:arrived at|got to|reached|returned to))\\s+([^.!?;,\\n]{1,100})",re.I),
+    'reject':re.compile("^(?:想|考虑|思考|打算|准备|计划|担心|等你|等着|忙|工作|吃|喝|睡|看|说|做|跟|和你|给|想象|这里|那里|这儿|那儿|路上|发消息|开玩笑|生气|等一下|trouble\\b|love\\b|a loss\\b|a hurry\\b|the mood\\b|it\\b|my way\\b|your side\\b|the middle of\\b|pain\\b|shock\\b|a good mood\\b|a bad mood\\b|need\\b|doubt\\b|denial\\b|tears\\b|danger\\b|the phone\\b|a call\\b|touch\\b|charge\\b|a position\\b)",re.I),
+    'uncertain':re.compile("(?:如果|假如|可能|也许|假设|还没|没有到|没到|不是|不在|打算|准备去|等会儿|待会|(?:\\bif\\b|\\bmaybe\\b|\\bprobably\\b|\\bnot yet\\b|\\bwould\\b|\\bwill be\\b|\\bgoing to\\b))",re.I),
+}
+
+def normalize_scene_text(t):
+    return str(t or '').strip().replace('’',"'")
+
+def clean_scene_place(raw,is_english=False):
+    value=re.sub(r'''^[「『“"'（(]+|[」』”"')）.!。！?？]+$''','',normalize_scene_text(raw)).strip()
+    if is_english:value=re.sub(r'\s+(?:at\s+\d|tomorrow\b|tonight\b|today\b|this (?:evening|afternoon|morning)\b|right now\b|now\b|waiting for\b|waiting\b|having\b|with\b).*$','',value,flags=re.I).strip()
+    else:value=re.sub(r'(?:等你|等着你|等着|等人|看风景|吹风|喝咖啡|休息|坐着|站着|给你发消息|呢|这里|这儿).*$','',value).strip()
+    if not value or len(value)>40 or SCENE_RULES['reject'].search(value) or re.search(r'[\n\r:：?？<>]',value) or SCENE_RULES['uncertain'].search(value):return ''
+    if is_english and re.fullmatch(r'here|there|somewhere|anywhere|nowhere',value,re.I):return ''
+    return value
+
+def location_from_report(raw):
+    text=normalize_scene_text(raw)
+    if not text or re.match(r'^[「『“"*>]',text) or re.search(r'[?？]$',text) or SCENE_RULES['uncertain'].search(text):return ''
+    en=SCENE_RULES['stateEn'].search(text)
+    if en:return clean_scene_place(en.group(1),True)
+    zh=SCENE_RULES['stateZh'].search(text)
+    return clean_scene_place(zh.group(1)) if zh else ''
+
+def proposal_location(raw):
+    text=normalize_scene_text(raw)
+    if not text or re.match(r'^[「『“"*>]',text) or SCENE_RULES['uncertain'].search(text) or SCENE_RULES['cancel'].search(text):return ''
+    en=SCENE_RULES['proposalEn'].search(text)
+    if en:return clean_scene_place(en.group(1),True)
+    zh=SCENE_RULES['proposalZh'].search(text)
+    return clean_scene_place(zh.group(1)) if zh else ''
+
+def same_scene_place(a,b):
+    def key(s):
+        return re.sub(r'''\s|[「」『』“”'".。]''','',re.sub(r'^(?:the|a|an|my|your)\s+','',normalize_scene_text(s).lower()))
+    return bool(a and b and key(a)==key(b))
+
+def confirmed_arrival(rows,arrival_id,now=None):
+    now=datetime.now().astimezone() if now is None else now
+    if not rows or rows[-1]['id']!=arrival_id or rows[-1]['sender']!='user':return None
+    text=normalize_scene_text(rows[-1]['text'])
+    if SCENE_RULES['uncertain'].search(text) or re.match(r'^[「『“"*>]',text):return None
+    arrived_at=location_from_report(text)
+    if not SCENE_RULES['arrival'].search(text) and not arrived_at:return None
+    plan=None
+    for i,m in enumerate(rows[:-1][-40:]):
+        s=normalize_scene_text(m['text'])
+        try:t=datetime.fromisoformat(m['created_at'].replace('Z','+00:00')).astimezone()
+        except (ValueError,TypeError,AttributeError):continue
+        if (now-t).total_seconds()>7*86400:continue
+        if SCENE_RULES['cancel'].search(s):plan=None;continue
+        loc=proposal_location(s)
+        if loc:
+            plan={'location':loc,'from':m['sender'],'proposal_id':m['id'],'proposal_text':s,'created_at':t,'index':i,'accepted':False}
+            continue
+        if plan and m['sender']!=plan['from'] and i-plan['index']<=4 and SCENE_RULES['confirm'].search(s) and not SCENE_RULES['uncertain'].search(s):
+            plan['accepted']=True;plan['agreement_id']=m['id']
+    if not plan or not plan['accepted']:return None
+    if arrived_at and not same_scene_place(arrived_at,plan['location']):return None
+    if re.search(r'下周|下个月|\bnext week\b|\bnext month\b',plan['proposal_text'],re.I):return None
+    if re.search(r'明天|\btomorrow\b',plan['proposal_text'],re.I) and plan['created_at'].date()==now.date():return None
+    return {'location':plan['location'],'proposal_id':plan['proposal_id'],'agreement_id':plan['agreement_id'],'arrival_id':arrival_id}
+
+def current_plan_rows(db,pid,cid):
+    cutoff=db.execute("SELECT MAX(created_at) FROM events WHERE profile_id=? AND character_id=? AND type IN ('matched','unmatched','return','meeting')",(pid,cid)).fetchone()[0] or ''
+    rows=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='chat' AND created_at>=? ORDER BY rowid DESC LIMIT 41",(pid,cid,cutoff)).fetchall()
+    return [m for m in reversed([dict(r) for r in rows]) if m['engine']!='recalled' and not _is_chat_artifact(m) and not is_legacy_error_artifact(m)]
+
+def auto_meeting_candidate(db,pid,cid,arrival_id):
+    q=queue_view(db,pid,cid)
+    r=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
+    if q.get('paused') or q.get('blocked') or q.get('status')=='inflight' or not r or r['mode']!='chat':return None
+    return confirmed_arrival(current_plan_rows(db,pid,cid),arrival_id)
+
 def infer_meeting_location(db,pid,cid,custom_loc=''):
     clean_custom=str(custom_loc or '').strip()
     if clean_custom:return clean_custom[:40]
-    recent=db.execute('SELECT text FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 10',(pid,cid)).fetchall()
-    pat=re.compile(r'(?:在|到|去|约在|来到|站在|坐在)?([\u4e00-\u9fa5A-Za-z0-9]{0,8}(?:咖啡店门口|咖啡馆门口|咖啡厅门口|咖啡厅|咖啡店|咖啡馆|酒吧|酒馆|餐厅|书店|唱片行|公园|海边|江边|车站|天台|公寓|靶场|电影院|便利店|图书馆|安全屋|广场|长椅|窗边|店门口|街角|街头|路口))')
-    for row in recent:
-        m=pat.search(str(row['text'] or ''))
-        if m and m.group(1):
-            loc=re.sub(r'^(?:我已经到了|我已经到|已经到了|已经到|我到了|我到|到了|约在|来到|站在|坐在|在|到|去)+','',m.group(1)).strip()
-            if len(loc)>=2:return loc[:32]
+    for m in reversed(current_plan_rows(db,pid,cid)[-16:]):
+        loc=proposal_location(m['text']) or (location_from_report(m['text']) if m['sender']=='ai' else '')
+        if loc:return loc
+        if SCENE_RULES['cancel'].search(normalize_scene_text(m['text'])):break
     try:
         p=profile_get(db,pid)
         c=BY_ID.get(cid)
@@ -2544,6 +2637,10 @@ class Handler(BaseHTTPRequestHandler):
                     if not r:raise ValueError('未匹配')
                     m_state=MEETING_STATE.setdefault((p['id'],cid),{})
                     loc_input=str(data.get('location') or data.get('meetingLocation') or '').strip()[:40]
+                    if data.get('autoArrivalId'):
+                        plan=auto_meeting_candidate(db,p['id'],cid,str(data['autoArrivalId'])) if mode=='meeting' else None
+                        if not plan:return self.respond({'mode':r['mode'],'autoRejected':True})
+                        loc_input=plan['location']
                     if loc_input:
                         m_state['meeting_location']=loc_input
                     meeting_record=None;opening_reply=None;warning=''
@@ -2880,9 +2977,11 @@ class Handler(BaseHTTPRequestHandler):
                     detect_and_apply_correction(db,p,c,user_msg)
                     if mode=='chat':
                         log_event(db,p['id'],cid,'user_message','与 '+p['name']+' 的聊天：'+txt[:180])
-                        with CHAT_LOCK:qv=queue_add(db,p['id'],cid,user_msg['id'],txt)
+                        with CHAT_LOCK:
+                            qv=queue_add(db,p['id'],cid,user_msg['id'],txt)
+                            auto_plan=auto_meeting_candidate(db,p['id'],cid,user_msg['id'])
                         db.commit()
-                        return self.respond({'user':user_msg,'reply':None,'replies':[],'queued':True,'paused':bool(qv.get('paused')),'mode':'chat','queue':qv})
+                        return self.respond({'user':user_msg,'reply':None,'replies':[],'queued':True,'paused':bool(qv.get('paused')),'mode':'chat','queue':qv,'autoMeeting':auto_plan})
                     log_event(db,p['id'],cid,'user_message','与 '+p['name']+' 的'+('见面' if mode=='meeting' else '聊天')+'：'+txt[:180])
                     t_state=get_task_state(p['id'],cid,'meeting')
                     if t_state.get('paused'):

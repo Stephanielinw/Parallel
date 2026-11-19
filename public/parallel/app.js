@@ -1457,6 +1457,17 @@ async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
   renderMessages();
   try{
     const r=await api('/message',{profileId,characterId:id,text:txt});
+    if(r.autoMeeting&&mode==='chat'&&state.activeId===profileId&&state.threadId===id&&state.tab==='messages'&&state.chatMode==='chat'){
+      const opened=await api('/mode',{profileId,characterId:id,mode:'meeting',triggerOpening:true,autoArrivalId:r.autoMeeting.arrival_id});
+      if(!opened.autoRejected){
+        if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages'){
+          await loadThreads(id);
+          if(opened.apiError)showApiErrorModal(opened.apiError,opened.taskState,{type:'meeting_opening',profileId,characterId:id,mode:'meeting'});
+          else toast(opened.warning||'双方已抵达约定地点 · 进入面对面');
+        }else refreshInboxQuietly(profileId);
+        return;
+      }
+    }
     if(r.queue)state.queue=r.queue;
     if(r.taskState)state.taskState=r.taskState;
     if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages')await loadThreads(id);

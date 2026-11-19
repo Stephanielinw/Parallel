@@ -1302,7 +1302,7 @@
     // Also ensure any date that had historical meetings or messages has a surveillance record
     for(const m of (db.meetings||[])){
       if(m.profile_id===p.id&&m.character_id===c.id&&m.started_at){
-        const mDate=String(m.started_at).slice(0,10);
+        const mDate=localDateStr(m.started_at);
         if(/^\d{4}-\d{2}-\d{2}$/.test(mDate)&&!store.byDate[mDate]){
           store.byDate[mDate]={
             date:mDate,
@@ -1353,13 +1353,7 @@
         isMeetingLive:true
       };
     }
-    let active=null;
-    for(const s of rec.slots){
-      const sMin=hhmmToMin(s.start),eMin=hhmmToMin(s.end);
-      if(sMin<=nowMin&&nowMin<=eMin){active=s;break;}
-      if(sMin<=nowMin)active=s;
-    }
-    if(!active)active=rec.slots[0];
+    const active=rec.slots[activeSlotIndex(rec.slots,nowMin)]||rec.slots.filter(s=>hhmmToMin(s.start)<=nowMin).at(-1)||rec.slots[0];
     return {...active,isCurrent:true,isMeetingLive:false};
   };
   const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>{
@@ -1446,24 +1440,40 @@
     rec.updated_at=stamp();
     return rec;
   };
+  function activeSlotIndex(slots,minute){
+    for(let i=slots.length-1;i>=0;i--)if(hhmmToMin(slots[i].start)<=minute&&minute<=hhmmToMin(slots[i].end))return i;
+    return -1;
+  }
+  function overlayActualSlots(base,actual){
+    let result=base.slice();
+    for(const observed of actual){
+      const start=hhmmToMin(observed.start),end=hhmmToMin(observed.end);
+      if(end<start)continue;
+      const next=[];
+      for(const slot of result){
+        const a=hhmmToMin(slot.start),b=hhmmToMin(slot.end);
+        if(b<=start||a>=end){next.push(slot);continue;}
+        if(a<start)next.push({...slot,end:observed.start});
+        if(b>end)next.push({...slot,id:slot.id+'_after_'+observed.end,start:observed.end});
+      }
+      next.push(observed);result=next.sort((a,b)=>hhmmToMin(a.start)-hhmmToMin(b.start));
+    }
+    return result;
+  }
   const syncSurveillanceFromChat=(p,c,userRows,aiText)=>{
     const txt=String(aiText||'').trim();
-    if(!txt)return;
-    const moveMatch=txt.match(/(?:我现在(?:去|在|到)|刚到|已经到|正坐在|正在|先去|准备去)([\u4e00-\u9fa5A-Za-z0-9]{1,8}(?:咖啡店|咖啡馆|咖啡厅|酒吧|酒馆|餐厅|书店|唱片行|公园|海边|江边|车站|天台|公寓|靶场|电影院|便利店|图书馆|安全屋|超市|健身房))/);
-    if(!moveMatch||!moveMatch[1])return;
-    const newLoc=moveMatch[1].trim();
+    if(!txt||relation(p.id,c.id)?.mode==='meeting')return;
+    const newLoc=txt.split(/\s+\/\s+|\|\|\||\n/).map(locationFromReport).filter(Boolean).at(-1);
+    if(!newLoc)return;
     const rec=getOrInitSurveillance(p,c,localDateStr());
-    const nowHHMM=fmtHHMM(Date.now())||'12:00';
-    const nowMin=hhmmToMin(nowHHMM);
-    const idx=rec.slots.findIndex(s=>hhmmToMin(s.start)<=nowMin&&nowMin<=hhmmToMin(s.end));
-    if(idx>=0&&rec.slots[idx].source!=='meeting'){
-      rec.slots[idx].location=newLoc;
-      rec.slots[idx].status='聊天动态同步';
-      rec.slots[idx].activity=`在「${newLoc}」活动（与你聊天提及）`;
-      rec.slots[idx].scene=`${c.name}刚刚在消息里与 ${p.name} 提到自己身处「${newLoc}」：「${txt.slice(0,55)}」`;
-      rec.slots[idx].source='chat_update';
-      rec.updated_at=stamp();
-    }
+    const nowHHMM=fmtHHMM(Date.now())||'12:00',nowMin=hhmmToMin(nowHHMM),idx=activeSlotIndex(rec.slots,nowMin);
+    if(idx<0)return;
+    const slot=rec.slots[idx];
+    if(slot.location===newLoc&&slot.source==='chat_update')return;
+    const observed={...slot,id:'slot_chat_'+uid(),start:nowHHMM,location:newLoc,status:'聊天动态同步',activity:`在「${newLoc}」活动（角色亲自提及）`,scene:`${c.name}在消息里提到此刻身处「${newLoc}」。`,source:'chat_update'};
+    if(hhmmToMin(slot.start)<nowMin)rec.slots.splice(idx,1,{...slot,end:nowHHMM},observed);
+    else rec.slots.splice(idx,1,observed);
+    rec.updated_at=stamp();
   };
   async function ensureLiveSurveillance(p,c,forceRefresh=false,targetDate=''){
     const today=localDateStr();
@@ -1493,14 +1503,7 @@
           scene:String(s.scene||'').trim().slice(0,160),
           source:'schedule'
         }));
-        for(const pSlot of preserved){
-          const pMin=hhmmToMin(pSlot.start);
-          const hit=aiSlots.findIndex(x=>hhmmToMin(x.start)<=pMin&&pMin<=hhmmToMin(x.end));
-          if(hit>=0)aiSlots.splice(hit,1,pSlot);
-          else aiSlots.push(pSlot);
-        }
-        aiSlots.sort((a,b)=>hhmmToMin(a.start)-hhmmToMin(b.start));
-        rec.slots=aiSlots;
+        rec.slots=overlayActualSlots(aiSlots,preserved);
         rec.engine='live';
         rec.updated_at=stamp();
         clearBgError(p.id,c.id,'surveillance');
@@ -1575,8 +1578,8 @@
   const buildDefaultDiary=(p,c,dateStr,survRec)=>{
     const slots=survRec?.slots||buildDefaultSurveillanceSlots(p,c,dateStr);
     const intimacy=computeIntimacyInfo(p,c);
-    const dayMsgs=messagesOf(p.id,c.id).filter(m=>String(m.created_at||'').slice(0,10)===dateStr&&m.engine!=='recalled');
-    const dayMeetings=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&String(m.started_at||'').slice(0,10)===dateStr);
+    const dayMsgs=messagesOf(p.id,c.id).filter(m=>m.created_at&&localDateStr(m.created_at)===dateStr&&m.engine!=='recalled');
+    const dayMeetings=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&m.started_at&&localDateStr(m.started_at)===dateStr);
     const slotMeet=slots.find(s=>s.source==='meeting');
     const sMorning=slots[2]||slots[1]||slots[0];
     const sAfternoon=slots[4]||slots[3]||slots[1];
@@ -1672,7 +1675,7 @@
     try{
       const intimacy=computeIntimacyInfo(p,c);
       const slotsTxt=(survRec.slots||[]).map(s=>`${s.start}-${s.end} 在【${s.location}】${s.activity}（${s.scene}）`).join('\n');
-      const dayMsgs=messagesOf(p.id,c.id).filter(m=>String(m.created_at||'').slice(0,10)===dStr&&m.engine!=='recalled');
+      const dayMsgs=messagesOf(p.id,c.id).filter(m=>m.created_at&&localDateStr(m.created_at)===dStr&&m.engine!=='recalled');
       const chatTxt=dayMsgs.length?dayMsgs.slice(-8).map(m=>`${m.sender==='user'?p.name:c.name}：${m.text.slice(0,80)}`).join('\n'):'当日无手机聊天';
       const sys=`你是 ${c.name}（来自《${c.source}》· ${c.version}，设定：${c.canon}）。现在是午夜 00:00 之后，请根据你【${dStr} 全天的监控行踪记录】写一篇你自己的第一人称私密日记。现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。
 核心铁律（必须严格遵守）：
@@ -1733,17 +1736,79 @@
       apiError:apiErr
     };
   };
+  // High-precision local recognition: only confirmed plans and factual location reports.
+  const SCENE_RULES={cancel:new RegExp("^(?:不去了|取消(?:见面|约会|计划)?|改天(?:吧|再见)?|算了(?:吧)?|我(?:不能|没法|不想)去|(?:let['’]s )?cancel|not coming|can['’]t make it|rain check|another day)",'i'),confirm:new RegExp("^(?:好(?:啊|呀|的|吧|哦|，|,|。|！|!|$)|行(?:啊|呀|，|。|$)|可以(?:啊|呀|，|。|$)|没问题|就这么定了|不见不散|我会到|我会去|一言为定|okay\\b|ok\\b|sure\\b|deal\\b|sounds good\\b|see you there\\b|i['’]ll be there\\b|agreed\\b)",'i'),arrival:new RegExp("^(?:我(?:已经|刚刚?)?(?:到了|到啦|抵达了)|(?:已经|刚刚?)?到(?:了|啦)|我到啦|i['’]m here|i am here|i(?:['’]ve| have| just)? arrived|made it)(?:[！!。.,，\\s…~～]*(?:你在哪(?:儿)?[？?]?|where are you[?]?|$))$",'i'),proposalZh:new RegExp("(?:在|去|到|约在)\\s*[「『“\"]?([^，。！？；、\\n「」『』“”\"]{1,40}?)[」』”\"]?\\s*(?:见面|碰面|见吧|见你|等你|汇合)",'i'),proposalEn:new RegExp("\\b(?:let['’]s meet|meet me|we (?:can|could|should) meet|shall we meet|how about meeting)\\s+(?:at|in|on|by|outside|inside)\\s+([^.!?;,\\n]{1,100})",'i'),stateZh:new RegExp("^(?:我(?:现在|此刻|目前)?(?:正)?在|我(?:刚刚?|已经)?(?:抵达|到了|到达|回到|登上|来到)|(?:刚刚?|已经)(?:到了|抵达|回到|登上|来到)|(?:我)?正(?:坐|站|躺)在)\\s*[「『“\"]?([^，。！？；、\\n「」『』“”\"]{1,48})",'i'),stateEn:new RegExp("^(?:i(?:['’]m| am)\\s+(?:(?:currently|right now|already)\\s+)?(?:at|in|on|inside|outside|by)|i\\s+(?:(?:just|already)\\s+)?(?:arrived at|got to|reached|returned to))\\s+([^.!?;,\\n]{1,100})",'i'),reject:new RegExp("^(?:想|考虑|思考|打算|准备|计划|担心|等你|等着|忙|工作|吃|喝|睡|看|说|做|跟|和你|给|想象|这里|那里|这儿|那儿|路上|发消息|开玩笑|生气|等一下|trouble\\b|love\\b|a loss\\b|a hurry\\b|the mood\\b|it\\b|my way\\b|your side\\b|the middle of\\b|pain\\b|shock\\b|a good mood\\b|a bad mood\\b|need\\b|doubt\\b|denial\\b|tears\\b|danger\\b|the phone\\b|a call\\b|touch\\b|charge\\b|a position\\b)",'i'),uncertain:new RegExp("(?:如果|假如|可能|也许|假设|还没|没有到|没到|不是|不在|打算|准备去|等会儿|待会|(?:\\bif\\b|\\bmaybe\\b|\\bprobably\\b|\\bnot yet\\b|\\bwould\\b|\\bwill be\\b|\\bgoing to\\b))",'i')};
+  const normalizeSceneText=t=>String(t??'').trim().replace(/’/g,"'");
+  function cleanScenePlace(raw,isEnglish=false){
+    let value=normalizeSceneText(raw).replace(/^[「『“"'（(]+|[」』”"')）.!。！?？]+$/g,'').trim();
+    if(isEnglish)value=value.replace(/\s+(?:at\s+\d|tomorrow\b|tonight\b|today\b|this (?:evening|afternoon|morning)\b|right now\b|now\b|waiting for\b|waiting\b|having\b|with\b).*$/i,'').trim();
+    else value=value.replace(/(?:等你|等着你|等着|等人|看风景|吹风|喝咖啡|休息|坐着|站着|给你发消息|呢|这里|这儿).*$/,'').trim();
+    if(!value||value.length>40||SCENE_RULES.reject.test(value)||/[\n\r:：?？<>]/.test(value)||SCENE_RULES.uncertain.test(value))return '';
+    if(isEnglish&&/^(?:here|there|somewhere|anywhere|nowhere)$/i.test(value))return '';
+    if(!isEnglish&&/^(?:家|外面|里面)$/.test(value))return value;
+    return value;
+  }
+  function locationFromReport(raw){
+    const text=normalizeSceneText(raw);
+    if(!text||/^[「『“"*>]/.test(text)||/[?？]$/.test(text)||SCENE_RULES.uncertain.test(text))return '';
+    const en=text.match(SCENE_RULES.stateEn);
+    if(en)return cleanScenePlace(en[1],true);
+    const zh=text.match(SCENE_RULES.stateZh);
+    return zh?cleanScenePlace(zh[1],false):'';
+  }
+  function proposalLocation(raw){
+    const text=normalizeSceneText(raw);
+    if(!text||/^[「『“"*>]/.test(text)||SCENE_RULES.uncertain.test(text)||SCENE_RULES.cancel.test(text))return '';
+    const en=text.match(SCENE_RULES.proposalEn);if(en)return cleanScenePlace(en[1],true);
+    const zh=text.match(SCENE_RULES.proposalZh);return zh?cleanScenePlace(zh[1],false):'';
+  }
+  function sameScenePlace(a,b){
+    const key=s=>normalizeSceneText(s).toLowerCase().replace(/^(?:the|a|an|my|your)\s+/,'').replace(/[\s「」『』“”'".。]/g,'');
+    return Boolean(a&&b&&key(a)===key(b));
+  }
+  function confirmedArrival(rows,arrivalId,now=Date.now()){
+    const last=rows[rows.length-1];
+    if(!last||last.id!==arrivalId||last.sender!=='user')return null;
+    const txt=normalizeSceneText(last.text);
+    if(SCENE_RULES.uncertain.test(txt)||/^[「『“"*>]/.test(txt))return null;
+    const arrivedAt=locationFromReport(txt);
+    if(!SCENE_RULES.arrival.test(txt)&&!arrivedAt)return null;
+    let plan=null;
+    const recent=rows.slice(0,-1).slice(-40);
+    for(let i=0;i<recent.length;i++){
+      const m=recent[i],s=normalizeSceneText(m.text);
+      const t=Date.parse(m.created_at||'');if(!Number.isFinite(t)||now-t>7*86400000)continue;
+      if(SCENE_RULES.cancel.test(s)){plan=null;continue;}
+      const loc=proposalLocation(s);
+      if(loc){plan={location:loc,from:m.sender,proposal_id:m.id,proposal_text:s,created_at:m.created_at,index:i,accepted:false};continue;}
+      if(plan&&m.sender!==plan.from&&i-plan.index<=4&&SCENE_RULES.confirm.test(s)&&!SCENE_RULES.uncertain.test(s)){plan.accepted=true;plan.agreement_id=m.id;}
+    }
+    if(!plan?.accepted)return null;
+    if(arrivedAt&&!sameScenePlace(arrivedAt,plan.location))return null;
+    // Vague future plans are not treated as a completed arrival.
+    if(/下周|下个月|\bnext week\b|\bnext month\b/i.test(plan.proposal_text))return null;
+    if(/明天|\btomorrow\b/i.test(plan.proposal_text)&&new Date(plan.created_at).toDateString()===new Date(now).toDateString())return null;
+    return {location:plan.location,proposal_id:plan.proposal_id,agreement_id:plan.agreement_id,arrival_id:arrivalId};
+  }
+  function currentPlanRows(pid,cid){
+    const boundary=(db.events||[]).filter(e=>e.profile_id===pid&&e.character_id===cid&&['matched','unmatched','return','meeting'].includes(e.type)).at(-1);
+    const cutoff=boundary?Date.parse(boundary.created_at):0;
+    return messagesOf(pid,cid).filter(m=>m.mode==='chat'&&!isChatArtifact(m)&&m.engine!=='recalled'&&!m.recalled&&Date.parse(m.created_at)>=cutoff).slice(-41);
+  }
+  function autoMeetingCandidate(pid,cid,arrivalId){
+    const q=queueInfo(pid,cid);
+    if(q.paused||q.blocked||q.status==='inflight'||relation(pid,cid)?.mode!=='chat')return null;
+    return confirmedArrival(currentPlanRows(pid,cid),arrivalId);
+  }
   const inferMeetingLocation=(pid,cid,customLoc='')=>{
     const cleanCustom=String(customLoc||'').trim();
     if(cleanCustom)return cleanCustom.slice(0,40);
-    const recent=messagesOf(pid,cid).slice(-10);
+    const recent=currentPlanRows(pid,cid).slice(-16);
     for(let i=recent.length-1;i>=0;i--){
-      const t=String(recent[i].text||'');
-      const m=t.match(/(?:在|到|去|约在|来到|站在|坐在)?([\u4e00-\u9fa5A-Za-z0-9]{0,8}(?:咖啡店门口|咖啡馆门口|咖啡厅门口|咖啡厅|咖啡店|咖啡馆|酒吧|酒馆|餐厅|书店|唱片行|公园|海边|江边|车站|天台|公寓|靶场|电影院|便利店|图书馆|安全屋|广场|长椅|窗边|店门口|街角|街头|路口))/);
-      if(m&&m[1]){
-        const loc=m[1].replace(/^(?:我已经到了|我已经到|已经到了|已经到|我到了|我到|到了|约在|来到|站在|坐在|在|到|去)+/,'').trim();
-        if(loc.length>=2)return loc.slice(0,32);
-      }
+      const m=recent[i];
+      const loc=proposalLocation(m.text)||(m.sender==='ai'?locationFromReport(m.text):'');
+      if(loc)return loc;
+      if(SCENE_RULES.cancel.test(normalizeSceneText(m.text)))break;
     }
     const p=db.profiles.find(x=>x.id===pid),c=byId.get(cid);
     if(p&&c){
@@ -3555,7 +3620,12 @@
       case '/mode':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id),m=data.mode;
         if(!['chat','meeting'].includes(m))bodyErr('无效模式');
-        const locInput=String(data.location||data.meetingLocation||'').trim().slice(0,40);
+        let locInput=String(data.location||data.meetingLocation||'').trim().slice(0,40);
+        if(data.autoArrivalId){
+          const plan=m==='meeting'?autoMeetingCandidate(p.id,c.id,String(data.autoArrivalId)):null;
+          if(!plan)return {mode:r.mode,autoRejected:true};
+          locInput=plan.location;
+        }
         if(locInput){
           r.meeting_location=locInput;
         }
@@ -3888,8 +3958,9 @@
           event(p.id,c.id,'user_message','与 '+p.name+' 的'+(mode==='meeting'?'见面':'聊天')+'：'+txt.slice(0,180));
           if(mode==='chat'){
             const queue=enqueue(p.id,c.id,user.id,txt);
+            const autoMeeting=autoMeetingCandidate(p.id,c.id,user.id);
             save();
-            return {user,reply:null,replies:[],queued:true,paused:Boolean(queue.paused),taskState:getTaskState(p.id,c.id,'chat'),mode,queue};
+            return {user,reply:null,replies:[],queued:true,paused:Boolean(queue.paused),taskState:getTaskState(p.id,c.id,'chat'),mode,queue,autoMeeting};
           }
           const meetTs=getTaskState(p.id,c.id,'meeting');
           if(meetTs&&meetTs.status==='paused'&&!data.forceResume){
