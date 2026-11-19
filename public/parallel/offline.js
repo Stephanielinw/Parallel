@@ -538,6 +538,28 @@
   const getC=id=>byId.get(id)||bodyErr('原作人物目录中不存在此角色');
   const relation=(pid,cid)=>db.relations[pairKey(pid,cid)];
   const pub=()=>{const {api_key,image_api_key,archive_api_key,...s}=db.connection;const hasApi=!!(s.base_url&&s.model&&api_key);const hasImg=!!(s.image_base_url&&s.image_model&&image_api_key);const demoEnabled=s.demo_enabled!==false;return {...s,proactive_mode:s.proactive_mode||'daily',auto_translate:s.auto_translate!==false,character_language_pref:['natural','zh','en','custom'].includes(s.character_language_pref)?s.character_language_pref:'natural',character_language_custom:String(s.character_language_custom||''),has_key:!!api_key,has_archive_key:!!archive_api_key,archive_enabled:s.archive_enabled!==false,archive_mode:s.archive_mode||'inherit',has_api_config:hasApi,demo_enabled:demoEnabled,has_image_key:!!image_api_key,mode:hasApi?'live':(demoEnabled?'demo':'normal'),image_mode:hasImg?'live':'text',portable:true,storageAvailable}};
+  // The provider may put analysis in content instead of reasoning_content.
+  // Strip only complete leading tagged blocks; never guess from candidate bubbles.
+  const guardChatReasoning=raw=>{
+    let text=String(raw??'').trim(), removed=false;
+    const open=/^<(think|thinking|reasoning|analysis)(?:\s[^<>]*)?>/i;
+    const anyTag=/<\/?(?:think|thinking|reasoning|analysis)(?:\s[^<>]*)?>/i;
+    for(let i=0;i<8;i++){
+      const start=text.match(open);
+      if(!start)break;
+      const rest=text.slice(start[0].length);
+      const close=new RegExp('</'+start[1]+'\\s*>','i').exec(rest);
+      if(!close||anyTag.test(rest.slice(0,close.index)))return null;
+      text=rest.slice(close.index+close[0].length).trim();
+      removed=true;
+    }
+    if(open.test(text)||/^<\/(?:think|thinking|reasoning|analysis)\s*>/i.test(text))return null;
+    if(removed&&(!text||anyTag.test(text)))return null;
+    // Require a heading at the start, not a casual mention of the word.
+    const heading=/^(?:#{1,6}[ \t]*)?(?:\*{1,2}[ \t]*)?(?:思维过程|思考过程|分析过程|推理过程|思维链|chain of thought|thinking process|reasoning process|reasoning|analysis)(?:[ \t]*\*{1,2})?[ \t]*[:：]?(?:[ \t]*\*{1,2})?[ \t]*(?:\r?\n|$)/i;
+    if(heading.test(text))return null;
+    return text;
+  };
   const splitChatBubbles=raw=>{
     const rawStr=String(raw||'').trim();
     if(!rawStr)return ['…'];
@@ -2912,9 +2934,22 @@
         });
       }
     }
+    const replyContent=mode==='chat'?guardChatReasoning(rawTrimmed):rawTrimmed;
+    if(replyContent===null){
+      throwApiError({
+        error_code:'REASONING_LEAK',
+        http_status:res.status||200,
+        title:'模型将分析过程混入了聊天正文',
+        message:'无法可靠分离正式台词，已阻止写入聊天与记忆。可手动重试；原始返回已保存在系统日志中。',
+        background:Boolean(options.background)
+      },logBase,startedMs,{
+        raw_response:data,raw_content:rawTrimmed,reasoning_content:reasoningRaw,
+        finish_reason:finishReason||'stop',usage
+      });
+    }
     const parsedPreview=mode==='meeting'
-      ?cleanMeetingNovelText(rawTrimmed)
-      :(mode==='chat'?splitChatBubbles(rawTrimmed).join('\n'):rawTrimmed);
+      ?cleanMeetingNovelText(replyContent)
+      :(mode==='chat'?splitChatBubbles(replyContent).join('\n'):replyContent);
     if((mode==='chat'||mode==='meeting')&&!parsedPreview.trim()){
       throwApiError({
         error_code:'EMPTY_PARSED_CONTENT',
@@ -2979,7 +3014,7 @@
       usage,
       truncation_warning:truncWarnings.join(' ')
     });
-    return options.json_mode?rawTrimmed.replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i,'$1').trim():rawTrimmed;
+    return options.json_mode?rawTrimmed.replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i,'$1').trim():replyContent;
   }
   async function generateBios(selected,forceRefresh=false){
     if(pub().mode!=='live')return {generation:'catalog-demo',apiError:null};
@@ -4215,6 +4250,7 @@
     detectProxyWrappedError,
     cleanMeetingNovelText,
     splitChatBubbles,
+    guardChatReasoning,
     sanitizeStoredData,
     diagnosePresets,
     getTaskState,
