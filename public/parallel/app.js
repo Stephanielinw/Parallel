@@ -540,7 +540,7 @@ function renderChatMessagesHtml(c){
       }
     }
     const time=`<span>${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示回复':''}</span>${receiptHtml}${recallBtn}`;
-    return `<div class="bubble-row ${m.sender==='user'?'mine':''}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble">${esc(mem.episode?m.text:cleanBodyText(m.text,m.sender))}</div><div class="chat-time">${time}</div></div></div>`;
+    return `<div class="bubble-row ${m.sender==='user'?'mine':''}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble">${esc(cleanBodyText(m.text,m.sender))}</div><div class="chat-time">${time}</div></div></div>`;
   }).join('');
 
   const typingHtml=charTyping?`<div class="typing-inline" role="status" aria-live="polite"><span class="typing-label">对方正在输入中</span><span class="typing-ellipsis"><i>.</i><i>.</i><i>.</i></span></div>`:'';
@@ -955,7 +955,7 @@ function openDailyMessagesModal(memId){
     <div class="daily-modal-messages">
       ${msgs.length?msgs.map(m=>`<div class="daily-msg-row ${m.sender==='user'?'is-user':'is-ai'}">
         <div class="daily-msg-meta"><b>${esc(m.speaker)}</b><span>${fmtTime(m.created_at)}</span></div>
-        <div class="daily-msg-text">${esc(cleanBodyText(m.text,m.sender))}</div>
+        <div class="daily-msg-text">${esc(mem.episode?m.text:cleanBodyText(m.text,m.sender))}</div>
       </div>`).join(''):'<p class="caption">暂无当日明细消息。</p>'}
     </div>`;
   modal(html,`<button class="btn soft" data-action="open-memories">返回记忆档案</button><button class="btn primary" data-action="close-modal">关闭</button>`);
