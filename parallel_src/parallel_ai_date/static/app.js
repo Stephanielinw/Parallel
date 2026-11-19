@@ -772,6 +772,53 @@ function renderHeaderModeButton(meeting){
     :'当前：日常模式 · 点击开启热聊模式';
   return `<button type="button" class="icon-btn hot-chat-btn ${isHot?'is-hot':''}" data-action="toggle-hot-chat" aria-pressed="${isHot?'true':'false'}" aria-label="${isHot?'热聊模式已开启':'开启热聊模式'}" title="${hotTitle}">${I('hotchat')}</button><button type="button" class="icon-btn mode-icon-btn" data-action="change-mode" aria-label="进入面对面见面" title="进入面对面见面">${I('map')}</button>`;
 }
+// Preserve the user's scroll intent independently of viewport size and chat re-renders.
+let trackedChatBody=null,chatResizeObserver=null,chatScrollState=null;
+const nearChatBottom=(body,tolerance=48)=>body.scrollHeight-body.clientHeight-body.scrollTop<=tolerance;
+function chatPosition(body){
+  const top=body.getBoundingClientRect().top;
+  const anchor=[...body.querySelectorAll('[data-message-id]')].find(n=>n.getBoundingClientRect().bottom>top);
+  return {top:body.scrollTop,id:anchor?.dataset.messageId||'',offset:anchor?anchor.getBoundingClientRect().top-top:0};
+}
+function applyChatPosition(body,pos){
+  body.scrollTop=pos.top;
+  if(pos.id){
+    const n=[...body.querySelectorAll('[data-message-id]')].find(el=>el.dataset.messageId===pos.id);
+    if(n)body.scrollTop+=n.getBoundingClientRect().top-body.getBoundingClientRect().top-pos.offset;
+  }
+}
+function restoreChatScroll(body,s){
+  if(trackedChatBody!==body||chatScrollState!==s||!body.isConnected)return;
+  s.height=body.clientHeight;
+  if(s.pinned)body.scrollTop=body.scrollHeight;
+  else if(s.position)applyChatPosition(body,s.position);
+}
+function scheduleChatScroll(body,s){
+  restoreChatScroll(body,s);
+  if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>restoreChatScroll(body,s));
+}
+function bindChatScroll(body){
+  if(trackedChatBody===body)return chatScrollState;
+  chatResizeObserver?.disconnect();
+  trackedChatBody=body;
+  const s=chatScrollState={pinned:true,position:null,height:body.clientHeight,viewportChanging:false};
+  body.addEventListener('scroll',()=>{
+    if(trackedChatBody!==body||s.viewportChanging||s.height!==body.clientHeight)return;
+    s.pinned=nearChatBottom(body);
+    s.position=s.pinned?null:chatPosition(body);
+  },{passive:true});
+  if(typeof ResizeObserver==='function'){
+    chatResizeObserver=new ResizeObserver(()=>restoreChatScroll(body,s));
+    chatResizeObserver.observe(body);
+  }
+  return s;
+}
+function pinCurrentChat(){
+  const body=$('chat-body');if(!body)return;
+  const s=bindChatScroll(body);s.pinned=true;s.position=null;
+  scheduleChatScroll(body,s);
+}
+let viewportSettleTimer;
 function renderMessages(){
   if(state.tab!=='messages')return;
   markDisplayedIncomingRead();
@@ -812,9 +859,11 @@ function renderMessages(){
     }
     const modeSlot=layoutEl.querySelector('#chat-mode-btn-slot');
     if(modeSlot)modeSlot.innerHTML=renderHeaderModeButton(meeting);
+    const anchorState=bindChatScroll(chatBodyEl);
+    if(!anchorState.pinned)anchorState.position=chatPosition(chatBodyEl);
     chatBodyEl.className=`chat-body ${meeting?'meeting-novel-body':''}`;
     chatBodyEl.innerHTML=renderChatMessagesHtml(selected.character);
-    chatBodyEl.scrollTop=chatBodyEl.scrollHeight;
+    scheduleChatScroll(chatBodyEl,anchorState);
     const bannerSlot=$('chat-paused-banner-slot');
     if(bannerSlot)bannerSlot.innerHTML=renderPausedTaskBanner();
     existingInput.placeholder=meeting?'写下你在见面时的动作、神态或台词……':'输入消息……';
@@ -832,14 +881,14 @@ function renderMessages(){
   }
   state.renderedThreadId=selected?state.threadId:'';
   $('view').innerHTML=state.threads.length?`<div class="messages-layout ${selected?'has-chat':''}"><div class="threads">${renderMessagesListItems()}</div><div class="chat-view ${state.chatMode==='meeting'?'meeting-mode':''}">${selected?renderChat(selected):'<div class="empty-state"><div class="empty-illustration">'+I('letter')+'</div><h2>选一段对话</h2><p>每次相遇都有延续的故事。</p></div>'}</div></div>`:empty('letter','还没有匹配对象','去发现页滑动卡片；右滑喜欢后，对方也有自己的选择。','去发现','discover');
-  const body=$('chat-body');if(body)body.scrollTop=body.scrollHeight;
+  const body=$('chat-body');if(body)scheduleChatScroll(body,bindChatScroll(body));
   updateQueueCountdown();
   const input=$('chat-input');
   if(input){
     const draft=state.draftInputs[state.threadId]||'';
     if(draft)input.value=draft;
     input.addEventListener('input',e=>{if(state.threadId){state.draftInputs[state.threadId]=e.target.value;state.lastSendAt=Date.now()}});
-    input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('chat-form').requestSubmit()}});
+    input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.keyCode!==229){e.preventDefault();$('chat-form').requestSubmit()}});
     $('chat-form').addEventListener('submit',sendMessage);
     if(wasFocused){
       input.focus();
@@ -1402,6 +1451,7 @@ async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
   state.chatBusy=true;const id=state.threadId,mode=state.chatMode,profileId=state.activeId;
   const wasPaused=isCurrentThreadPaused();
   input.value='';state.draftInputs[id]='';state.lastSendAt=Date.now();
+  pinCurrentChat();
   const now=new Date().toISOString();state.messages.push({id:'pending',sender:'user',mode,text:txt,created_at:now,engine:'human'});
   if(mode==='meeting'&&!wasPaused)state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:now,engine:'human'});
   renderMessages();
@@ -2076,7 +2126,7 @@ if(a==='toggle-chat-plus'){
     panel.classList.toggle('is-open',state.chatPlusOpen);
   }
   const body=$('chat-body');
-  if(body)body.scrollTop=body.scrollHeight;
+  if(body)scheduleChatScroll(body,bindChatScroll(body));
   return;
 }
 if(a==='chat-plus-item'){
@@ -2293,8 +2343,15 @@ function syncVisibleViewport(){
   const vv=window.visualViewport;
   if(vv&&Math.abs(vv.scale-1)>0.01)return;
   const height=vv?.height||window.innerHeight;
+  const body=$('chat-body'),s=body?bindChatScroll(body):null;
+  if(s)s.viewportChanging=true;
   if(height>0)document.documentElement.style.setProperty('--parallel-visible-height',Math.round(height)+'px');
   document.documentElement.style.setProperty('--parallel-visible-top',Math.round(vv?.offsetTop||0)+'px');
+  if(s){
+    scheduleChatScroll(body,s);
+    clearTimeout(viewportSettleTimer);
+    viewportSettleTimer=setTimeout(()=>{restoreChatScroll(body,s);s.viewportChanging=false;},180);
+  }
 }
 window.addEventListener('resize',syncVisibleViewport,{passive:true});
 window.visualViewport?.addEventListener('resize',syncVisibleViewport,{passive:true});

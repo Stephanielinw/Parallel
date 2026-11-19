@@ -1,0 +1,23 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const root=path.join(__dirname,'..'),read=p=>fs.readFileSync(path.join(root,p),'utf8');
+const o=read('public/parallel/offline.js'),a=read('public/parallel/app.js');
+assert.equal(a,read('parallel_src/parallel_ai_date/static/app.js'));assert.equal(o,read('parallel_src/parallel_ai_date/static/offline.js'));
+const f=o.slice(o.indexOf('  function selectTurnWindow('),o.indexOf('  const selectWorkingHistory='));
+const select=new Function(f+'\nreturn selectTurnWindow')();
+const rows=Array.from({length:40},(_,i)=>({id:String(i),sender:i%2?'ai':'user',text:'x'.repeat(100),created_at:i<20?'2026-11-18':'2026-11-19'}));
+assert.equal(select(rows,'chat').length,24);
+assert.equal(select(rows,'chat')[0].sender,'user');
+assert.equal(select(rows,'chat',['2'])[0].id,'2');
+const burst=Array.from({length:30},(_,i)=>({id:'b'+i,sender:'user',text:'x'.repeat(1000)}));
+assert.equal(select([...rows,...burst],'chat',burst.map(x=>x.id)).filter(x=>x.id.startsWith('b')).length,30);
+const long=[{id:'a',sender:'user',text:'x'.repeat(15000)},{id:'b',sender:'ai',text:'x'.repeat(15000)},{id:'c',sender:'user',text:'new'}];assert.deepEqual(select(long,'chat').map(x=>x.id),['c']);
+const code=a.slice(a.indexOf('let trackedChatBody='),a.indexOf('function renderMessages(){'));
+let callback;
+const harness=new Function('ResizeObserver','requestAnimationFrame',code+'\nreturn {bindChatScroll,restoreChatScroll,scheduleChatScroll,nearChatBottom}')(
+ class{constructor(fn){callback=fn}observe(){}disconnect(){}},fn=>fn());
+const body={scrollHeight:1000,clientHeight:500,scrollTop:500,isConnected:true,addEventListener(k,fn){this.onScroll=fn},querySelectorAll(){return []},getBoundingClientRect(){return {top:0}}};
+const s=harness.bindChatScroll(body);body.clientHeight=200;callback();assert.equal(body.scrollTop,1000,'keyboard resize keeps pinned bottom');
+body.scrollTop=100;body.onScroll();assert.equal(s.pinned,false);body.clientHeight=400;callback();assert.equal(body.scrollTop,100,'resize respects historical position');
+body.scrollHeight=1600;harness.scheduleChatScroll(body,s);assert.equal(body.scrollTop,100);
+assert(a.includes('!e.isComposing&&e.keyCode!==229'));
+console.log('Chat anchor and turn-window tests passed');

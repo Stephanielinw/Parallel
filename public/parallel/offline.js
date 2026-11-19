@@ -1474,7 +1474,7 @@
     if(rec.engine==='live'&&!forceRefresh)return rec;
     try{
       const relSummary=relationshipBaselineSummary(p.id,c.id,p.name);
-      const sys=`你是日程与世界线生成引擎。请为角色 ${c.name}（来源：${c.source} · ${c.version}，背景：${c.canon}）生成 ${dStr} 从 00:00 到 23:59 的完整一日生活足迹监控表（共 8 到 9 个连续时间段，无缝覆盖全天）。
+      const sys=`你是日程与世界线生成引擎。请为角色 ${c.name}（来源：${c.source} · ${c.version}，背景：${c.canon}）生成 ${dStr} 从 00:00 到 23:59 的完整一日生活足迹监控表（共 8 到 9 个连续时间段，无缝覆盖全天）。现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。
 要求：
 1. 严密贴合 ${c.name} 的原作职业、性格与独立生活习惯，角色有自己的工作、同伴与日常，不要整天围着 ${p.name} 转（当前关系：${relSummary}）。
 2. 每个时间段包含：start ("HH:MM"), end ("HH:MM"), location (具体地点，不超过14字), status (简短状态标签，4-6字), activity (正在做的事，不超过16字), scene (极具画面感的第三人称现场微描写，35-70字，描写环境光影、小动作或神态，严禁使用任何 emoji)。
@@ -1674,7 +1674,7 @@
       const slotsTxt=(survRec.slots||[]).map(s=>`${s.start}-${s.end} 在【${s.location}】${s.activity}（${s.scene}）`).join('\n');
       const dayMsgs=messagesOf(p.id,c.id).filter(m=>String(m.created_at||'').slice(0,10)===dStr&&m.engine!=='recalled');
       const chatTxt=dayMsgs.length?dayMsgs.slice(-8).map(m=>`${m.sender==='user'?p.name:c.name}：${m.text.slice(0,80)}`).join('\n'):'当日无手机聊天';
-      const sys=`你是 ${c.name}（来自《${c.source}》· ${c.version}，设定：${c.canon}）。现在是午夜 00:00 之后，请根据你【${dStr} 全天的监控行踪记录】写一篇你自己的第一人称私密日记。
+      const sys=`你是 ${c.name}（来自《${c.source}》· ${c.version}，设定：${c.canon}）。现在是午夜 00:00 之后，请根据你【${dStr} 全天的监控行踪记录】写一篇你自己的第一人称私密日记。现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。
 核心铁律（必须严格遵守）：
 1. 日记主要来源于你这一天的监控行踪（必须自然写到你在监控中的具体地点、做的事、工作细节与个人思考）。
 2. 记住：你有自己独立完整的生活、事业与世界，并不是以用户（${p.name}）为生活核心！
@@ -2080,31 +2080,38 @@
     if(milestones.length)parts.push('匹配记录：'+milestones.slice(-2).map(m=>`${String(m.created_at).slice(0,10)} ${m.summary}`).join('；'));
     return parts.join('；')+'。';
   };
-  const selectWorkingHistory=(pid,cid,mode='chat',excludeIds=null)=>{
-    const all=messagesOf(pid,cid).filter(m=>!isChatArtifact(m)&&!(excludeIds&&excludeIds.has(m.id)));
-    if(!all.length)return [];
-    if(mode==='meeting'){
-      const r=relation(pid,cid);
-      const activeMid=r?.active_meeting_id||'';
-      const winLimit=16;
-      if(activeMid){
-        const curMeet=all.filter(m=>m.mode==='meeting'&&m.meeting_id===activeMid);
-        return curMeet.slice(-winLimit);
-      }
-      const trailingMeet=[];
-      for(let i=all.length-1;i>=0;i--){
-        if(all[i].mode==='meeting')trailingMeet.unshift(all[i]);
-        else if(trailingMeet.length)break;
-      }
-      if(trailingMeet.length)return trailingMeet.slice(-winLimit);
-      return all.filter(m=>m.mode==='meeting').slice(-winLimit);
+  // Keep complete user/assistant bursts under a soft character budget. The latest
+  // burst and every pending message are protected, including across midnight.
+  function selectTurnWindow(rows,mode,protectedIds=[]){
+    if(!rows.length)return [];
+    const groups=[];
+    for(const row of rows){
+      const g=groups[groups.length-1];
+      if(!g||(row.sender==='user'&&g[g.length-1].sender==='ai'))groups.push([row]);
+      else g.push(row);
     }
-    const chron=all.slice(-24);
-    const winLimit=10;
-    const todayPrefix=String(chron[chron.length-1].created_at).slice(0,10);
-    const todayMsgs=chron.filter(m=>String(m.created_at).slice(0,10)===todayPrefix);
-    if(todayMsgs.length>=4)return todayMsgs.slice(-winLimit);
-    return chron.slice(-Math.min(6,winLimit));
+    const protect=new Set(protectedIds||[]);
+    const protectedStart=groups.findIndex(g=>g.some(m=>protect.has(m.id)));
+    const budget=mode==='meeting'?36000:12000,maxGroups=mode==='meeting'?10:12;
+    let cost=0,start=groups.length-1;
+    for(let i=groups.length-1;i>=0;i--){
+      const next=groups[i].reduce((n,m)=>n+String(m.text??'').length+40,0);
+      const mustKeep=i===groups.length-1||(protectedStart>=0&&i>=protectedStart);
+      if(!mustKeep&&(cost+next>budget||groups.length-i>maxGroups))break;
+      start=i;cost+=next;
+    }
+    return groups.slice(start).flat();
+  }
+  const selectWorkingHistory=(pid,cid,mode='chat',excludeIds=null,protectedIds=[])=>{
+    const all=messagesOf(pid,cid).filter(m=>!isChatArtifact(m)&&!(excludeIds&&excludeIds.has(m.id)));
+    if(mode==='meeting'){
+      const r=relation(pid,cid),activeMid=r?.active_meeting_id||'';
+      if(activeMid)return selectTurnWindow(all.filter(m=>m.mode==='meeting'&&m.meeting_id===activeMid),mode,protectedIds);
+      const trailing=[];
+      for(let i=all.length-1;i>=0&&all[i].mode==='meeting';i--)trailing.unshift(all[i]);
+      return selectTurnWindow(trailing,mode,protectedIds);
+    }
+    return selectTurnWindow(all.filter(m=>m.mode==='chat'),mode,protectedIds);
   };
   const selectPreMeetingChatContext=(pid,cid,limit=6)=>{
     const all=messagesOf(pid,cid);
@@ -2204,7 +2211,8 @@
   const prompt=(p,c,mode,pendingIds=[],options={})=>{
     const macros=t=>expandPresetMacros(t,p,c);
     const excludeSet=options.excludeMessageIds?new Set(options.excludeMessageIds):null;
-    const workingHistory=selectWorkingHistory(p.id,c.id,mode,excludeSet);
+    const protectedIds=mode==='chat'?(pendingIds.length?pendingIds:(queueInfo(p.id,c.id).pendingIds||[])):(getTaskState(p.id,c.id,'meeting')?.pending_ids||[]);
+    const workingHistory=selectWorkingHistory(p.id,c.id,mode,excludeSet,protectedIds);
     const workingIds=new Set(workingHistory.map(m=>m.id));
     ensureMeetingRecords(p,c);
     episodeList(p,c);
@@ -2220,6 +2228,7 @@
     const curSurv=getCurrentSurveillanceSlot(p,c);
     const meetingLoc=relation(p.id,c.id)?.meeting_location||curSurv?.location||'约定的街角咖啡馆';
     let sys='你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n';
+    sys+='现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。\n';
     if(mode==='meeting'){
       sys+=`【第一层 · 身份记忆 (Identity Memory)】\n你的身份：${c.name}（角色ID：${c.id}）。来源：${c.source}。时期：${c.version}。已收录背景：${c.canon}。\n当前互动对象 Profile：${p.name}，${p.age}岁，性别${p.gender}，交友目的：${intentStr}，兴趣爱好：${interestsStr}；公开简介：${p.bio}。`;
     }else{

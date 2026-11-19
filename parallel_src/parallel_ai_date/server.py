@@ -1171,7 +1171,7 @@ def ensure_live_surveillance(db,p,c,force=False,target_date=''):
         recent_chat='\n'.join(f"[{'我方' if x['sender']=='user' else c['name']}] {str(x['text'] or '')[:70]}" for x in reversed(recent_rows))
         meet_rows=db.execute('SELECT location,time,summary FROM meetings WHERE profile_id=? AND character_id=? ORDER BY started_at DESC LIMIT 2',(p['id'],c['id'])).fetchall()
         recent_meet='；'.join(f"{m['time']}在{m['location']}：{str(m['summary'] or '')[:50]}" for m in meet_rows)
-        sys_prompt=f"你是 {c['name']}（来自《{c['source']}》· {c['version']}，背景：{c['canon']}）。请生成你在 {d_str} 从 00:00 到 23:59 的 7 个连续时间段作息与行踪表（用于角色专属空间的实时生活监控）。必须严格贴合你的原作身份、独立职业习惯以及与 {p['name']} 的近期互动（近期聊天：{recent_chat or '刚建立匹配'}；近期见面：{recent_meet or '暂无'}）。禁止使用任何 emoji 表情符号。只输出 JSON 对象，格式为：{{\"slots\":[{{\"start\":\"00:00\",\"end\":\"06:30\",\"location\":\"具体地点（15字内）\",\"status\":\"四字状态\",\"activity\":\"正在做的事（38字内）\",\"scene\":\"监控镜头下的细腻画面感描写（55字内）\"}}]}}，7个时间段首尾相连覆盖全天。"
+        sys_prompt=f"你是 {c['name']}（来自《{c['source']}》· {c['version']}，背景：{c['canon']}）。请生成你在 {d_str} 从 00:00 到 23:59 的 7 个连续时间段作息与行踪表（用于角色专属空间的实时生活监控）。现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。必须严格贴合你的原作身份、独立职业习惯以及与 {p['name']} 的近期互动（近期聊天：{recent_chat or '刚建立匹配'}；近期见面：{recent_meet or '暂无'}）。禁止使用任何 emoji 表情符号。只输出 JSON 对象，格式为：{{\"slots\":[{{\"start\":\"00:00\",\"end\":\"06:30\",\"location\":\"具体地点（15字内）\",\"status\":\"四字状态\",\"activity\":\"正在做的事（38字内）\",\"scene\":\"监控镜头下的细腻画面感描写（55字内）\"}}]}}，7个时间段首尾相连覆盖全天。"
         out=completion([{'role':'system','content':sys_prompt},{'role':'user','content':f'请生成 {d_str} 全天 7 个时段的作息与实时监控画面 JSON。'}],json_mode=True,log_meta={'mode':'surveillance','entryPoint':'surveillance','profile':p,'character':c})
         parsed=parse_json(out,{})
         if isinstance(parsed.get('slots'),list) and len(parsed['slots'])>=5:
@@ -1307,7 +1307,7 @@ def ensure_live_diary(db,p,c,target_date='',force=False):
     try:
         intimacy=compute_intimacy_info(db,p,c)
         slots_txt='\n'.join(f"{s['start']}-{s['end']} 在【{s['location']}】{s['activity']}（{s['scene']}）" for s in (surv_rec.get('slots') or []))
-        sys_p=f"你是 {c['name']}（来自《{c['source']}》· {c['version']}，设定：{c['canon']}）。请根据你 {d_str} 全天的监控行踪写一篇第一人称私密日记。记住：角色有自己独立的生活，并不是以用户（{p['name']}）为生活核心（除非当前感情阶段为 deep_love，当前阶段：{intimacy['stage']} · {intimacy['label']}）。严禁使用任何 emoji。只输出 JSON：{{\"title\":\"《...》\",\"weather\":\"纯文字天气\",\"mood\":\"纯文字心情\",\"content\":\"第一人称日记正文（3段，用\\\\n\\\\n分隔）\"}}"
+        sys_p=f"你是 {c['name']}（来自《{c['source']}》· {c['version']}，设定：{c['canon']}）。请根据你 {d_str} 全天的监控行踪写一篇第一人称私密日记。现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。记住：角色有自己独立的生活，并不是以用户（{p['name']}）为生活核心（除非当前感情阶段为 deep_love，当前阶段：{intimacy['stage']} · {intimacy['label']}）。严禁使用任何 emoji。只输出 JSON：{{\"title\":\"《...》\",\"weather\":\"纯文字天气\",\"mood\":\"纯文字心情\",\"content\":\"第一人称日记正文（3段，用\\\\n\\\\n分隔）\"}}"
         out=completion([{'role':'system','content':sys_p},{'role':'user','content':slots_txt}],json_mode=True,log_meta={'mode':'diary','entryPoint':'diary','profile':p,'character':c})
         parsed=parse_json(out,{})
         if parsed.get('content'):
@@ -1640,33 +1640,43 @@ def relationship_baseline_summary(db,pid,cid,p_name):
         parts.append(f"匹配记录：{recent_ms}")
     return '；'.join(parts)+'。'
 
-def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids=None):
+def select_turn_window(rows,mode,protected_ids=None):
+    if not rows:return []
+    groups=[]
+    for row in rows:
+        if not groups or (row['sender']=='user' and groups[-1][-1]['sender']=='ai'):groups.append([row])
+        else:groups[-1].append(row)
+    protected=set(protected_ids or [])
+    protected_start=next((i for i,g in enumerate(groups) if any(m['id'] in protected for m in g)),-1)
+    budget,max_groups=(36000,10) if mode=='meeting' else (12000,12)
+    cost=0;start=len(groups)-1
+    for i in range(len(groups)-1,-1,-1):
+        next_cost=sum(len(str(m.get('text') or ''))+40 for m in groups[i])
+        must_keep=i==len(groups)-1 or (protected_start>=0 and i>=protected_start)
+        if not must_keep and (cost+next_cost>budget or len(groups)-i>max_groups):break
+        start=i;cost+=next_cost
+    return [m for g in groups[start:] for m in g]
+
+def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids=None,protected_ids=None):
+    # Retrieve this conversation only, and never cut the oldest pending message off.
+    where='profile_id=? AND character_id=?'
+    args=[pid,cid]
     if through_rowid is not None:
-        rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? AND rowid<=? ORDER BY rowid DESC LIMIT 48',(pid,cid,through_rowid)).fetchall()
-    else:
-        rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid DESC LIMIT 48',(pid,cid)).fetchall()
+        where+=' AND rowid<=?';args.append(through_rowid)
+    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE '+where+' ORDER BY rowid DESC',args).fetchall()
     excl=set(exclude_ids or [])
     chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m) and m['id'] not in excl]
-    if not chron:return []
     if mode=='meeting':
         m_state=MEETING_STATE.get((pid,cid),{})
         started_after=m_state.get('started_after_rowid')
         if started_after is not None:
-            cur_meet=[m for m in chron if m['mode']=='meeting' and int(m.get('rowid',0))>int(started_after)]
-            return cur_meet[-16:]
+            return select_turn_window([m for m in chron if m['mode']=='meeting' and int(m.get('rowid',0))>int(started_after)],mode,protected_ids)
         active_streak=[]
         for m in reversed(chron):
-            if m['mode']=='meeting':
-                active_streak.insert(0,m)
-            else:
-                break
-        return active_streak[-16:]
-    win_limit=10
-    today_prefix=chron[-1]['created_at'][:10]
-    today_msgs=[m for m in chron if str(m['created_at'])[:10]==today_prefix]
-    if len(today_msgs)>=4:
-        return today_msgs[-win_limit:]
-    return chron[-min(6,win_limit):]
+            if m['mode']=='meeting':active_streak.insert(0,m)
+            else:break
+        return select_turn_window(active_streak,mode,protected_ids)
+    return select_turn_window([m for m in chron if m['mode']=='chat'],mode,protected_ids)
 
 def select_pre_meeting_chat_context(db,pid,cid,limit=6):
     rows=db.execute('SELECT id,sender,mode,text,engine,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 48',(pid,cid)).fetchall()
@@ -2014,7 +2024,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     core_presets=[x for x in ordered if x['role']=='system' and not is_post_history_system_preset(x)] if mode=='meeting' else [x for x in ordered if x['role']=='system']
     post_presets=[x for x in ordered if is_post_history_system_preset(x) or x['role']!='system'] if mode=='meeting' else [x for x in ordered if x['role']!='system']
     core_sys_parts=[macros(x['content']) for x in core_presets]
-    working_history=[] if (mode=='meeting' and trigger_opening) else select_working_history(db,p['id'],c['id'],mode=mode,through_rowid=through_rowid,exclude_ids=exclude_ids)
+    working_history=[] if (mode=='meeting' and trigger_opening) else select_working_history(db,p['id'],c['id'],mode=mode,through_rowid=through_rowid,exclude_ids=exclude_ids,protected_ids=pending_ids)
     working_ids={m['id'] for m in working_history}
     ensure_daily_summaries(db,p,c,working_ids)
     query_seed=latest or ' '.join(str(m['text'] or '').strip() for m in working_history[-3:] if m['sender']=='user') or (' '.join((str(m['text'] or '').strip() if m['sender']=='user' else clean_chat_bubble_text(m['text'])) for m in working_history[-2:]))
@@ -2024,6 +2034,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     interests_str='、'.join(p.get('interests') or []) or '未填写'
     intent_str=p.get('intent') or '未填写'
     system='''你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n'''
+    system+='现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。\n'
     if mode=='meeting':
         system+=f"【第一层 · 身份记忆 (Identity Memory)】\n你的身份：{c['name']}（角色ID：{c['id']}）。原作/连续性：{c['source']}。时间线：{c['version']}。已确认背景：{c['canon']}。\n"
         system+=f"当前互动对象 Profile：姓名 {p['name']}，年龄 {p['age']}，性别 {p['gender']}，交友目的：{intent_str}，兴趣爱好：{interests_str}；公开自述：{p['bio']}。"

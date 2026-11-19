@@ -28,6 +28,8 @@ jobs:
         run: |
           node tests/task-token-budgets.test.cjs
           python3 parallel_src/parallel_ai_date/tests/test_task_token_budgets.py
+          node tests/chat-anchor-memory.test.cjs
+          python3 -m py_compile parallel_src/parallel_ai_date/server.py
       - name: Build
         run: npm run build -- --base=/Parallel/
       - name: Check required browser assets and privacy guard
