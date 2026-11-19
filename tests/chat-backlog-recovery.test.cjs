@@ -5,7 +5,8 @@ const offline=read('public/parallel/offline.js'),app=read('public/parallel/app.j
 assert.equal(offline,read('parallel_src/parallel_ai_date/static/offline.js'));assert.equal(app,read('parallel_src/parallel_ai_date/static/app.js'));
 const now=new Date(2026,10,19,8,0).getTime(),since=new Date(2026,10,18,22,0).getTime();
 class Clock extends Date{constructor(...x){super(...(x.length?x:[now]))}static now(){return now}}
-const store=new Map(),calls=[];let inflight=0,peak=0,failOnce=true;
+const store=new Map(),calls=[];let inflight=0,peak=0,failOnce=true,leakOnce=true;
+const leak='思维过程：\n\n1. **分析当前情境与对话背景**：\n* 方案A：候选台词|||候选二。\n4. **符合规范**：\n* 语气自然。真实台词。|||第二句。';
 function start(){
   const win={};
   const ctx={window:win,localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},crypto:webcrypto,Date:Clock,JSON,Math,URLSearchParams,TextEncoder,AbortController,console,setTimeout,clearTimeout,fetch:async(url,init)=>{
@@ -13,12 +14,19 @@ function start(){
     await new Promise(resolve=>setTimeout(resolve,8));inflight--;
     const user=body.messages.find(m=>m.role==='user'&&String(m.content).startsWith('fixture:'))?.content||'';
     if(user==='fixture:failed'&&failOnce){failOnce=false;return {ok:false,status:503,text:async()=>JSON.stringify({error:{message:'mock unavailable'}})}}
-    return {ok:true,status:200,json:async()=>({choices:[{message:{content:'Recovered reply.|||Second bubble.'},finish_reason:'stop'}]})};
+    if(user==='fixture:failed'&&leakOnce){leakOnce=false;return {ok:true,status:200,json:async()=>({choices:[{message:{content:leak,reasoning_content:''},finish_reason:'stop'}]})};}
+    return {ok:true,status:200,json:async()=>({choices:[{message:{content:'Recovered reply.|||Second bubble.',reasoning_content:'private analysis'},finish_reason:'stop'}]})};
   }};
   vm.createContext(ctx);vm.runInContext(offline,ctx);return win.ParallelOffline;
 }
 (async()=>{
   let e=start();
+  assert.equal(e.guardChatReasoning(leak),null);
+  assert.equal(e.guardChatReasoning('Analysis:\n1. draft|||candidate'),null);
+  assert.equal(e.guardChatReasoning('<think>draft|||candidate</think>Hi.|||Bye.'),'Hi.|||Bye.');
+  assert.equal(e.guardChatReasoning('<think>draft'),null);
+  assert.equal(e.guardChatReasoning('你能说说你的思维过程吗？'),'你能说说你的思维过程吗？');
+  assert.equal(e.guardChatReasoning('Analysis: I saw that movie.'),'Analysis: I saw that movie.');
   const pack=JSON.parse(e.exportData()),d=pack.data;
   const profile=id=>({id,name:id,age:25,gender:'female',interested_in:['all'],min_age:18,max_age:65,sources:[],interests:[],bio:'',intent:'',avatar:'',role_character_id:'',created_at:new Date(since-2000).toISOString()});
   d.profiles=[profile('p1'),profile('p2')];
@@ -54,6 +62,13 @@ function start(){
   for(const body of calls)assert.equal(body.messages.filter(m=>m.role==='user'&&String(m.content).startsWith('fixture:')).length,1,'cross-conversation isolation');
   await e.request('/chat-recover',{openedAt:now,offlineSince:since,session:'reopen-1',profileId:'p1'});assert.equal(calls.length,4);
   await e.request('/chat-recover',{openedAt:now,offlineSince:since,session:'reopen-2',profileId:'p1'});assert.equal(calls.length,5);
+  saved=JSON.parse(e.exportData()).data;
+  assert.equal(replies(c).length,0);
+  assert.equal(saved.queue[c].paused,true);
+  const rejected=e.getSystemLogs().find(x=>x.raw_content===leak);
+  assert(rejected);assert.notEqual(rejected.status,'success');assert.equal(rejected.parsed_content,'');
+  assert(!JSON.stringify(saved.messages).includes('候选台词'));
+  await e.request('/chat-recover',{openedAt:now,offlineSince:since,session:'reopen-3',profileId:'p1'});assert.equal(calls.length,6);
   saved=JSON.parse(e.exportData()).data;assert.equal(replies(c)[0].created_at,new Date(due3).toISOString());
   assert.equal(replies(pa).length,0);assert.equal(replies(fu).length,0);
   assert(app.includes("await recoverOnOpen(offlineSince)"));assert(app.includes('retry-backlog'));
