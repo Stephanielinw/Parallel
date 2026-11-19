@@ -540,7 +540,7 @@ function renderChatMessagesHtml(c){
       }
     }
     const time=`<span>${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示回复':''}</span>${receiptHtml}${recallBtn}`;
-    return `<div class="bubble-row ${m.sender==='user'?'mine':''}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble">${esc(cleanBodyText(m.text,m.sender))}</div><div class="chat-time">${time}</div></div></div>`;
+    return `<div class="bubble-row ${m.sender==='user'?'mine':''}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble">${esc(mem.episode?m.text:cleanBodyText(m.text,m.sender))}</div><div class="chat-time">${time}</div></div></div>`;
   }).join('');
 
   const typingHtml=charTyping?`<div class="typing-inline" role="status" aria-live="polite"><span class="typing-label">对方正在输入中</span><span class="typing-ellipsis"><i>.</i><i>.</i><i>.</i></span></div>`:'';
@@ -899,8 +899,10 @@ const MEM_SOURCE_LABEL={
   meeting_summary:'见面回忆',
   confirmed_fact:'重要记忆/设定',
   dialogue:'重要约定',
-  'daily-summary':'每日聊天归档',
-  daily_summary:'每日聊天归档',
+  'daily-summary':'旧版每日聊天归档',
+  daily_summary:'旧版每日聊天归档',
+  'episode-summary':'情节归档',
+  'episode-pending':'待归档情节',
   correction:'已澄清纠正',
   milestone:'关系节点',
   direct_experience:'亲历互动',
@@ -947,8 +949,8 @@ function openDailyMessagesModal(memId){
   const mem=(state.lastMemoriesData?.memories||[]).find(x=>x.id===memId);
   if(!mem){toast('未找到当日对话详情');return}
   const msgs=mem.day_messages||[];
-  const html=`<div class="kicker">DAILY ARCHIVE · 每日聊天记录详情</div>
-    <h2>${esc(mem.summary.split(' ')[0]||'当日')} 聊天明细</h2>
+  const html=`<div class="kicker">EPISODE ARCHIVE · 聊天原文</div>
+    <h2>${esc(mem.episode?.title||'情节')} 原文</h2>
     <p class="caption">${esc(cleanBodyText(mem.summary,mem.source_type==='correction'||mem.source_type==='manual'?'user':'ai'))}</p>
     <div class="daily-modal-messages">
       ${msgs.length?msgs.map(m=>`<div class="daily-msg-row ${m.sender==='user'?'is-user':'is-ai'}">
@@ -974,11 +976,11 @@ async function openMemoriesModal(query='',category=state.memoryCategory||'all'){
     const allList=data.memories||[];
     const meetingList=allList.filter(m=>m.source_type==='meeting_summary');
     const importantList=allList.filter(m=>['confirmed_fact','dialogue','correction'].includes(m.source_type));
-    const dailyList=allList.filter(m=>m.source_type==='daily-summary'||m.source_type==='daily_summary');
+    const dailyList=allList.filter(m=>['daily-summary','daily_summary','episode-summary','episode-pending'].includes(m.source_type));
     const filtered=category==='meeting'?meetingList:(category==='important'?importantList:(category==='daily'?dailyList:allList));
     const html=`<div class="kicker">ORGANIZED MEMORY ARCHIVE · 角色专属记忆归档</div>
       <h2>${esc(c.name)} 的记忆档案</h2>
-      <p class="caption">已自动过滤琐碎操作与逐句流水账：仅归档<b>「线下见面回忆卡片」</b>、<b>「重要约定与设定」</b>与<b>「每日聊天按日汇总」</b>。点击卡片即可查看详情。</p>
+      <p class="caption">已自动过滤琐碎操作与逐句流水账：仅归档<b>「线下见面回忆卡片」</b>、<b>「重要约定与设定」</b>与<b>「情节归档」</b>（旧版按日汇总保留）。点击卡片即可查看详情。</p>
       <div class="memory-layers-grid">
         <div class="memory-layer-box"><b>第一层 · 身份设定</b><span>${esc(c.source)} · ${esc(c.version)}</span></div>
         <div class="memory-layer-box"><b>第二层 · 关系基线</b><span>${esc(data.baseline||'暂无关系事件')}</span></div>
@@ -997,7 +999,7 @@ async function openMemoriesModal(query='',category=state.memoryCategory||'all'){
             <button type="button" class="chip ${category==='all'?'active':''}" data-action="filter-memories" data-cat="all">全部归档 (${allList.length})</button>
             <button type="button" class="chip ${category==='meeting'?'active':''}" data-action="filter-memories" data-cat="meeting">${I('map')} 见面回忆 (${meetingList.length})</button>
             <button type="button" class="chip ${category==='important'?'active':''}" data-action="filter-memories" data-cat="important">${I('spark')} 约定与重点 (${importantList.length})</button>
-            <button type="button" class="chip ${category==='daily'?'active':''}" data-action="filter-memories" data-cat="daily">${I('clock')} 按日聊天汇总 (${dailyList.length})</button>
+            <button type="button" class="chip ${category==='daily'?'active':''}" data-action="filter-memories" data-cat="daily">${I('clock')} 情节归档 (${dailyList.length})</button>
           </div>
         </div>
         <div class="source-composer" style="margin-top:10px">
@@ -1008,7 +1010,8 @@ async function openMemoriesModal(query='',category=state.memoryCategory||'all'){
         <div class="memory-archive-list" style="margin-top:10px">
           ${filtered.length?filtered.map(m=>{
             const isMeeting=m.source_type==='meeting_summary';
-            const isDaily=m.source_type==='daily-summary'||m.source_type==='daily_summary';
+            const isDaily=['daily-summary','daily_summary','episode-summary','episode-pending'].includes(m.source_type);
+            const isPending=m.source_type==='episode-pending',ep=m.episode;
             const meetId=m.meeting_id||String(m.source_key||'').replace('meeting:','');
             return `<div class="memory-item ${m.disputed?'is-disputed':''} ${isMeeting?'is-meeting-memory':''}">
               <div class="memory-item-top">
@@ -1017,11 +1020,20 @@ async function openMemoriesModal(query='',category=state.memoryCategory||'all'){
                 ${m.disputed?'<span class="memory-badge disputed">存疑/已纠正</span>':''}
                 <span class="memory-date">${esc((m.created_at||'').slice(0,16).replace('T',' '))}</span>
               </div>
+              ${ep?.title?`<h3>${esc(ep.title)}</h3>`:''}
+              ${ep?`<p class="caption">${esc(ep.startedAt||'')} — ${esc(ep.endedAt||'')} · ${m.raw_msg_ids?.length||0} 条消息</p>`:''}
+              ${m.archive_status?`<p class="caption">${esc(m.archive_status)}</p>`:''}
+              ${m.archive_stale?'<p class="caption">旧摘要已失效，不再用于角色回忆。</p>':''}
               <div class="memory-summary">${esc(m.summary)}</div>
+              ${ep?.participants?`<p class="caption">参与者：${esc(ep.participants.join('、'))}${ep.relatedPeople?.length?'；被提及：'+esc(ep.relatedPeople.join('、')):''}</p>`:''}
+              ${ep?.keywords?.length?`<p><b>关键词：</b>${esc(ep.keywords.join('、'))}</p>`:''}
+              ${ep?.keyInformation?.length?`<p><b>关键信息：</b>${esc(ep.keyInformation.join('；'))}</p>`:''}
+              ${ep?.emotionalMemory?`<p><b>角色的情绪记忆：</b>${esc(ep.emotionalMemory)}</p>`:''}
               <div class="memory-item-actions">
                 ${isMeeting?`<button type="button" class="btn soft tiny-btn" data-action="open-meeting-record" data-id="${esc(meetId)}">${I('book')} 查看见面详情记录</button>`:''}
-                ${isDaily&&m.day_messages?.length?`<button type="button" class="btn soft tiny-btn" data-action="open-daily-messages" data-id="${esc(m.id)}">${I('message')} 查看当日对话 (${m.day_messages.length}条)</button>`:''}
-                ${!m.disputed?`<button type="button" class="btn ghost tiny-btn" data-action="prompt-correct-memory" data-id="${esc(m.id)}">澄清/纠正</button>`:''}
+                ${isDaily&&m.day_messages?.length?`<button type="button" class="btn soft tiny-btn" data-action="open-daily-messages" data-id="${esc(m.id)}">${I('message')} 查看原始对话 (${m.day_messages.length}条)</button>`:''}
+                ${isPending?`<button type="button" class="btn soft tiny-btn" data-action="archive-episode" data-key="${esc(m.source_key)}" data-signature="${esc(m.signature)}">归档 / 重试</button>`:''}
+                ${!isPending&&!m.disputed?`<button type="button" class="btn ghost tiny-btn" data-action="prompt-correct-memory" data-id="${esc(m.id)}">澄清/纠正</button>`:''}
                 <button type="button" class="btn ghost tiny-btn danger-text" data-action="delete-memory" data-id="${esc(m.id)}">删除</button>
               </div>
               <div class="memory-correct-box" id="mem-correct-${esc(m.id)}" style="display:none">
@@ -1029,7 +1041,7 @@ async function openMemoriesModal(query='',category=state.memoryCategory||'all'){
                 <button type="button" class="btn soft tiny-btn" data-action="submit-correct-memory" data-id="${esc(m.id)}">确认纠正</button>
               </div>
             </div>`;
-          }).join(''):'<div class="caption" style="padding:14px 0">当前分类下暂无归档记录。完成一次线下见面、聊到重要约定或跨日交流后会自动整理归档。</div>'}
+          }).join(''):'<div class="caption" style="padding:14px 0">当前分类下暂无归档记录。完成一次线下见面、聊到重要约定或对话结束超过三小时后会整理情节归档。</div>'}
         </div>
       </div>`;
     modal(html,`<button class="btn soft" data-action="close-modal">关闭档案</button>`);
@@ -1198,6 +1210,7 @@ async function tickChatQueue(){
   }
 }
 setInterval(tickChatQueue,1000);
+setInterval(()=>{if(globalThis.ParallelOffline&&state.activeId&&!document.hidden)void api('/episode-archive-tick',{profileId:state.activeId}).catch(()=>{});},60000);
 async function toggleHotChat(){
   if(!state.threadId||!state.activeId||state.chatBusy)return;
   const nextHot=!state.hotChat;
@@ -1404,8 +1417,8 @@ function bindModelPickers(){
   }
 }
 
-function renderApiSettings(){const s=state.settings;const pmOff=(s.proactive_mode==='off');return `<form id="api-settings-form"><div class="terminal-card"><div class="kicker">CONNECTION</div><h3>连接到你的模型</h3><p class="caption">${globalThis.ParallelOffline?'单文件 HTML 版直接从浏览器调用 OpenAI-compatible API（需要供应商允许 CORS）。':'使用 OpenAI-compatible 接口。通过本机服务调用模型。'}</p><div class="field"><label>API Base URL</label><input id="api-url" autocomplete="off" type="url" placeholder="https://your-provider.example/v1" value="${esc(s.base_url||'')}"></div><div class="field"><label>API Key</label><input id="api-key" type="password" autocomplete="new-password" placeholder="${s.has_key?'已保存密钥（留空不更改）':'sk-...'}"><span class="field-hint">${globalThis.ParallelOffline?'密钥在当前浏览器存储中以明文保存，避免在共享设备使用；如需更安全的 API 代理，请使用服务器版。':'密钥只在本机服务端 data/connection.json 中保存（权限 0600），不要分享 data 文件夹。'}</span></div><div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="clear-key">${I('trash')} 删除已存密钥</button>${s.has_key?'<span class="pill">密钥已保存</span>':''}</div><div class="divider"></div><div class="field"><label>聊天模型 ID</label><div class="inline-row" style="align-items:stretch"><input id="api-model" data-action="model-field" data-kind="chat" autocomplete="off" placeholder="点击拉取，或直接填写模型名" value="${esc(s.model||'')}" style="flex:1;min-width:130px"><button id="model-picker-chat" type="button" class="btn soft model-picker-trigger" data-action="open-model-picker" data-kind="chat" hidden>选择</button><button type="button" class="btn soft" data-action="fetch-models">${I('refresh')} 拉取</button></div></div></div><div class="terminal-card"><div class="kicker">PROACTIVE MESSAGES · 角色主动消息</div><h3>角色主动消息开关</h3><p class="caption">控制是否允许已匹配的角色主动给你发消息。</p><div class="field"><label for="api-proactive-mode">主动消息状态</label><select id="api-proactive-mode"><option value="daily" ${!pmOff?'selected':''}>开启</option><option value="off" ${pmOff?'selected':''}>关闭</option></select></div></div><div class="terminal-card"><div class="kicker">SAMPLING</div><h3>生成参数</h3><p class="caption">按模型能力调整；不是每家供应商都支持所有参数。</p><div class="range-line"><span>Temperature</span><b id="temp-output">${s.temperature??.85}</b></div><input class="range" id="api-temperature" type="range" min="0" max="2" step="0.05" value="${s.temperature??.85}"><div class="range-line" style="margin-top:19px"><span>Top P</span><b id="topp-output">${s.top_p??1}</b></div><input class="range" id="api-top-p" type="range" min="0.05" max="1" step="0.05" value="${s.top_p??1}"><div class="field" style="margin-top:18px"><label>Max tokens</label><span class="field-hint">控制单次生成的最大输出 Token 预算（支持 100–32768）。长篇面对面小说预设或带思考链（Reasoning）的模型建议设为 4096–8192，避免输出预算被思考过程耗尽。</span><input id="api-max-tokens" type="number" min="100" max="32768" value="${s.max_tokens||4096}"></div></div><div class="terminal-card"><div class="kicker">PHOTO &amp; IMAGE AI</div><h3>角色照片呈现与图片生成 AI</h3><p class="caption">如果填写了下方图片生成 AI 的 API 链接、密钥与模型，发现页将调用该接口生成角色照片；如果留空未填写，则保持文字描写显示。</p><div class="field"><label>图片生成 API Base URL（选填）</label><input id="api-image-url" autocomplete="off" type="url" placeholder="https://your-image-provider.example/v1（留空则用文字呈现照片）" value="${esc(s.image_base_url||'')}"></div><div class="field"><label>图片生成 API Key（选填）</label><input id="api-image-key" type="password" autocomplete="new-password" placeholder="${s.has_image_key?'已保存图片密钥（留空不更改）':'sk-...（留空则用文字呈现照片）'}"><span class="field-hint">支持兼容 OpenAI <code>/images/generations</code> 接口的生图服务。不填则自动使用文字描写。</span></div><div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="clear-image-key">${I('trash')} 删除图片密钥</button><span class="pill">${s.image_mode==='live'?'已启用图片生成 AI':(s.has_image_key?'图片密钥已保存':'当前：文字照片呈现')}</span></div><div class="divider"></div><div class="field"><label>图片生成模型 ID（选填）</label><div class="inline-row" style="align-items:stretch"><input id="api-image-model" data-action="model-field" data-kind="image" autocomplete="off" placeholder="点击拉取，或直接填写生图模型名" value="${esc(s.image_model||'')}" style="flex:1;min-width:130px"><button id="model-picker-image" type="button" class="btn soft model-picker-trigger" data-action="open-model-picker" data-kind="image" hidden>选择</button><button type="button" class="btn soft" data-action="fetch-image-models">${I('refresh')} 拉取</button></div></div></div><button type="submit" class="btn primary" style="width:100%;padding:15px">${I('check')} 保存终端配置</button><div class="notice" style="margin-top:14px">演示模式使用已收录的角色目录、确定性的示例匹配和明显标注的演示回复。只有连接模型后才会调用真实 LLM 或生图接口。首次调用可能产生费用。${globalThis.ParallelOffline?'模型供应商需允许网页跨域请求（CORS），否则请运行 Python 服务版。':'模型调用由本机服务端发起。'}</div></form>`}
-async function saveSettings(e){e.preventDefault();try{const data={base_url:$('api-url').value.trim(),model:$('api-model').value.trim(),proactive_mode:$('api-proactive-mode')?.value||'daily',image_base_url:$('api-image-url').value.trim(),image_model:$('api-image-model').value.trim(),temperature:Number($('api-temperature').value),top_p:Number($('api-top-p').value),max_tokens:Number($('api-max-tokens').value)};if($('api-key').value)data.api_key=$('api-key').value;if($('api-image-key').value)data.image_api_key=$('api-image-key').value;const res=await api('/settings',data);if(data.api_key||res.settings.base_url!==state.settings.base_url)invalidateModelPicker('chat');if(data.image_api_key||res.settings.image_base_url!==state.settings.image_base_url)invalidateModelPicker('image');state.settings=res.settings;state.portraitFailed={};renderChrome();renderTerminal();toast('终端配置已保存')}catch(e){toast(e.message)}}
+function renderApiSettings(){const s=state.settings;const pmOff=(s.proactive_mode==='off');return `<form id="api-settings-form"><div class="terminal-card"><div class="kicker">CONNECTION</div><h3>连接到你的模型</h3><p class="caption">${globalThis.ParallelOffline?'单文件 HTML 版直接从浏览器调用 OpenAI-compatible API（需要供应商允许 CORS）。':'使用 OpenAI-compatible 接口。通过本机服务调用模型。'}</p><div class="field"><label>API Base URL</label><input id="api-url" autocomplete="off" type="url" placeholder="https://your-provider.example/v1" value="${esc(s.base_url||'')}"></div><div class="field"><label>API Key</label><input id="api-key" type="password" autocomplete="new-password" placeholder="${s.has_key?'已保存密钥（留空不更改）':'sk-...'}"><span class="field-hint">${globalThis.ParallelOffline?'密钥在当前浏览器存储中以明文保存，避免在共享设备使用；如需更安全的 API 代理，请使用服务器版。':'密钥只在本机服务端 data/connection.json 中保存（权限 0600），不要分享 data 文件夹。'}</span></div><div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="clear-key">${I('trash')} 删除已存密钥</button>${s.has_key?'<span class="pill">密钥已保存</span>':''}</div><div class="divider"></div><div class="field"><label>聊天模型 ID</label><div class="inline-row" style="align-items:stretch"><input id="api-model" data-action="model-field" data-kind="chat" autocomplete="off" placeholder="点击拉取，或直接填写模型名" value="${esc(s.model||'')}" style="flex:1;min-width:130px"><button id="model-picker-chat" type="button" class="btn soft model-picker-trigger" data-action="open-model-picker" data-kind="chat" hidden>选择</button><button type="button" class="btn soft" data-action="fetch-models">${I('refresh')} 拉取</button></div></div></div><div class="terminal-card"><div class="kicker">PROACTIVE MESSAGES · 角色主动消息</div><h3>角色主动消息开关</h3><p class="caption">控制是否允许已匹配的角色主动给你发消息。</p><div class="field"><label for="api-proactive-mode">主动消息状态</label><select id="api-proactive-mode"><option value="daily" ${!pmOff?'selected':''}>开启</option><option value="off" ${pmOff?'selected':''}>关闭</option></select></div></div>${s.portable?`<div class="terminal-card"><div class="kicker">EPISODE ARCHIVE</div><h3>情节归档设置</h3><p class="caption">连续对话间隔超过三小时后归档，跨午夜不拆分。默认沿用主 AI，归档为独立请求，可能消耗额度。旧情节可在记忆档案中手动整理。</p><div class="field"><label><input id="archive-enabled" type="checkbox" ${s.archive_enabled!==false?'checked':''}> 自动情节归档</label></div><div class="field"><label>归档 AI</label><select id="archive-mode"><option value="inherit" ${s.archive_mode!=='custom'?'selected':''}>跟随主 AI（默认）</option><option value="custom" ${s.archive_mode==='custom'?'selected':''}>独立归档 AI</option></select></div><details ${s.archive_mode==='custom'?'open':''}><summary>独立模型配置（选填）</summary><div class="field"><label>API Base URL</label><input id="archive-url" type="url" value="${esc(s.archive_base_url||'')}"></div><div class="field"><label>模型 ID</label><input id="archive-model" value="${esc(s.archive_model||'')}"></div><div class="field"><label>API Key</label><input id="archive-key" type="password" autocomplete="new-password" placeholder="${s.has_archive_key?'已保存（留空不更改）':'独立 API Key'}"></div></details></div>`:''}<div class="terminal-card"><div class="kicker">SAMPLING</div><h3>生成参数</h3><p class="caption">按模型能力调整；不是每家供应商都支持所有参数。</p><div class="range-line"><span>Temperature</span><b id="temp-output">${s.temperature??.85}</b></div><input class="range" id="api-temperature" type="range" min="0" max="2" step="0.05" value="${s.temperature??.85}"><div class="range-line" style="margin-top:19px"><span>Top P</span><b id="topp-output">${s.top_p??1}</b></div><input class="range" id="api-top-p" type="range" min="0.05" max="1" step="0.05" value="${s.top_p??1}"><div class="field" style="margin-top:18px"><label>Max tokens</label><span class="field-hint">控制单次生成的最大输出 Token 预算（支持 100–32768）。长篇面对面小说预设或带思考链（Reasoning）的模型建议设为 4096–8192，避免输出预算被思考过程耗尽。</span><input id="api-max-tokens" type="number" min="100" max="32768" value="${s.max_tokens||4096}"></div></div><div class="terminal-card"><div class="kicker">PHOTO &amp; IMAGE AI</div><h3>角色照片呈现与图片生成 AI</h3><p class="caption">如果填写了下方图片生成 AI 的 API 链接、密钥与模型，发现页将调用该接口生成角色照片；如果留空未填写，则保持文字描写显示。</p><div class="field"><label>图片生成 API Base URL（选填）</label><input id="api-image-url" autocomplete="off" type="url" placeholder="https://your-image-provider.example/v1（留空则用文字呈现照片）" value="${esc(s.image_base_url||'')}"></div><div class="field"><label>图片生成 API Key（选填）</label><input id="api-image-key" type="password" autocomplete="new-password" placeholder="${s.has_image_key?'已保存图片密钥（留空不更改）':'sk-...（留空则用文字呈现照片）'}"><span class="field-hint">支持兼容 OpenAI <code>/images/generations</code> 接口的生图服务。不填则自动使用文字描写。</span></div><div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="clear-image-key">${I('trash')} 删除图片密钥</button><span class="pill">${s.image_mode==='live'?'已启用图片生成 AI':(s.has_image_key?'图片密钥已保存':'当前：文字照片呈现')}</span></div><div class="divider"></div><div class="field"><label>图片生成模型 ID（选填）</label><div class="inline-row" style="align-items:stretch"><input id="api-image-model" data-action="model-field" data-kind="image" autocomplete="off" placeholder="点击拉取，或直接填写生图模型名" value="${esc(s.image_model||'')}" style="flex:1;min-width:130px"><button id="model-picker-image" type="button" class="btn soft model-picker-trigger" data-action="open-model-picker" data-kind="image" hidden>选择</button><button type="button" class="btn soft" data-action="fetch-image-models">${I('refresh')} 拉取</button></div></div></div><button type="submit" class="btn primary" style="width:100%;padding:15px">${I('check')} 保存终端配置</button><div class="notice" style="margin-top:14px">演示模式使用已收录的角色目录、确定性的示例匹配和明显标注的演示回复。只有连接模型后才会调用真实 LLM 或生图接口。首次调用可能产生费用。${globalThis.ParallelOffline?'模型供应商需允许网页跨域请求（CORS），否则请运行 Python 服务版。':'模型调用由本机服务端发起。'}</div></form>`}
+async function saveSettings(e){e.preventDefault();try{const data={base_url:$('api-url').value.trim(),model:$('api-model').value.trim(),proactive_mode:$('api-proactive-mode')?.value||'daily',image_base_url:$('api-image-url').value.trim(),image_model:$('api-image-model').value.trim(),temperature:Number($('api-temperature').value),top_p:Number($('api-top-p').value),max_tokens:Number($('api-max-tokens').value)};if($('archive-mode')){Object.assign(data,{archive_enabled:$('archive-enabled').checked,archive_mode:$('archive-mode').value,archive_base_url:$('archive-url').value.trim(),archive_model:$('archive-model').value.trim()});if($('archive-key').value)data.archive_api_key=$('archive-key').value;}if($('api-key').value)data.api_key=$('api-key').value;if($('api-image-key').value)data.image_api_key=$('api-image-key').value;const res=await api('/settings',data);if(data.api_key||res.settings.base_url!==state.settings.base_url)invalidateModelPicker('chat');if(data.image_api_key||res.settings.image_base_url!==state.settings.image_base_url)invalidateModelPicker('image');state.settings=res.settings;state.portraitFailed={};renderChrome();renderTerminal();toast('终端配置已保存')}catch(e){toast(e.message)}}
 async function fetchModels(){return pullModelIds('chat');}
 async function fetchImageModels(){return pullModelIds('image');}
 function renderPresetDiagnosticsBox(mode,items){
@@ -1959,6 +1972,10 @@ if(a==='submit-correct-memory'){
   await api('/memory-action',{profileId:state.activeId,characterId:state.threadId,action:'correct',memoryId:mid,correction:val});
   toast('已标记原记忆存疑并写入澄清记录');
   return openMemoriesModal($('memory-search-input')?.value.trim()||'',state.memoryCategory||'all');
+}
+if(a==='archive-episode'){
+  el.disabled=true;
+  try{const r=await api('/memory-action',{profileId:state.activeId,characterId:state.threadId,action:'archive-episode',sourceKey:el.dataset.key,signature:el.dataset.signature});toast(r.ok?'情节归档完成':'未完成归档，请检查配置或稍后重试');return await openMemoriesModal('',state.memoryCategory||'all');}finally{el.disabled=false;}
 }
 if(a==='delete-memory'){
   await api('/memory-action',{profileId:state.activeId,characterId:state.threadId,action:'delete',memoryId:el.dataset.id});

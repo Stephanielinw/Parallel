@@ -1,0 +1,18 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const src=fs.readFileSync(require('path').join(__dirname,'../static/offline.js'),'utf8');
+const storage=new Map(),window={};
+const context={window,localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)},crypto:require('crypto').webcrypto,URLSearchParams,Date,JSON,Math,TextEncoder,console,fetch:async()=>{throw Error('No actual API requests allowed')}};
+vm.createContext(context);vm.runInContext(src,context);
+const {episodeGroups,episodeSignature,parseEpisodeResult,episodeChunks}=window.ParallelOffline;
+const row=(id,created_at,mode='chat',engine='live')=>({id,created_at,mode,engine,sender:'user',text:'消息 '+id});
+const rows=[row('1','2026-11-18T23:00:00Z'),row('2','2026-11-19T00:00:00Z','meeting'),row('3','2026-11-19T03:00:00Z'),row('4','2026-11-19T06:01:00Z'),row('5','2026-11-19T06:02:00Z','chat','recalled')];
+assert.equal(JSON.stringify(episodeGroups(rows,Date.parse('2026-11-19T10:00:00Z')).map(g=>g.map(m=>m.id))),'[["1","2","3"],["4"]]');
+assert.equal(episodeGroups([rows[3]],Date.parse('2026-11-19T09:01:00Z')).length,0);
+assert.equal(episodeGroups([],Date.now()).length,0);
+assert.notEqual(episodeSignature([rows[0]]),episodeSignature([{...rows[0],text:'修改'}]));
+const record={title:'考试约定',summary:'周五考试，约定考后联系',relatedPeople:[],keywords:['考试','考后联系'],keyInformation:['周五考试'],emotionalMemory:'平静，期待联系',evidenceMessageIds:['1']};
+assert.equal(parseEpisodeResult(JSON.stringify(record),['1']).title,'考试约定');
+assert.throws(()=>parseEpisodeResult(JSON.stringify({...record,evidenceMessageIds:['missing']}),['1']));
+assert.throws(()=>parseEpisodeResult('{}',['1']));
+assert.equal(episodeChunks(rows,1).flat().length,rows.length);
+console.log('Episode archive pure regression tests passed (no paid model).');
