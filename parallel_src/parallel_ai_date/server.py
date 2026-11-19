@@ -2167,6 +2167,7 @@ def completion(messages,*,json_mode=False,max_tokens=None,temperature=None,log_m
     reasoning_content=str(msg_obj.get('reasoning_content') or msg_obj.get('reasoning') or '')
     if isinstance(content,list):content=''.join(x.get('text','') for x in content if isinstance(x,dict))
     raw_trimmed=content.strip() if isinstance(content,str) else ''
+    if req_mode=='chat' and raw_trimmed and not split_chat_bubbles(raw_trimmed):raw_trimmed=''
     if not raw_trimmed:
         is_len_trunc=is_truncated
         _fail('OUTPUT_TRUNCATED' if is_len_trunc else 'EMPTY_CONTENT','输出被截断且无正文' if is_len_trunc else '模型返回空内容',f"模型因达到 max_tokens ({max_tok}) 上限被截断，未产出有效正文。建议在「终端」调高 Max tokens。" if is_len_trunc else f"模型没有返回可用文本（finish_reason={finish_reason or 'unknown'}）。",http_status=status_code,suggest_terminal=is_len_trunc,raw_resp=data,finish_reason=finish_reason,usage=usage)
@@ -2183,7 +2184,7 @@ def completion(messages,*,json_mode=False,max_tokens=None,temperature=None,log_m
         _fail('OUTPUT_TRUNCATED','回复因达到 Token 上限被截断',f"模型输出因达到 max_tokens ({max_tok}) 上限被截断（当前仅 {len(raw_trimmed)} 字）。建议前往「终端」调高 Max tokens 后重试。",http_status=status_code,detail=raw_trimmed[:360],suggest_terminal=True,raw_resp=data,raw_content=raw_trimmed,finish_reason=finish_reason,usage=usage)
     reply_content=guard_chat_reasoning(raw_trimmed) if req_mode=='chat' else raw_trimmed
     if reply_content is None:
-        _fail('REASONING_LEAK','模型将分析过程混入了聊天正文','无法可靠分离正式台词，已阻止写入聊天与记忆。可手动重试；原始返回已保存在系统日志中。',http_status=status_code,raw_resp=data,raw_content=raw_trimmed,finish_reason=finish_reason,usage=usage)
+        _fail('REASONING_LEAK','模型将分析过程混入了聊天正文','无法可靠分离正式台词，已阻止写入聊天与记忆。可手动重试；原始返回已保存在系统日志中。',http_status=status_code,may_consume_tokens=True,raw_resp=data,raw_content=raw_trimmed,finish_reason=finish_reason,usage=usage)
     if req_mode=='chat' and not split_chat_bubbles(reply_content):
         _fail('EMPTY_PARSED_CONTENT','模型未返回可显示的正文','模型只返回了协议占位符或分隔符，请重试。',http_status=status_code,raw_resp=data,raw_content=raw_trimmed,finish_reason=finish_reason,usage=usage)
     parse_fn=meta.get('parseFn')
