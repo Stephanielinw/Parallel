@@ -302,6 +302,7 @@
         if(q.paused)q.blocked=true;
       }
       if(q.paused){
+        q.scheduledDueAt=Number(q.scheduledDueAt||q.dueAt||0);
         q.blocked=true;
         q.status='paused';
         q.dueAt=0;

@@ -578,7 +578,7 @@ async function retryMessageTranslation(mid){
   await scheduleAutoTranslation(state.activeId,state.threadId,[mid],true);
 }
 function renderMessagesListItems(){
-  const count=state.threads.filter(x=>x.queue?.paused&&x.queue?.count>0&&x.taskState?.last_error&&!x.taskState?.userPaused).length;
+  const count=state.threads.filter(x=>x.queue?.paused&&x.queue?.count>0&&(x.taskState?.last_error||['error','interrupted'].includes(x.queue?.recoveryKind))&&!x.taskState?.userPaused).length;
   const retry=count>1?`<div style="padding:8px"><button class="btn soft" data-action="retry-backlog">重试 ${count} 个积压回复</button></div>`:'';
   return retry+`<div class="threads-header">CONNECTIONS · ${state.threads.length}</div>${state.threads.map(x=>{
     const rawLast=(x.last?.engine==='recalled'||x.last?.recalled)?'撤回了一条消息':(x.last?.text||'刚刚匹配');
@@ -2440,7 +2440,10 @@ document.addEventListener('visibilitychange',()=>{
   if(document.hidden){hiddenSince=Date.now();try{localStorage.setItem(LAST_VISIBLE_KEY,String(hiddenSince));}catch{}return;}
   if(bootReady&&state.activeId){
     const since=hiddenSince||lastVisibleAt;hiddenSince=0;
-    void recoverOnOpen(since);
+    // A brief tab switch is not a new failed-task retry session.
+    if(Date.now()-since>=60000)void recoverOnOpen(since);
+    else if(state.tab==='messages')void loadThreads(state.threadId).catch(()=>{});
+    else refreshInboxQuietly();
   }
 });
 window.addEventListener('pagehide',()=>{if(!document.hidden)noteVisible();});

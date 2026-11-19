@@ -2,6 +2,7 @@
 """Parallel: local-first AI fandom dating demo. Python stdlib only.
 Run: python3 server.py. Binds ONLY to 127.0.0.1.
 """
+from concurrent.futures import ThreadPoolExecutor
 import base64, hashlib, json, os, random, re, secrets, sqlite3, sys, threading, time, traceback, urllib.error, urllib.parse, urllib.request, uuid
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -169,6 +170,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS message_translations (message_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, character_id TEXT NOT NULL, content_version TEXT NOT NULL, target_lang TEXT NOT NULL DEFAULT 'zh-CN', translated_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'ready', error_code TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT '', provider_model TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS msg_translations_thread ON message_translations(profile_id, character_id);
         ''')
+        cols={r['name'] for r in db.execute('PRAGMA table_info(chat_queue)')}
+        for name,typ in [('scheduled_due_at','INTEGER NOT NULL DEFAULT 0'),('recovery_kind',"TEXT NOT NULL DEFAULT ''"),('simulated_at','INTEGER NOT NULL DEFAULT 0')]:
+            if name not in cols:db.execute('ALTER TABLE chat_queue ADD COLUMN '+name+' '+typ)
+        # A server restart cannot leave a real request in flight.
+        for row in db.execute("SELECT * FROM chat_queue WHERE status='inflight'").fetchall():
+            sources=parse_json(row['inflight_sources'],[]);pending=parse_json(row['pending'],[])
+            merged=list(dict.fromkeys(sources+pending))
+            db.execute("UPDATE chat_queue SET pending=?,status='idle',inflight='',inflight_sources='[]',blocked=1,recovery_kind='interrupted' WHERE profile_id=? AND character_id=?",(js(merged),row['profile_id'],row['character_id']))
         if db.execute('SELECT COUNT(*) FROM presets').fetchone()[0]==0:
             for i,p in enumerate(DEFAULT_PRESETS):
                 db.execute('INSERT INTO presets VALUES (?,?,?,?,?,?,?)',(p['id'],p['mode'],p['name'],int(p['enabled']),p['role'],p['content'],i))
@@ -667,6 +676,7 @@ def queue_view(db,pid,cid):
     t_state=get_task_state(pid,cid,'chat')
     is_paused=bool(t_state.get('paused'))
     x=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
+    if x and x['recovery_kind']:is_paused=True
     if not x:
         return {'count':0,'pendingIds':[],'dueAt':0,'remainingMs':0,'status':'paused' if is_paused else 'idle','blocked':is_paused,'paused':is_paused,'lastError':t_state.get('last_error'),'paceMode':'hot' if hot_chat else 'daily','hotChat':hot_chat,'delayMinutes':1 if hot_chat else 0,'targetTimeLabel':'','scheduleReason':'回复已暂停 · 点击恢复' if is_paused else ''}
     pending=parse_json(x['pending'],[])
@@ -681,6 +691,7 @@ def queue_view(db,pid,cid):
         'blocked':bool(x['blocked']) or is_paused,
         'paused':is_paused,
         'lastError':t_state.get('last_error'),
+        'recoveryKind':x['recovery_kind'],
         'paceMode':m_state.get('pace_mode') or ('hot' if hot_chat else 'daily'),
         'hotChat':hot_chat,
         'delayMinutes':m_state.get('delay_minutes') or (1 if hot_chat else 20),
@@ -695,6 +706,7 @@ def queue_add(db,pid,cid,mid,msg_text=''):
     is_paused=bool(t_state.get('paused'))
     c=BY_ID.get(cid)
     x=db.execute('SELECT * FROM chat_queue WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
+    if x and x['recovery_kind']:is_paused=True
     pending=parse_json(x['pending'],[]) if x else []
     was_empty=(len(pending)==0)
     if mid not in pending:pending.append(mid)
@@ -730,9 +742,9 @@ def queue_cancel(db,pid,cid):
         m_state['target_time_label']=''
         m_state['schedule_reason']=''
     clear_task_states_for_pair(pid,cid)
-    db.execute("UPDATE chat_queue SET pending='[]',due_at=0,status='idle',inflight='',inflight_sources='[]',blocked=0,revision=revision+1 WHERE profile_id=? AND character_id=?",(pid,cid))
+    db.execute("UPDATE chat_queue SET pending='[]',due_at=0,status='idle',inflight='',inflight_sources='[]',blocked=0,scheduled_due_at=0,recovery_kind='',simulated_at=0,revision=revision+1 WHERE profile_id=? AND character_id=?",(pid,cid))
 
-def queue_flush(db,p,c,force=False,manual_resume=False):
+def queue_flush(db,p,c,force=False,manual_resume=False,recovery=None):
     pid,cid=p['id'],c['id']
     t_state=get_task_state(pid,cid,'chat')
     with CHAT_LOCK:
@@ -744,12 +756,13 @@ def queue_flush(db,p,c,force=False,manual_resume=False):
             if manual_resume and t_state.get('paused'):
                 clear_task_state(pid,cid,'chat')
             return {'queued':False,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
-        if t_state.get('paused') and not manual_resume:
+        if (t_state.get('paused') or q['recovery_kind']) and not manual_resume:
             return {'queued':True,'paused':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
         if q['blocked'] and not force and not manual_resume:
             return {'queued':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
         if not force and not manual_resume and now_ms()<q['due_at']:
             return {'queued':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
+        if q['recovery_kind']=='user' and recovery is not None:return {'queued':True,'reply':None,'replies':[],'queue':queue_view(db,pid,cid)}
         cur_mode=public_connection()['mode']
         if cur_mode=='normal':
             db.execute("UPDATE chat_queue SET blocked=1 WHERE profile_id=? AND character_id=?",(pid,cid))
@@ -763,9 +776,11 @@ def queue_flush(db,p,c,force=False,manual_resume=False):
         t_state['status']='inflight'
         t_state['updated_at']=utc()
         sources=pending_list;token=uid();revision=q['revision']
-        db.execute("UPDATE chat_queue SET pending='[]',due_at=0,status='inflight',inflight=?,inflight_sources=?,blocked=0 WHERE profile_id=? AND character_id=?",(token,js(sources),pid,cid))
+        due=int(q['due_at'] or q['scheduled_due_at'] or 0)
+        simulated_at=recover_reply_time(db,pid,cid,sources,due,recovery,q['simulated_at']) if recovery else 0
+        db.execute("UPDATE chat_queue SET pending='[]',due_at=0,status='inflight',inflight=?,inflight_sources=?,blocked=0,scheduled_due_at=?,simulated_at=?,recovery_kind='' WHERE profile_id=? AND character_id=?",(token,js(sources),due,simulated_at,pid,cid))
         last=db.execute('SELECT rowid FROM messages WHERE id=?',(sources[-1],)).fetchone()
-        prompt=compile_messages(db,p,c,'chat',through_rowid=last['rowid'] if last else None,pending_ids=sources)
+        prompt=compile_messages(db,p,c,'chat',through_rowid=last['rowid'] if last else None,pending_ids=sources,simulated_at=simulated_at)
         db.commit()
     settings=load_connection();warning='';engine='demo';reply=None;replies=[];api_error=None
     if all(settings.get(k) for k in ('base_url','api_key','model')):
@@ -787,25 +802,79 @@ def queue_flush(db,p,c,force=False,manual_resume=False):
             t_state['last_error']=api_error
             if api_error and api_error.get('task_id'):t_state['last_task_id']=api_error['task_id']
             t_state['updated_at']=utc()
-            db.execute("UPDATE chat_queue SET pending=?,due_at=?,status='idle',inflight='',inflight_sources='[]',blocked=1 WHERE profile_id=? AND character_id=?",(js(restore),now_ms(),pid,cid))
+            db.execute("UPDATE chat_queue SET pending=?,due_at=?,status='idle',inflight='',inflight_sources='[]',blocked=1,recovery_kind='error' WHERE profile_id=? AND character_id=?",(js(restore),int(current['due_at'] or 0),pid,cid))
         else:
             clear_task_state(pid,cid,'chat')
             bubble_texts=split_chat_bubbles(txt)
-            replies=[write_message(db,pid,cid,'ai','chat',b_txt,engine) for b_txt in bubble_texts]
+            replies=[write_message(db,pid,cid,'ai','chat',b_txt,engine,at=simulated_at) for b_txt in bubble_texts]
             reply=replies[-1] if replies else None
             combined_txt=' / '.join(bubble_texts)
-            log_event(db,pid,cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+combined_txt[:180])
+            log_event(db,pid,cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+combined_txt[:180],at=simulated_at)
             user_rows=[]
             for mid in sources:
                 ur=db.execute('SELECT * FROM messages WHERE id=?',(mid,)).fetchone()
                 if ur:user_rows.append(dict(ur))
             if reply:
                 record_dialogue_episode(db,p,c,user_rows,dict(reply,text=combined_txt),'chat')
-                sync_surveillance_from_chat(db,p,c,combined_txt)
+                sync_surveillance_from_chat(db,p,c,combined_txt,at=simulated_at)
             db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),pid,cid))
-            db.execute("UPDATE chat_queue SET status='idle',inflight='',inflight_sources='[]',blocked=0 WHERE profile_id=? AND character_id=?",(pid,cid))
+            db.execute("UPDATE chat_queue SET status='idle',inflight='',inflight_sources='[]',blocked=0,scheduled_due_at=0,simulated_at=0,recovery_kind='' WHERE profile_id=? AND character_id=?",(pid,cid))
         db.commit()
     return {'queued':engine=='error','reply':reply,'replies':replies,'warning':warning,'apiError':api_error,'queue':queue_view(db,pid,cid)}
+
+def recover_reply_time(db,pid,cid,sources,due,recovery,prior=0):
+    candidate=int(prior or due or 0)
+    if not candidate or candidate>recovery['openedAt'] or (not prior and candidate<recovery['offlineSince']):return 0
+    rows=db.execute('SELECT id,created_at FROM messages WHERE profile_id=? AND character_id=?',(pid,cid)).fetchall()
+    if not set(sources).issubset({r['id'] for r in rows}):return 0
+    try:
+        if any(datetime.fromisoformat(r['created_at'].replace('Z','+00:00')).timestamp()*1000>candidate for r in rows):return 0
+        events=db.execute("SELECT created_at FROM events WHERE profile_id=? AND character_id=? AND type IN ('matched','unmatched','meeting','return')",(pid,cid)).fetchall()
+        if any(datetime.fromisoformat(r['created_at'].replace('Z','+00:00')).timestamp()*1000>candidate for r in events):return 0
+    except (ValueError,TypeError):return 0
+    return candidate
+
+RECOVERY_LOCK=threading.Lock()
+RECOVERY_SESSIONS=set()
+def recover_due_queues(db,data):
+    if public_connection()['mode']=='normal':return {'flushed':[]}
+    manual=data.get('manual') is True
+    session=str(data.get('session') or '')
+    if not RECOVERY_LOCK.acquire(blocking=False):return {'flushed':[]}
+    try:
+        if not manual and (not session or session in RECOVERY_SESSIONS):return {'flushed':[]}
+        if not manual:
+            RECOVERY_SESSIONS.add(session)
+            if len(RECOVERY_SESSIONS)>64:RECOVERY_SESSIONS.discard(next(iter(RECOVERY_SESSIONS-{session})))
+        opened=min(now_ms(),int(data.get('openedAt') or now_ms()))
+        since=max(0,min(opened,int(data.get('offlineSince') or 0)))
+        recovery=None if manual else {'openedAt':opened,'offlineSince':since}
+        jobs=[]
+        for r in db.execute("SELECT q.* FROM chat_queue q JOIN relations r ON r.profile_id=q.profile_id AND r.character_id=q.character_id WHERE r.status='matched' AND r.mode='chat' AND q.status<>'inflight'").fetchall():
+            if manual and r['profile_id']!=data.get('profileId'):continue
+            if not parse_json(r['pending'],[]) or r['recovery_kind']=='user':continue
+            state=get_task_state(r['profile_id'],r['character_id'],'chat')
+            failed=bool(r['blocked'] or r['recovery_kind'] or state.get('paused'))
+            recoverable=r['recovery_kind'] in ('error','interrupted')
+            if failed and not recoverable:continue
+            if manual and not failed:continue
+            due=int(r['due_at'] or r['scheduled_due_at'] or 0)
+            if due>opened or (not failed and not due):continue
+            if r['character_id'] in BY_ID:jobs.append((due,r['profile_id'],r['character_id'],failed))
+        jobs.sort()
+        db.commit()
+        def work(job):
+            _,pid,cid,failed=job;c=BY_ID[cid]
+            background=pid!=data.get('profileId') or cid!=data.get('activeCharacterId')
+            try:
+                with connect() as conn:
+                    p=profile_get(conn,pid)
+                    res=queue_flush(conn,p,c,force=failed,manual_resume=failed,recovery=recovery)
+                if res.get('reply') or res.get('warning') or res.get('apiError'):
+                    return {'profileId':pid,'characterId':cid,'characterName':c['name'],'reply':res.get('reply'),'warning':res.get('warning',''),'apiError':res.get('apiError'),'background':background}
+            except Exception as exc:return {'profileId':pid,'characterId':cid,'characterName':c['name'],'warning':str(exc),'background':background}
+        with ThreadPoolExecutor(max_workers=2) as pool:return {'flushed':[r for r in pool.map(work,jobs) if r]}
+    finally:RECOVERY_LOCK.release()
 
 def queue_flush_due(db,p):
     pid=p['id'];now=now_ms();flushed=[]
@@ -1051,9 +1120,10 @@ def get_or_init_surveillance(db,p,c,target_date=''):
         }
     return store['by_date'][d_str]
 
-def get_current_surveillance_slot(db,p,c):
-    rec=get_or_init_surveillance(db,p,c,local_date_str())
-    now_hhmm=fmt_hhmm()
+def get_current_surveillance_slot(db,p,c,at=0):
+    date=datetime.fromtimestamp(at/1000).astimezone().strftime('%Y-%m-%d') if at else local_date_str()
+    rec=get_or_init_surveillance(db,p,c,date)
+    now_hhmm=fmt_hhmm(at or None)
     now_m=hhmm_to_min(now_hhmm)
     rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
     m_state=MEETING_STATE.get((p['id'],c['id']),{})
@@ -1171,14 +1241,15 @@ def wake_slot_from_message(slots,hhmm,character_name):
     else:slots[idx]=observed
     return True
 
-def reconcile_phone_activity(db,pid,cid):
+def reconcile_phone_activity(db,pid,cid,at=0):
     c=BY_ID.get(cid)
     if not c:return
     rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(pid,cid)).fetchone()
     if rel and rel['mode']=='meeting':return
     p=profile_get(db,pid)
-    rec=get_or_init_surveillance(db,p,c)
-    if wake_slot_from_message(rec['slots'],fmt_hhmm(),c['name']):rec['updated_at']=utc()
+    date=datetime.fromtimestamp(at/1000).astimezone().strftime('%Y-%m-%d') if at else local_date_str()
+    rec=get_or_init_surveillance(db,p,c,date)
+    if wake_slot_from_message(rec['slots'],fmt_hhmm(at or None),c['name']):rec['updated_at']=utc()
 
 def chat_clock_label(ts):
     try:
@@ -1201,15 +1272,16 @@ def chat_clock_context(history,now=None):
         except (TypeError,ValueError,OverflowError):continue
     return f"\n【本次手机回复的当前时间】{d.strftime('%Y-%m-%d %H:%M')}（{period}，{zone}，应用本地时钟）。{previous}较早的消息是历史，不代表现在仍处在当时的时段。请按此刻的时间自然回应，尤其注意跨日、早晚问候及作息；不要机械复述时间，也不要把现实日期改变为原作年份或输出时间前缀。"
 
-def sync_surveillance_from_chat(db,p,c,ai_text=''):
+def sync_surveillance_from_chat(db,p,c,ai_text='',at=0):
     txt=str(ai_text or '').strip()
     rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
     if not txt or (rel and rel['mode']=='meeting'):return
     locations=[location_from_report(part) for part in re.split(r'\s+/\s+|\|\|\||\n',txt)]
     new_loc=next((x for x in reversed(locations) if x),'')
     if not new_loc:return
-    rec=get_or_init_surveillance(db,p,c)
-    now_hhmm=fmt_hhmm()
+    date=datetime.fromtimestamp(at/1000).astimezone().strftime('%Y-%m-%d') if at else local_date_str()
+    rec=get_or_init_surveillance(db,p,c,date)
+    now_hhmm=fmt_hhmm(at or None)
     now_m=hhmm_to_min(now_hhmm)
     slots=rec.get('slots') or []
     idx=active_slot_index(slots,now_m)
@@ -1652,11 +1724,15 @@ def ensure_daily_summaries(db,p,c,active_msg_ids):
             event_at=day_msgs[-1]['created_at']
         )
 
-def retrieve_relevant_memories(db,pid,cid,query_text='',exclude_msg_ids=None,limit=4,max_chars=1200):
+def retrieve_relevant_memories(db,pid,cid,query_text='',exclude_msg_ids=None,limit=4,max_chars=1200,as_of=0):
     exclude=set(exclude_msg_ids or [])
     rows=db.execute('SELECT * FROM episodic_memories WHERE owner_id=? AND profile_id=? ORDER BY event_at DESC',(cid,pid)).fetchall()
     if not rows:return []
     all_items=[dict(r)|{'tags':parse_json(r['tags'],[]),'raw_msg_ids':parse_json(r['raw_msg_ids'],[])} for r in rows]
+    if as_of:
+        cutoff=datetime.fromtimestamp(as_of/1000,timezone.utc).isoformat(timespec='microseconds')
+        allowed={r['id'] for r in db.execute('SELECT id FROM messages WHERE profile_id=? AND character_id=? AND julianday(created_at)<=julianday(?)',(pid,cid,cutoff))}
+        all_items=[x for x in all_items if x['event_at']<=cutoff and set(x['raw_msg_ids']).issubset(allowed)]
     by_id={x['id']:x for x in all_items}
     corrections_by_target={}
     for x in all_items:
@@ -1800,15 +1876,19 @@ def select_pre_meeting_chat_context(db,pid,cid,limit=6):
     chat_before=[m for m in chron[:end_idx] if m['mode']=='chat']
     return chat_before[-limit:]
 
-def write_message(db,pid,cid,sender,mode,txt,engine='human'):
+def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0):
     clean_txt = (clean_meeting_novel_text(txt) if mode=='meeting' else (clean_chat_bubble_text(txt) or '…')) if (sender=='ai' and engine not in ('error','recalled')) else str(txt or '')
-    item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=utc())
+    item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc())
     db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)',tuple(item.values()))
-    if sender=='ai' and mode=='chat' and engine in ('live','demo') and not _is_chat_artifact(item):reconcile_phone_activity(db,pid,cid)
+    if sender=='ai' and mode=='chat' and engine in ('live','demo') and not _is_chat_artifact(item):reconcile_phone_activity(db,pid,cid,at)
+    if at:
+        date=datetime.fromtimestamp(at/1000).astimezone().strftime('%Y-%m-%d')
+        diary=DIARY_STATE.get((pid,cid),{}).get('by_date',{}).get(date)
+        if diary:diary['stale_after_recovery']=True
     return item
 
-def log_event(db,pid,cid,kind,summary):
-    now_str=utc()
+def log_event(db,pid,cid,kind,summary,at=0):
+    now_str=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc()
     clean_sum=str(summary or '').strip() if kind=='user_message' else strip_protocol_tags(summary,preserve_paragraphs=False)
     db.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',(uid(),pid,cid,kind,clean_sum[:500],now_str))
 
@@ -2131,7 +2211,7 @@ def is_post_history_system_preset(entry):
     grp=str(entry.get('group') or infer_preset_group(nm))
     return grp=='COT' or ('COT' in nm) or ('连续性检查' in nm) or ('动笔前' in nm) or ('自检' in nm)
 
-def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_ids=None,trigger_opening=False,is_continue=False,exclude_ids=None):
+def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_ids=None,trigger_opening=False,is_continue=False,exclude_ids=None,simulated_at=0):
     ordered=[preset_row_dict(r) for r in db.execute('SELECT * FROM presets WHERE mode=? AND enabled=1 ORDER BY sort_order,id',(mode,)).fetchall()]
     macros=lambda t:expand_preset_macros(t,p,c)
     core_presets=[x for x in ordered if x['role']=='system' and not is_post_history_system_preset(x)] if mode=='meeting' else [x for x in ordered if x['role']=='system']
@@ -2141,9 +2221,9 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     working_ids={m['id'] for m in working_history}
     ensure_daily_summaries(db,p,c,working_ids)
     query_seed=latest or ' '.join(str(m['text'] or '').strip() for m in working_history[-3:] if m['sender']=='user') or (' '.join((str(m['text'] or '').strip() if m['sender']=='user' else clean_chat_bubble_text(m['text'])) for m in working_history[-2:]))
-    recalled=retrieve_relevant_memories(db,p['id'],c['id'],query_text=query_seed,exclude_msg_ids=working_ids,limit=4,max_chars=1200)
+    recalled=retrieve_relevant_memories(db,p['id'],c['id'],query_text=query_seed,exclude_msg_ids=working_ids,limit=4,max_chars=1200,as_of=simulated_at)
     rel_summary=relationship_baseline_summary(db,p['id'],c['id'],p['name'])
-    cur_surv=get_current_surveillance_slot(db,p,c)
+    cur_surv=get_current_surveillance_slot(db,p,c,simulated_at)
     interests_str='、'.join(p.get('interests') or []) or '未填写'
     intent_str=p.get('intent') or '未填写'
     system='''你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n'''
@@ -2241,7 +2321,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     surv_hint=f"\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「{cur_surv['location']}」·「{cur_surv['activity']}」。{wake_hint}实际互动优先于预设日程，不必主动汇报行踪或生硬解释日程。" if cur_surv else ''
     conn_cfg=load_connection()
     lang_hint='\n'+build_character_language_directive(conn_cfg.get('character_language_pref','natural'),conn_cfg.get('character_language_custom',''))
-    system+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+chat_clock_context(working_history)+surv_hint+batch_hint+lang_hint
+    system+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+chat_clock_context(working_history,datetime.fromtimestamp(simulated_at/1000).astimezone() if simulated_at else None)+surv_hint+batch_hint+lang_hint
     messages=[{'role':'system','content':system}]
     for x in post_presets:
         messages.append({'role':x['role'],'content':macros(x['content'])})
@@ -2745,13 +2825,15 @@ class Handler(BaseHTTPRequestHandler):
                         t_state['status']='paused'
                         t_state['updated_at']=utc()
                         with CHAT_LOCK:
-                            db.execute("UPDATE chat_queue SET status='idle',inflight='',inflight_sources='[]',blocked=1,revision=revision+1 WHERE profile_id=? AND character_id=?",(p['id'],cid))
+                            row=db.execute('SELECT pending,inflight_sources FROM chat_queue WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()
+                            pending=list(dict.fromkeys(parse_json(row['inflight_sources'],[])+parse_json(row['pending'],[]))) if row else []
+                            db.execute("UPDATE chat_queue SET pending=?,status='idle',inflight='',inflight_sources='[]',blocked=1,recovery_kind='user',revision=revision+1 WHERE profile_id=? AND character_id=?",(js(pending),p['id'],cid))
                             db.commit()
                         return self.respond({'ok':True,'paused':True,'taskState':t_state,'queue':queue_view(db,p['id'],cid) if c else None})
                     if act in ('clear','dismiss-bg'):
                         clear_task_state(p['id'],cid,t_type)
                         with CHAT_LOCK:
-                            db.execute("UPDATE chat_queue SET blocked=0 WHERE profile_id=? AND character_id=?",(p['id'],cid))
+                            db.execute("UPDATE chat_queue SET blocked=0,recovery_kind='' WHERE profile_id=? AND character_id=?",(p['id'],cid))
                             db.commit()
                         return self.respond({'ok':True,'taskState':None,'queue':queue_view(db,p['id'],cid) if c else None})
                     if act in ('resume','retry'):
@@ -2773,6 +2855,7 @@ class Handler(BaseHTTPRequestHandler):
                     r=db.execute('SELECT status,mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()
                     if not r or r['status']!='matched' or r['mode']!='chat':raise ValueError('当前不是手机聊天模式')
                     return self.respond(queue_flush(db,p,c,force=data.get('force') is True,manual_resume=data.get('manualResume') is True))
+                if route=='/api/chat-recover':return self.respond(recover_due_queues(db,data))
                 if route=='/api/chat-flush-due':
                     p=profile_get(db,data.get('profileId'))
                     return self.respond(queue_flush_due(db,p))
