@@ -569,7 +569,7 @@ test('Parallel v0.5 Daily Mode message bundling (preserving scheduled dueAt & ti
   );
   assert.match(
     sysPrompt,
-    /#1 \d{2}:\d{2}（线上短信·Leon S\. Kennedy）/,
+    /#1 \d{4}-\d{2}-\d{2} \d{2}:\d{2}（线上短信·Leon S\. Kennedy）/,
     'Each message in working history has its real timestamp and mode recorded in system metadata'
   );
   const nonSystemTurns = promptMessages.filter(
