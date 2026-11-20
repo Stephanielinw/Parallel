@@ -509,7 +509,7 @@ async function scheduleAutoTranslation(profileId,characterId,specificIds=null,fo
   const reqSet=Array.isArray(specificIds)&&specificIds.length?new Set(specificIds):null;
   const toFetch=[];
   for(const m of (state.messages||[])){
-    if(!m||m.sender!=='ai'||(m.mode||'chat')!=='chat'||m.recalled||m.engine==='recalled'||m.engine==='error'||m.isolated_error)continue;
+    if(!m||m.sender!=='ai'||(m.mode||'chat')!=='chat'||m.photo_kind||m.recalled||m.engine==='recalled'||m.engine==='error'||m.isolated_error)continue;
     if(m.id==='pending'||m.id==='typing')continue;
     if(reqSet&&!reqSet.has(m.id))continue;
     if(state.translatingIds.has(m.id))continue;
@@ -624,6 +624,104 @@ function findOrBuildMeetingRecord(block,c){
     summary,
     entries:block.map(m=>({id:m.id,sender:m.sender,speaker:m.sender==='user'?pName:c.name,text:cleanBodyText(m.text,m.sender,true),created_at:m.created_at}))
   };
+}
+const chatPhotoAsset=sender=>{
+  const script=Array.from(document.scripts||[]).find(x=>/\/app\.js(?:[?#]|$)/.test(x.src||''));
+  return new URL(sender==='user'?'chat-photo-user.webp':'chat-photo-ai.webp',script?.src||new URL('./parallel/',location.href)).href;
+};
+const chatPhotoCache=new Map();
+function renderChatPhoto(m){
+  const gallery=m.photo_kind==='gallery';
+  const src=gallery?chatPhotoCache.get(m.photo_ref):chatPhotoAsset(m.sender);
+  return '<button type="button" class="chat-photo-bubble" data-action="open-chat-photo" data-id="'+esc(m.id)+'" aria-label="查看照片" style="display:block;padding:0;border:0;background:transparent;cursor:pointer;">'
+    +'<img '+(src?'src="'+esc(src)+'"':'')+' '+(gallery&&!src?'data-chat-photo-load="'+esc(m.id)+'"':'')+' alt="'+(gallery?'真实照片':'点击查看照片描写')+'" loading="lazy" style="display:block;width:min(170px,48vw);aspect-ratio:1;object-fit:cover;border-radius:12px;background:#eae4dd;">'
+    +'</button>';
+}
+async function hydrateChatPhotos(){
+  if(!globalThis.ParallelOffline)return;
+  const pid=state.activeId,cid=state.threadId;
+  for(const img of document.querySelectorAll('[data-chat-photo-load]')){
+    const mid=img.dataset.chatPhotoLoad,m=state.messages.find(x=>x.id===mid);
+    if(!m||m.photo_kind!=='gallery')continue;
+    delete img.dataset.chatPhotoLoad;
+    try{
+      const r=await api('/chat-photo-read',{profileId:pid,characterId:cid,messageId:mid});
+      if(!isCurrentPair(pid,cid))continue;
+      if(chatPhotoCache.size>=24)chatPhotoCache.delete(chatPhotoCache.keys().next().value);
+      chatPhotoCache.set(m.photo_ref,r.data);
+      if(img.isConnected)img.src=r.data;
+    }catch{if(img.isConnected)img.alt='本地照片不可用';}
+  }
+}
+function openPhotoChooser(){
+  if(!globalThis.ParallelOffline)return toast('此版本暂不支持聊天照片，请使用网页版');
+  if(state.chatMode!=='chat')return toast('请在手机聊天模式发送照片');
+  if(state.chatBusy||!state.threadId)return;
+  const pid=state.activeId,cid=state.threadId;
+  modal('<div class="kicker">CHAT PHOTOS</div><h2>发送照片</h2><p class="caption">图库可一次选择多张真实照片；虚拟拍照只会发送你填写的描写。</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><button class="btn soft" id="choose-chat-gallery" type="button">'+I('photo')+' 图库</button><button class="btn soft" id="choose-chat-camera" type="button">'+I('camera')+' 拍照</button></div><input type="file" accept="image/*" multiple id="chat-gallery-input" hidden>','<button class="btn ghost" data-action="close-modal">取消</button>');
+  $('choose-chat-camera').onclick=()=>openVirtualPhotoComposer(pid,cid);
+  $('choose-chat-gallery').onclick=()=>$('chat-gallery-input').click();
+  $('chat-gallery-input').onchange=e=>{const files=Array.from(e.target.files||[]);if(files.length)void prepareGalleryPhotos(files,pid,cid);};
+}
+function openVirtualPhotoComposer(pid,cid){
+  modal('<div class="kicker">A PHOTO, IN WORDS</div><h2>拍照</h2><p class="caption">你的镜头拍到了什么？角色只会收到描写，不会收到坏狗的占位图。</p><div class="field"><textarea id="virtual-photo-description" rows="5" maxlength="2000" placeholder="例如：一张刚拍的自拍，阳光从窗帘缝隙里照进来……"></textarea></div>','<button class="btn ghost" data-action="close-modal">取消</button><button class="btn primary" id="send-virtual-photo">发送照片</button>');
+  $('send-virtual-photo').onclick=()=>{const description=$('virtual-photo-description')?.value.trim();if(!description)return toast('请填写照片描写');void sendChatPhotoItems([{kind:'virtual',description}],pid,cid);};
+}
+async function compressGalleryFile(file){
+  if(!String(file.type).startsWith('image/')||file.type==='image/svg+xml')throw Error('请选择手机可以预览的照片');
+  const url=URL.createObjectURL(file);
+  try{
+    const img=await new Promise((resolve,reject)=>{const el=new Image();el.onload=()=>resolve(el);el.onerror=()=>reject(Error('无法读取这张照片，请先转换为 JPEG 或 PNG'));el.src=url;});
+    const scale=Math.min(1,1280/Math.max(img.naturalWidth,img.naturalHeight));
+    const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
+    const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);
+    let data=canvas.toDataURL('image/jpeg',0.82);
+    if(data.length>1500000)data=canvas.toDataURL('image/jpeg',0.58);
+    if(data.length>1500000)throw Error('这张照片太大，请缩小后重试');
+    return {kind:'gallery',data};
+  }finally{URL.revokeObjectURL(url);}
+}
+async function prepareGalleryPhotos(files,pid,cid){
+  if(files.length>12)return toast('一次最多选择 12 张照片');
+  if(state.settings.mode!=='live')return toast('请先连接支持图片输入的聊天模型');
+  const original=$('chat-gallery-input');
+  const button=$('choose-chat-gallery');if(button)button.disabled=true;
+  try{
+    const items=[];
+    for(const file of files)items.push(await compressGalleryFile(file));
+    if(!original?.isConnected||!isCurrentPair(pid,cid))return;
+    const render=()=>{
+      modal('<div class="kicker">PHOTO PREVIEW</div><h2>发送 '+items.length+' 张照片</h2><p class="caption">照片保存在本浏览器，不上传公共图床；发送后聊天 API 会收到图片。</p><div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">'+items.map((item,i)=>'<div><img src="'+esc(item.data)+'" alt="照片预览" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;"><button class="btn ghost" type="button" data-remove-gallery="'+i+'">移除</button></div>').join('')+'</div>','<button class="btn ghost" data-action="close-modal">取消</button><button class="btn primary" id="send-gallery-photos">发送</button>');
+      document.querySelectorAll('[data-remove-gallery]').forEach(el=>el.onclick=()=>{items.splice(Number(el.dataset.removeGallery),1);if(items.length)render();else closeModal();});
+      $('send-gallery-photos').onclick=()=>void sendChatPhotoItems(items,pid,cid);
+    };
+    render();
+  }catch(e){toast(e.message);}
+  finally{if(button?.isConnected)button.disabled=false;}
+}
+async function sendChatPhotoItems(items,pid,cid){
+  if(state.chatBusy||!isCurrentPair(pid,cid)||state.chatMode!=='chat')return toast('当前会话已改变或正在发送');
+  state.chatBusy=true;
+  const buttons=Array.from($('modal-root').querySelectorAll('button'));buttons.forEach(b=>b.disabled=true);
+  try{
+    await api('/chat-photos',{profileId:pid,characterId:cid,items});
+    closeModal();
+    if(isCurrentPair(pid,cid)){pinCurrentChat();await loadThreads(cid);}
+    else refreshInboxQuietly(pid);
+  }catch(e){toast(e.message);}
+  finally{state.chatBusy=false;buttons.forEach(b=>b.disabled=false);if(isCurrentPair(pid,cid))renderMessages();}
+}
+async function openChatPhoto(mid){
+  const pid=state.activeId,cid=state.threadId,m=state.messages.find(x=>x.id===mid);
+  if(!m?.photo_kind||m.recalled||m.engine==='recalled')return;
+  if(m.photo_kind==='virtual'){
+    return modal('<div class="kicker">A PHOTO, IN WORDS</div><h2>'+(m.sender==='user'?'你发送的照片':'对方发送的照片')+'</h2><div class="photo-description-paper"><p style="white-space:pre-wrap">'+esc(m.photo_description||'')+'</p></div>','<button class="btn primary" data-action="close-modal">关闭</button>');
+  }
+  try{
+    const data=chatPhotoCache.get(m.photo_ref)||(await api('/chat-photo-read',{profileId:pid,characterId:cid,messageId:mid})).data;
+    if(!isCurrentPair(pid,cid))return;
+    modal('<h2>照片</h2><img src="'+esc(data)+'" alt="真实照片" style="max-width:100%;max-height:70vh;object-fit:contain;border-radius:12px;">','<button class="btn primary" data-action="close-modal">关闭</button>');
+  }catch(e){toast(e.message);}
 }
 function renderChatMessagesHtml(c){
   const pendingSet=new Set(state.queue?.pendingIds||[]);
@@ -741,7 +839,7 @@ function renderChatMessagesHtml(c){
     const origText=cleanBodyText(m.text,m.sender);
     let translationHtml='';
     let translationActionBtn='';
-    if(m.sender==='ai'&&isRealMsg){
+    if(m.sender==='ai'&&isRealMsg&&!m.photo_kind){
       const needsTr=needsChineseTranslationClient(origText,ignoreNames);
       if(needsTr){
         const ver=computeContentVersionClient(origText);
@@ -769,7 +867,7 @@ function renderChatMessagesHtml(c){
         }
       }
     }
-    const editBtn=isRealMsg?`<button type="button" class="msg-action-btn" data-action="edit-message" data-id="${esc(m.id)}" title="编辑此条消息" aria-label="编辑此条消息">编辑</button>`:'';
+    const editBtn=isRealMsg&&m.photo_kind!=='gallery'?`<button type="button" class="msg-action-btn" data-action="edit-message" data-id="${esc(m.id)}" title="编辑此条消息" aria-label="编辑此条消息">编辑</button>`:'';
     const regenBtn=(isRealMsg&&m.id===lastTrailingAiId&&!charTyping)?`<button type="button" class="msg-action-btn" data-action="regenerate-message" data-id="${esc(m.id)}" title="重新生成角色回复" aria-label="重新生成角色回复">重新生成</button>`:'';
     const recallBtn=isRealMsg?`<button type="button" class="msg-del-btn" data-action="delete-message" data-id="${esc(m.id)}" title="撤回此条消息" aria-label="撤回此条消息">撤回</button>`:'';
     let receiptHtml='';
@@ -785,7 +883,7 @@ function renderChatMessagesHtml(c){
       }
     }
     const time=`<span>${fmtTime(m.created_at)}${m.edited_at?' · 已编辑':''}${m.engine==='demo'?' · 演示回复':''}</span>${receiptHtml}${translationActionBtn}${editBtn}${regenBtn}${recallBtn}`;
-    return `<div class="bubble-row ${m.sender==='user'?'mine':''}" data-message-id="${esc(m.id||'')}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble ${translationHtml?'is-bilingual':''}"><div class="bubble-orig">${esc(origText)}</div>${translationHtml}</div><div class="chat-time">${time}</div></div></div>`;
+    return `<div class="bubble-row ${m.sender==='user'?'mine':''}" data-message-id="${esc(m.id||'')}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble ${translationHtml?'is-bilingual':''}"><div class="bubble-orig">${m.photo_kind?renderChatPhoto(m):esc(origText)}</div>${translationHtml}</div><div class="chat-time">${time}</div></div></div>`;
   }).join('');
 
   const typingHtml=charTyping?`<div class="typing-inline" role="status" aria-live="polite"><span class="typing-label">对方正在输入中</span><span class="typing-ellipsis"><i>.</i><i>.</i><i>.</i></span></div>`:'';
@@ -934,6 +1032,7 @@ function renderMessages(){
     if(!anchorState.pinned)anchorState.position=chatPosition(chatBodyEl);
     chatBodyEl.className=`chat-body ${meeting?'meeting-novel-body':''}`;
     chatBodyEl.innerHTML=renderChatMessagesHtml(selected.character);
+    void hydrateChatPhotos();
     scheduleChatScroll(chatBodyEl,anchorState);
     const bannerSlot=$('chat-paused-banner-slot');
     if(bannerSlot)bannerSlot.innerHTML=renderPausedTaskBanner();
@@ -952,7 +1051,7 @@ function renderMessages(){
   }
   state.renderedThreadId=selected?state.threadId:'';
   $('view').innerHTML=state.threads.length?`<div class="messages-layout ${selected?'has-chat':''}"><div class="threads">${renderMessagesListItems()}</div><div class="chat-view ${state.chatMode==='meeting'?'meeting-mode':''}">${selected?renderChat(selected):'<div class="empty-state"><div class="empty-illustration">'+I('letter')+'</div><h2>选一段对话</h2><p>每次相遇都有延续的故事。</p></div>'}</div></div>`:empty('letter','还没有匹配对象','去发现页滑动卡片；右滑喜欢后，对方也有自己的选择。','去发现','discover');
-  const body=$('chat-body');if(body)scheduleChatScroll(body,bindChatScroll(body));
+  const body=$('chat-body');if(body){scheduleChatScroll(body,bindChatScroll(body));void hydrateChatPhotos();}
   updateQueueCountdown();
   const input=$('chat-input');
   if(input){
@@ -1594,7 +1693,7 @@ async function deleteMessage(mid){
 function openEditMessageModal(mid){
   const msg=(state.messages||[]).find(m=>m.id===mid);
   if(!msg||msg.recalled||msg.engine==='recalled')return;
-  const curTxt=cleanBodyText(msg.text,msg.sender);
+  const curTxt=msg.photo_kind==='virtual'?msg.photo_description:cleanBodyText(msg.text,msg.sender);
   modal(
     `<div class="kicker">EDIT MESSAGE · 编辑消息</div><h2>编辑聊天消息</h2><p class="caption">修改原文后，旧译文将自动失效；若已开启自动中文翻译，系统会按新原文重新翻译。</p><div class="field"><label for="edit-message-input">消息原文</label><textarea id="edit-message-input" rows="4" maxlength="4000">${esc(curTxt)}</textarea></div>`,
     `<button type="button" class="btn ghost" data-action="close-modal">取消</button><button type="button" class="btn primary" data-action="confirm-edit-message" data-id="${esc(mid)}">保存修改</button>`
@@ -2213,7 +2312,9 @@ if(a==='toggle-chat-plus'){
   if(body)scheduleChatScroll(body,bindChatScroll(body));
   return;
 }
+if(a==='open-chat-photo')return await openChatPhoto(el.dataset.id);
 if(a==='chat-plus-item'){
+  if(el.dataset.feature==='photo')return openPhotoChooser();
   const label=el.dataset.label||'功能';
   toast(`「${label}」功能位置已就绪，接下来可以为你定制具体交互`);
   return;
