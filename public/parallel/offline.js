@@ -566,7 +566,7 @@
     const d=m?.[1]?.trim();
     return d&&d.length<=2000&&!d.includes('[[')&&!d.includes(']]')&&!/\|{2,}/.test(d)?d:'';
   };
-  const photoDescriptionText=(sender,description)=>'['+(sender==='user'?'对方':'你')+'发送了一张照片：'+description+']';
+  const photoDescriptionText=(sender,description)=>'['+(sender==='user'?'对方':'我')+'发送了一张照片：'+description+']';
   const isGalleryImage=v=>typeof v==='string'&&v.length<=1500000&&/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(v);
   let photoDbPromise;
   const openChatPhotoDb=()=>{
@@ -620,6 +620,7 @@
     if(!rawStr)return ['…'];
     let parts=explicitChatParts(rawStr);
     if(!parts.length&&(isBareChatDivider(rawStr.replace(PROTOCOL_LEADING_TAG_RE,''))||isNarrationMarker(cleanChatBubbleText(rawStr))))return [];
+    if(parts.some(p=>p.includes('[[PHOTO:')&&!parseChatPhoto(p))||(parts.length>4&&parts.some(p=>parseChatPhoto(p))))return [];
     if(parts.length===1&&parts[0].length>=120&&!parseChatPhoto(parts[0])){
       const sentences=parts[0].match(/[^。！？!?]+[。！？!?]+|[^。！？!?]+$/g)?.map(s=>cleanChatBubbleText(s)).filter(Boolean)||[parts[0]];
       if(sentences.length>=2){
@@ -1094,7 +1095,7 @@
       const bubbleTexts=splitChatBubbles(txt);
       replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine,simulatedAt));
       reply=replies[replies.length-1]||null;
-      const combinedTxt=bubbleTexts.join(' / ');
+      const combinedTxt=replies.map(m=>m.text).join(' / ');
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180),simulatedAt);
       const userRows=pending.map(mid=>db.messages.find(m=>m.id===mid)).filter(Boolean);
       if(reply){
@@ -3226,7 +3227,7 @@
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai',mode,bTxt,engine));
     const reply=replies[replies.length-1]||null;
     if(reply){
-      const combinedTxt=bubbleTexts.join(' / ');
+      const combinedTxt=replies.map(m=>m.text).join(' / ');
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180));
       const uList=userMsg?[userMsg]:messagesOf(p.id,c.id).filter(m=>m.sender==='user').slice(-1);
       recordDialogueEpisode(p,c,uList,{...reply,text:combinedTxt},mode);
@@ -3337,7 +3338,7 @@
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine));
     const lastReply=replies[replies.length-1]||null;
     if(lastReply){
-      const combinedTxt=bubbleTexts.join(' / ');
+      const combinedTxt=replies.map(m=>m.text).join(' / ');
       event(p.id,c.id,'ai_proactive',c.name+' 主动联系 '+p.name+'：'+combinedTxt.slice(0,180));
       recordDialogueEpisode(p,c,[],{...lastReply,text:combinedTxt},'chat');
       if(unresolvedMem&& unresolvedMem.unresolved){
@@ -4383,6 +4384,43 @@
     buildPromptPreview:(pid,cid,mode='chat',opts={})=>prompt(getP(pid),getC(cid),mode,Array.isArray(opts?.pendingIds)?opts.pendingIds:(queueInfo(pid,cid).pendingIds||[]),opts),
     get storageAvailable(){return storageAvailable},
     exportData:()=>{const copy=JSON.parse(JSON.stringify(db));copy.connection.api_key='';copy.connection.image_api_key='';copy.connection.archive_api_key='';delete copy.systemLogs;return JSON.stringify({format:'parallel-portable-backup',schemaVersion:1,createdAt:stamp(),data:copy},null,2)},
+    async exportDataWithPhotos(){
+      const pack=JSON.parse(this.exportData());
+      const refs=[...new Set(pack.data.messages.filter(m=>m.photo_kind==='gallery'&&!m.recalled&&m.engine!=='recalled'&&m.photo_ref).map(m=>m.photo_ref))];
+      pack.chatPhotoFiles=[];
+      let size=JSON.stringify(pack).length;
+      for(const ref of refs){
+        const data=await readChatPhoto(ref);
+        size+=data.length+150;
+        if(size>100*1024*1024)bodyErr('含真实照片的备份超过 100 MB，请先减少照片数量或导出文字存档');
+        pack.chatPhotoFiles.push({ref,data});
+      }
+      return JSON.stringify(pack);
+    },
+    async importDataWithPhotos(raw){
+      if(typeof raw!=='string'||raw.length>100*1024*1024)bodyErr('备份体积过大');
+      let pack;try{pack=JSON.parse(raw)}catch{bodyErr('不是有效 JSON 文件')}
+      if(!Object.prototype.hasOwnProperty.call(pack,'chatPhotoFiles'))return this.importData(raw);
+      if(pack.format!=='parallel-portable-backup'||pack.schemaVersion!==1||!Array.isArray(pack.data?.messages)||!Array.isArray(pack.chatPhotoFiles))bodyErr('照片备份格式无效');
+      const byRef=new Map();
+      for(const row of pack.chatPhotoFiles){
+        if(typeof row?.ref!=='string'||!row.ref||byRef.has(row.ref)||!isGalleryImage(row.data))bodyErr('照片备份数据无效');
+        byRef.set(row.ref,{ref:uid(),data:row.data});
+      }
+      const needed=new Set();
+      for(const m of pack.data.messages){
+        if(m.photo_kind!=='gallery'||m.recalled||m.engine==='recalled')continue;
+        const row=byRef.get(m.photo_ref);
+        if(!row)bodyErr('备份缺少聊天照片，已停止覆盖存档');
+        needed.add(m.photo_ref);m.photo_ref=row.ref;
+      }
+      const rows=[...needed].map(ref=>byRef.get(ref));
+      delete pack.chatPhotoFiles;
+      const metadata=JSON.stringify(pack);
+      if(metadata.length>20*1024*1024)bodyErr('文字存档体积过大');
+      if(rows.length)await saveChatPhotoBatch(rows);
+      try{return this.importData(metadata)}catch(e){await removeChatPhotos(rows.map(row=>row.ref)).catch(()=>{});throw e;}
+    },
     importData:(raw)=>{
       if(typeof raw!=='string'||raw.length>20*1024*1024)bodyErr('备份体积过大');
       let pack;try{pack=JSON.parse(raw)}catch{bodyErr('不是有效 JSON 文件')}

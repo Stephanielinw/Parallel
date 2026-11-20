@@ -3,6 +3,8 @@ name: Deploy Parallel to GitHub Pages
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +13,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'pages' }}
   cancel-in-progress: false
 
 jobs:
@@ -33,6 +35,7 @@ jobs:
           node tests/thread-typing-isolation.test.cjs
           node tests/phone-clock-sleep.test.cjs
           node tests/chat-backlog-recovery.test.cjs
+          node tests/chat-photos.test.cjs
           python3 parallel_src/parallel_ai_date/tests/test_phone_clock_sleep.py
           python3 -m py_compile parallel_src/parallel_ai_date/server.py
       - name: Run existing regression suites (no real model calls)
@@ -50,14 +53,18 @@ jobs:
           test -f dist/parallel/offline.js
           test -f dist/parallel/app.js
           test -f dist/parallel/style.css
+          test -f dist/parallel/chat-photo-user.webp
+          test -f dist/parallel/chat-photo-ai.webp
           test -f dist/assets/aistudio/image_0cf832e3.png
           test ! -f public/assets/aistudio/_____685745cf.json
           test ! -f dist/assets/aistudio/_____685745cf.json
           grep -q '/Parallel/' dist/index.html
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
         with:
           path: dist
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:
