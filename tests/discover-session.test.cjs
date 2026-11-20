@@ -12,14 +12,15 @@ function between(s,a,b){return s.slice(s.indexOf(a),s.indexOf(b,s.indexOf(a)))}
     const state={tab:'discover',activeId:'A',candidates:[],deckIndex:0,loading:false};
     const profiles={A:{id:'A',sources:['A']},B:{id:'B',sources:['B']}};
     const activeProfile=()=>profiles[state.activeId];
-    const calls=[],renders=[],errors=[],controls={defer:null,fail:false,apiError:false,next:0};
+    const calls=[],renders=[],errors=[],controls={defer:null,swipeDefer:null,fail:false,apiError:false,next:0};
+    let activeSwipeGesture=false;
     const $=()=>({innerHTML:'',style:{}}),I=()=>'',renderProfileDropdownHtml=()=>'',empty=()=>'',toast=()=>{},refreshInboxQuietly=()=>{},matchModal=()=>{};
     const showApiErrorModal=(e,t,ctx)=>errors.push(ctx);
     const setTimeout=(fn)=>fn();
     const renderDiscover=total=>renders.push([state.tab,state.activeId,state.deckIndex,total]);
     const api=async(route,data)=>{
       calls.push([route,data.profileId,Boolean(data.refresh)]);
-      if(route==='/swipe')return {matched:false};
+      if(route==='/swipe'){if(controls.swipeDefer)await controls.swipeDefer;return {matched:false};}
       if(controls.fail)throw Error('failed');
       if(controls.apiError)return {apiError:{error_code:'HTTP_429'},candidates:[]};
       if(controls.defer)await controls.defer;
@@ -38,6 +39,13 @@ function between(s,a,b){return s.slice(s.indexOf(a),s.indexOf(b,s.indexOf(a)))}
   const refreshed=state.candidates.map(x=>x.id);controls.fail=true;await loadCandidates(true);controls.fail=false;assert.deepEqual(state.candidates.map(x=>x.id),refreshed);
   controls.apiError=true;await loadCandidates(true);controls.apiError=false;assert.equal(errors.at(-1).type,'discover_refresh');assert.equal(errors.at(-1).profileId,'A');assert.deepEqual(state.candidates.map(x=>x.id),refreshed);
   let release;controls.defer=new Promise(r=>release=r);const before=calls.length;const p1=loadCandidates(true),p2=loadCandidates(true);state.tab='messages';const renderCount=renders.length;release();await Promise.all([p1,p2]);controls.defer=null;assert.equal(calls.length,before+1);assert.equal(renders.length,renderCount);state.tab='discover';await loadCandidates();assert.equal(calls.length,before+1);
+  await loadCandidates(true);
+  let releaseSwipe;controls.swipeDefer=new Promise(r=>releaseSwipe=r);
+  const pendingSwipe=doSwipe('right');await Promise.resolve();await Promise.resolve();
+  assert.equal(state.deckIndex,1,'next card appeared while API unresolved');
+  const secondSwipe=doSwipe('right');await Promise.resolve();await Promise.resolve();
+  assert.equal(state.deckIndex,2,'second swipe also advanced while first API unresolved');
+  releaseSwipe();await Promise.all([pendingSwipe,secondSwipe]);controls.swipeDefer=null;
   const parser=between(offline,'  const PROTOCOL_LEADING_TAG_RE=','  const sanitizeStoredData=')+'\n'+between(offline,'  const splitChatBubbles=','  const photoText=')+'\nreturn {splitChatBubbles,isChatArtifact};';
   const {splitChatBubbles:split,isChatArtifact}=new Function('const isLegacyErrorArtifact=()=>false;'+parser)();
   for(const raw of ['旁白','旁白：','【旁白】','[旁白]','Narrator:','Narration','*旁白*','[短信] 旁白'])assert.deepEqual(split(raw),[],raw);

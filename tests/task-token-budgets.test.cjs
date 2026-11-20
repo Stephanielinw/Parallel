@@ -3,7 +3,7 @@ const root=path.join(__dirname,'..');
 const read=p=>fs.readFileSync(path.join(root,p),'utf8');
 const offline=read('public/parallel/offline.js'),app=read('public/parallel/app.js');
 assert.equal(offline,read('parallel_src/parallel_ai_date/static/offline.js'));assert.equal(app,read('parallel_src/parallel_ai_date/static/app.js'));
-const cases=[["chat","chat_flush",null,8192],["meeting","meeting_continue",null,8192],["surveillance","surveillance",1200,4096],["diary","diary",900,4096],["bio","discover_bios",950,2048],["match","match_decision",70,1024],["chat","chat_first_message",220,1024],["chat","first-message",220,1024],["chat","chat_proactive",220,1024],["meeting_summary","meeting_finalize",160,1024],["archive","episode_archive",null,4000],["photo","photo_description",350,1024],["translation","chat_translation",560,560],["chat","chat_continue",1024,1024]];
+const cases=[["chat","chat_flush",null,8192],["meeting","meeting_continue",null,8192],["surveillance","surveillance",1200,4096],["diary","diary",900,4096],["bio","discover_bios",950,8192],["match","match_decision",70,1024],["chat","chat_first_message",220,1024],["chat","first-message",220,1024],["chat","chat_proactive",220,1024],["meeting_summary","meeting_finalize",160,1024],["archive","episode_archive",null,4000],["photo","photo_description",350,1024],["translation","chat_translation",560,560],["chat","chat_continue",1024,1024]];
 const source=offline.slice(offline.indexOf('  const TASK_TOKEN_DEFAULTS='),offline.indexOf('  const empty='));
 const {resolveTaskMaxTokens:r,mergeTaskTokenOverrides:m}=new Function(source+'\nreturn {resolveTaskMaxTokens,mergeTaskTokenOverrides}')();
 for(const [mode,entry,explicit,expected] of cases){assert.equal(r({max_tokens:8192},mode,entry,explicit),expected,entry);}
@@ -13,6 +13,7 @@ for(const [mode,entry,expected] of [['meeting','meeting_opening',30000],['diary'
 assert.deepEqual(m(overrides,{diary:null,surveillance:8000}),{meeting:30000,translation:3000,first_message:2000,surveillance:8000});
 for(const bad of [99,32769,1.5,NaN,true,'foo'])assert.throws(()=>m({}, {diary:bad}));
 assert.equal(r({max_tokens:700,task_max_tokens:{diary:-1}},'diary','diary'),4096);
+assert.equal(r({max_tokens:700,task_max_tokens:{bio:4096}},'bio','discover_bios'),4096);
 function start(store,calls){
   const win={};
   const ctx={window:win,localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},crypto:webcrypto,URLSearchParams,Date,JSON,Math,TextEncoder,console,fetch:async(url,init)=>{
