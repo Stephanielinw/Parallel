@@ -684,6 +684,7 @@
     meeting_message:'面对面小说推进',
     meeting_continue:'面对面小说续写',
     meeting_opening:'面对面小说开场',
+    meeting_reroll:'面对面小说重 Roll',
     meeting_finalize:'见面总结归档',
     meeting_summary:'见面总结归档',
     discover_bios:'候选角色档案生成',
@@ -862,7 +863,9 @@
     if(ctrl){try{ctrl.abort();}catch{}inflightControllers.delete(k);}
     delete db.taskStates[k];
   };
+  const meetingRerolls=new Map();
   const clearTaskStatesForPair=(pid,cid)=>{
+    const roll=meetingRerolls.get(pairKey(pid,cid));if(roll){roll.controller?.abort();meetingRerolls.delete(pairKey(pid,cid));}
     clearTaskState(pid,cid,'chat');
     clearTaskState(pid,cid,'meeting');
   };
@@ -1489,13 +1492,15 @@
       const loc=r.meeting_location||'约定的街角咖啡馆';
       return {
         id:'live_meeting',
-        start:fmtHHMM(r.meeting_started_at||Date.now())||nowHHMM,
+        start:r.meeting_started_at&&localDateStr(r.meeting_started_at)!==localDateStr(at)?'00:00':fmtHHMM(r.meeting_started_at||at)||nowHHMM,
         end:nowHHMM,
         location:loc,
         status:`正与 ${p.name} 当面见面中`,
         activity:`在「${loc}」与 ${p.name} 面对面相处`,
         scene:`${c.name}放下了原本的日常安排，此刻正身处「${loc}」与 ${p.name} 面对面互动。`,
         source:'meeting',
+        meeting_id:r.active_meeting_id||'',
+        actual_started_at:r.meeting_started_at||new Date(at).toISOString(),
         isCurrent:true,
         isMeetingLive:true
       };
@@ -1503,88 +1508,24 @@
     const active=rec.slots[activeSlotIndex(rec.slots,nowMin)]||rec.slots.filter(s=>hhmmToMin(s.start)<=nowMin).at(-1)||rec.slots[0];
     return {...active,isCurrent:true,isMeetingLive:false};
   };
-  const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>{
-    const rec=getOrInitSurveillance(p,c,localDateStr());
-    const nowHHMM=fmtHHMM(Date.now())||'12:00';
-    const nowMin=hhmmToMin(nowHHMM);
-    const endHHMM=minToHHMM(Math.min(1439,nowMin+60));
-    const idx=rec.slots.findIndex(s=>hhmmToMin(s.start)<=nowMin&&nowMin<=hhmmToMin(s.end));
-    const meetSlot={
-      id:`slot_meet_${meetingId||uid()}`,
-      start:nowHHMM,
-      end:endHHMM,
-      location:loc,
-      status:`与 ${p.name} 当面见面中`,
-      activity:`在「${loc}」与 ${p.name} 面对面互动`,
-      scene:`${c.name}暂时放下了原本手头的安排，来到「${loc}」与 ${p.name} 当面相见。`,
-      source:'meeting',
-      meeting_id:meetingId||''
-    };
-    if(idx>=0){
-      const cur=rec.slots[idx];
-      if(cur.source==='meeting'&&cur.meeting_id===meetingId){
-        Object.assign(cur,meetSlot);
-      }else{
-        if(hhmmToMin(cur.start)<nowMin){
-          cur.end=nowHHMM;
-          rec.slots.splice(idx+1,0,meetSlot);
-        }else{
-          rec.slots[idx]=meetSlot;
-        }
-      }
-    }else{
-      rec.slots.push(meetSlot);
-    }
-    rec.updated_at=stamp();
-    return rec;
-  };
+  // Meeting is a live wall-clock interval, not a guessed future schedule.
+  const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>getOrInitSurveillance(p,c,localDateStr());
   const syncSurveillanceOnMeetingEnd=(p,c,meetingRecord)=>{
     if(!meetingRecord)return null;
-    const rec=getOrInitSurveillance(p,c,localDateStr());
-    const startHHMM=fmtHHMM(meetingRecord.started_at)||fmtHHMM(Date.now());
-    const endHHMM=fmtHHMM(meetingRecord.ended_at)||fmtHHMM(Date.now());
-    const endMin=hhmmToMin(endHHMM);
+    const begin=Date.parse(meetingRecord.started_at),finish=Date.parse(meetingRecord.ended_at);
+    if(!Number.isFinite(begin)||!Number.isFinite(finish)||finish<begin)return null;
     const loc=meetingRecord.location||'约定的街角咖啡馆';
-    let mIdx=rec.slots.findIndex(s=>s.meeting_id===meetingRecord.id||s.source==='meeting');
-    const finalizedSlot={
-      id:`slot_meet_${meetingRecord.id}`,
-      start:startHHMM,
-      end:endHHMM>startHHMM?endHHMM:minToHHMM(Math.min(1439,hhmmToMin(startHHMM)+25)),
-      location:loc,
-      status:'线下见面足迹',
-      activity:`与 ${p.name} 在「${loc}」当面见面`,
-      scene:`${meetingRecord.summary||`与 ${p.name} 在「${loc}」度过了面对面相处的时光。`}`,
-      source:'meeting',
-      meeting_id:meetingRecord.id
-    };
-    if(mIdx>=0){
-      rec.slots[mIdx]=finalizedSlot;
-    }else{
-      const hitIdx=rec.slots.findIndex(s=>hhmmToMin(s.start)<=endMin&&endMin<=hhmmToMin(s.end));
-      if(hitIdx>=0){
-        rec.slots.splice(hitIdx,1,finalizedSlot);
-        mIdx=hitIdx;
-      }else{
-        rec.slots.push(finalizedSlot);
-        mIdx=rec.slots.length-1;
-      }
+    let rec=null;
+    // The surveillance store retains recent days. Do not synthesize future minutes
+    // or pretend a cross-midnight meeting occurred on just one calendar day.
+    const dates=[...new Set([localDateStr(begin),offsetDateStr(localDateStr(finish),-2),offsetDateStr(localDateStr(finish),-1),localDateStr(finish)])].sort();
+    for(const date of dates){
+      if(date<localDateStr(begin)||date>localDateStr(finish))continue;
+      rec=getOrInitSurveillance(p,c,date);
+      const slot={id:'slot_meet_'+meetingRecord.id+'_'+date,start:date===localDateStr(begin)?fmtHHMM(begin):'00:00',end:date===localDateStr(finish)?fmtHHMM(finish):'23:59',location:loc,status:'线下见面足迹',activity:'与 '+p.name+' 在「'+loc+'」当面见面',scene:meetingRecord.summary,source:'meeting',meeting_id:meetingRecord.id,actual_started_at:meetingRecord.started_at,actual_ended_at:meetingRecord.ended_at};
+      const base=rec.slots.filter(x=>x.meeting_id!==meetingRecord.id);
+      rec.slots=overlayActualSlots(base,[slot]);rec.updated_at=stamp();
     }
-    const nextSlot=rec.slots[mIdx+1];
-    if(nextSlot&&nextSlot.source==='schedule'){
-      const fEndMin=hhmmToMin(finalizedSlot.end);
-      if(hhmmToMin(nextSlot.start)<fEndMin){
-        nextSlot.start=finalizedSlot.end;
-      }
-      if(hhmmToMin(nextSlot.end)<=hhmmToMin(nextSlot.start)){
-        nextSlot.end=minToHHMM(Math.min(1439,hhmmToMin(nextSlot.start)+45));
-      }
-      if(!nextSlot.scene.includes(loc)){
-        nextSlot.activity=`从「${loc}」离开后 · ${nextSlot.activity}`;
-        nextSlot.scene=`刚结束在「${loc}」与 ${p.name} 的见面，${c.name}带着见面后的余温回到日常节奏：${nextSlot.scene}`;
-        nextSlot.source='meeting_shift';
-      }
-    }
-    rec.updated_at=stamp();
     return rec;
   };
   function activeSlotIndex(slots,minute){
@@ -1723,7 +1664,9 @@
         lockedCount++;
       }
     }
-    if(isToday&&current?.isMeetingLive&&!unlocked.some(u=>u.source==='meeting'&&u.location===current.location)){
+    if(isToday&&current?.isMeetingLive){
+      const mid=relation(p.id,c.id)?.active_meeting_id;
+      for(let i=unlocked.length-1;i>=0;i--)if(mid&&unlocked[i].meeting_id===mid)unlocked.splice(i,1);
       unlocked.push({...current,isCurrent:true});
     }
     const bgErr=db.bgErrors?.[pairKey(p.id,c.id)]?.surveillance||null;
@@ -1998,14 +1941,18 @@
     }
     return `在「${loc}」见了一面。`;
   };
-  const upsertMeetingRecord=(p,c,meetingId,mMsgs,customLoc='',aiSummary='')=>{
+  const upsertMeetingRecord=(p,c,meetingId,mMsgs,customLoc='',aiSummary='',finishedAt='')=>{
     if(!mMsgs||!mMsgs.length)return null;
     const existing=(db.meetings||[]).find(x=>x.id===meetingId);
     const loc=inferMeetingLocation(p.id,c.id,customLoc||existing?.location||'');
-    const startedAt=mMsgs[0].created_at||stamp();
-    const endedAt=mMsgs[mMsgs.length-1].created_at||stamp();
-    const timeStr=String(startedAt).slice(0,16).replace('T',' ');
-    const summary=buildMeetingSummaryText(p,c,loc,mMsgs,aiSummary||existing?.ai_summary||'');
+    const rel=relation(p.id,c.id),isActive=rel?.mode==='meeting'&&rel.active_meeting_id===meetingId;
+    const startedAt=(isActive&&rel.meeting_started_at)||existing?.started_at||mMsgs[0].created_at||stamp();
+    const actualFinish=finishedAt||existing?.finished_at||'';
+    const endedAt=actualFinish||mMsgs[mMsgs.length-1].created_at||startedAt;
+    const timeStr=chatClockLabel(startedAt);
+    const unchanged=existing?.entries?.length===mMsgs.length&&existing.entries.every((x,i)=>x.id===mMsgs[i].id&&x.text===(mMsgs[i].sender==='user'?String(mMsgs[i].text??''):cleanMeetingNovelText(mMsgs[i].text)));
+    const retainedAi=aiSummary||(unchanged?existing?.ai_summary:'')||'';
+    const summary=buildMeetingSummaryText(p,c,loc,mMsgs,retainedAi);
     const entries=mMsgs.map(m=>({id:m.id,sender:m.sender,speaker:m.sender==='user'?p.name:c.name,text:m.sender==='user'?String(m.text??''):cleanMeetingNovelText(m.text),created_at:m.created_at}));
     const rec={
       id:meetingId,
@@ -2015,14 +1962,18 @@
       time:timeStr,
       started_at:startedAt,
       ended_at:endedAt,
+      finished_at:actualFinish,
+      duration_ms:Math.max(0,Date.parse(endedAt)-Date.parse(startedAt)),
       summary,
-      ai_summary:aiSummary||existing?.ai_summary||'',
+      ai_summary:retainedAi,
       message_ids:mMsgs.map(m=>m.id),
       entries
     };
     for(const m of mMsgs)m.meeting_id=meetingId;
     if(existing)Object.assign(existing,rec);
     else db.meetings.push(rec);
+    const oldMemory=db.episodicMemories.find(x=>x.owner_id===c.id&&x.profile_id===p.id&&x.source_key==='meeting:'+meetingId);
+    if(oldMemory?.disputed)return rec; // preserve explicit user corrections
     appendEpisodicMemory({
       owner_id:c.id,
       profile_id:p.id,
@@ -2039,6 +1990,8 @@
       meeting_data:rec,
       event_at:endedAt
     });
+    const updated=db.episodicMemories.find(x=>x.owner_id===c.id&&x.profile_id===p.id&&x.source_key==='meeting:'+meetingId);
+    if(updated){updated.raw_msg_ids=rec.message_ids.slice();updated.archive_stale=false;}
     return rec;
   };
   const ensureMeetingRecords=(p,c)=>{
@@ -2291,10 +2244,11 @@
     const status=running?'正在归档':db.connection.archive_enabled===false?'自动归档已关闭':problem?problem:x.job?.status==='failed'?'上次失败：'+x.job.error+'；系统将自动重试':'等待后台自动归档';
     return {id:'pending:'+x.source_key,owner_id:x.owner_id,profile_id:x.profile_id,source_type:'episode-pending',source_key:x.source_key,signature:x.signature,summary:x.previous?'原文已变更，等待自动重新归档':'情节已结束，等待语义归档',tags:[],raw_msg_ids:x.raw_msg_ids,started_at:x.started_at,event_at:x.event_at,created_at:x.event_at,archive_status:status,archive_state:running?'running':x.job?.status||'pending',archive_retry_at:retryAt>Date.now()?new Date(retryAt).toISOString():'',episode:{startedAt:x.started_at,endedAt:x.event_at}};
   };
-  const retrieveRelevantMemories=(pid,cid,queryText='',excludeMsgIds=new Set(),limit=4,maxChars=1200,asOf=0)=>{
+  const retrieveRelevantMemories=(pid,cid,queryText='',excludeMsgIds=new Set(),limit=4,maxChars=1200,asOf=0,discardedIds=null,activeMeetingId='')=>{
     const allItems=db.episodicMemories.filter(x=>x.owner_id===cid&&x.profile_id===pid&&!x.isolated_error&&!x.archive_stale&&(!asOf||(Date.parse(x.event_at)<=asOf&&(x.raw_msg_ids||[]).every(id=>db.messages.some(m=>m.id===id&&Date.parse(m.created_at)<=asOf))))).filter(x=>x.source_type!=='daily-summary'||!db.episodicMemories.some(y=>y.owner_id===cid&&y.profile_id===pid&&y.source_type==='episode-summary'&&!y.archive_stale&&overlapIds(x.raw_msg_ids,y.raw_msg_ids))).sort((a,b)=>b.event_at.localeCompare(a.event_at));
     if(!allItems.length)return [];
-    const byMemId=new Map(allItems.map(x=>[x.id,x]));
+    const blockedMemoryIds=new Set(allItems.filter(x=>(activeMeetingId&&(x.meeting_id===activeMeetingId||x.source_key==='meeting:'+activeMeetingId))||(discardedIds&&[...(x.raw_msg_ids||[]),...(x.meeting_data?.message_ids||[])].some(id=>discardedIds.has(id)))).map(x=>x.id));
+    const byMemId=new Map(allItems.filter(x=>!blockedMemoryIds.has(x.id)).map(x=>[x.id,x]));
     const corrByTarget=new Map();
     for(const x of allItems){
       if(x.source_type==='correction'&&x.clarifies_id){
@@ -2306,6 +2260,7 @@
     const asksPast=['昨天','上次','之前','以前','记得','那天','第一次','上次见','聊过','说过','晒太阳','去过'].some(w=>String(queryText).includes(w));
     const scored=[];
     for(const item of allItems){
+      if(blockedMemoryIds.has(item.id)||blockedMemoryIds.has(item.clarifies_id))continue;
       const rawIds=item.raw_msg_ids||[];
       if(rawIds.length&&((item.source_type==='dialogue'&&rawIds.every(id=>excludeMsgIds.has(id)))||(['daily-summary','episode-summary'].includes(item.source_type)&&rawIds.some(id=>excludeMsgIds.has(id)))))continue;
       if(item.disputed&&!corrByTarget.has(item.id)&&!qTerms.size)continue;
@@ -2506,6 +2461,17 @@
     const mapped=norm(aliasMap[nq]||q);
     return Array.from(byId.values()).filter(c=>(!source||c.source===source||c.version===source||sourceMatches(source,c))&&[c.name,...c.aliases].some(a=>a.toLowerCase()===q||a.toLowerCase().split(/\s+/).includes(q)||norm(a)===nq||norm(a)===mapped||(nq.length>=2&&norm(a).includes(nq)))).slice(0,20).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,age:c.age,canon:c.canon,identity_origin:c.identity_origin||'curated'}));
   };
+  function meetingClockContext(rel,history,now=Date.now(),rerollAt=0){
+    const first=history[0]?.created_at;
+    const startRaw=Date.parse(rel?.meeting_started_at||first||''),start=Number.isFinite(startRaw)?Math.min(startRaw,now):now;
+    const anchor=rerollAt?Math.max(start,Math.min(now,rerollAt)):now;
+    const elapsed=Math.max(0,Math.floor((anchor-start)/1000));
+    const last=history.at(-1),lastAt=Date.parse(last?.created_at||'');
+    const gap=Number.isFinite(lastAt)?Math.max(0,Math.floor((anchor-lastAt)/1000)):0;
+    const zone=-new Date(now).getTimezoneOffset(),abs=Math.abs(zone);
+    const offset='UTC'+(zone>=0?'+':'-')+String(Math.floor(abs/60)).padStart(2,'0')+':'+String(abs%60).padStart(2,'0');
+    return '【面对面现实时间规则 · 强制 1:1】应用本地现实时间：'+chatClockLabel(now)+'（'+offset+'）；本次见面实际开始：'+chatClockLabel(start)+'；本幕时间：'+chatClockLabel(anchor)+'；本幕距见面开始 '+elapsed+' 秒（约 '+Math.floor(elapsed/60)+' 分钟），距上一条现场记录 '+gap+' 秒。'+(rerollAt?'本次是对同一幕的替代版本，以原先本幕时间为锚点。不得续写、记得或承认已弃用版本。真实见面计时没有暂停或重置，下一轮按当时现实时间继续。':'现实经过几秒，见面就经过几秒；不要因生成一段长正文就推进数分钟或数小时。')+' 现实日期只用于互动计时，原作年份、年龄及科技保持不变。禁止擅自跳时、跳日、突然结束约会或把未发生的事情写成既成事实。间隔较长时只承接已确认现场状态与真实流逝，不擅自替双方补写这段期间的行动。描写应收束在自然回应点；不必机械报时，不在正文中输出时间元数据。';
+  }
   const prompt=(p,c,mode,pendingIds=[],options={})=>{
     const macros=t=>expandPresetMacros(t,p,c);
     const excludeSet=options.excludeMessageIds?new Set(options.excludeMessageIds):null;
@@ -2519,7 +2485,8 @@
       ||workingHistory.slice(-3).filter(m=>m.sender==='user').map(m=>String(m.text??'').trim()).join(' ')
       ||workingHistory.slice(-2).map(m=>m.sender==='user'?String(m.text??'').trim():cleanChatBubbleText(m.text)).join(' ')
       ||preChatContext.slice(-2).map(m=>m.sender==='user'?String(m.text??'').trim():cleanChatBubbleText(m.text)).join(' ');
-    const recalled=retrieveRelevantMemories(p.id,c.id,querySeed,workingIds,4,1200,options.simulatedAt||0);
+    const activeMid=mode==='meeting'?(relation(p.id,c.id)?.active_meeting_id||''):'';
+    const recalled=retrieveRelevantMemories(p.id,c.id,querySeed,workingIds,4,1200,options.simulatedAt||0,excludeSet,activeMid);
     const relSummary=relationshipBaselineSummary(p.id,c.id,p.name);
     const interestsStr=(p.interests||[]).join('、')||'未填写';
     const intentStr=p.intent||'未填写';
@@ -2601,6 +2568,7 @@
         };
       chat.push(...priorHistory);
       const postSystemParts=postPresets.filter(x=>x.role==='system').map(x=>macros(x.content));
+      postSystemParts.push(meetingClockContext(relation(p.id,c.id),workingHistory,Date.now(),options.rerollAt||0));
       postSystemParts.push(`【第四层 · 当前状态 (Current State)】当前见面地点：「${meetingLoc}」。请严格按照上方已启用的预设模块规则（含文风、视角、去油腻、连续性及正文篇幅要求）输出面对面小说正文；只决定 ${c.name} 自己与环境中合理的事，不要替 ${p.name} 说话、行动或决定心理，不要在正文开头添加任何时间或模式标签。`);
       chat.push({role:'system',content:postSystemParts.join('\n\n')});
       for(const x of postPresets){
@@ -3065,7 +3033,7 @@
         });
       }
     }
-    const replyContent=mode==='chat'?guardChatReasoning(rawTrimmed):rawTrimmed;
+    const replyContent=(mode==='chat'||mode==='meeting')?guardChatReasoning(rawTrimmed):rawTrimmed;
     if(replyContent===null){
       throwApiError({
         error_code:'REASONING_LEAK',
@@ -3082,7 +3050,7 @@
     const parsedPreview=mode==='meeting'
       ?cleanMeetingNovelText(replyContent)
       :(mode==='chat'?splitChatBubbles(replyContent).join('\n'):replyContent);
-    if((mode==='chat'||mode==='meeting')&&!parsedPreview.trim()){
+    if((mode==='chat'||mode==='meeting')&&(!parsedPreview.trim()||(mode==='meeting'&&/^[\s.…。]+$/.test(parsedPreview)))){
       throwApiError({
         error_code:'EMPTY_PARSED_CONTENT',
         http_status:res.status||200,
@@ -3241,6 +3209,7 @@
     return past<3?'嗯，我在。|||你想先从什么聊起？':['这点倒是挺有意思。|||不过……你为什么会突然这么想？','等一下。|||我刚忙完手头的事，现在空下来了。|||你刚刚说的那个，我其实一直记得。','我可能需要想一想再回答你。','真的？|||你有时候真的会让我意外。|||那下次见面的时候，当面跟我细说吧。'][past%4];
   };
   async function produceReply(p,c,mode,userMsg=null,entryPoint='',retryOpts={}){
+    if(mode==='meeting'&&meetingRerolls.has(pairKey(p.id,c.id)))return {reply:null,replies:[],warning:'正在重 Roll 当前一幕，请等待本次结果。'};
     const curMode=pub().mode;
     if(curMode==='normal'){
       return {reply:null,replies:[],warning:'当前处于正常模式且尚未连接 API，请先在「终端」配置 API 后再试。'};
@@ -3342,6 +3311,7 @@
     if(reply){
       const combinedTxt=replies.map(m=>m.text).join(' / ');
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180));
+      if(mode==='meeting')db.events.at(-1).message_id=reply.id;
       const uList=userMsg?[userMsg]:messagesOf(p.id,c.id).filter(m=>m.sender==='user').slice(-1);
       recordDialogueEpisode(p,c,uList,{...reply,text:combinedTxt},mode);
       if(mode==='chat')syncSurveillanceFromChat(p,c,uList,combinedTxt);
@@ -3466,6 +3436,61 @@
     return {replies,reply:lastReply,engine};
   }
   const requireMatch=(pid,cid)=>{const r=relation(pid,cid);if(!r||r.status!=='matched')bodyErr('当前没有匹配关系');return r};
+  async function regenerateMeeting(p,c,r,messageId,location=''){
+    const key=pairKey(p.id,c.id),mid=r.active_meeting_id||'';
+    if(!mid)bodyErr('当前没有有效的见面会话');
+    if(meetingRerolls.has(key)||getTaskState(p.id,c.id,'meeting')?.status==='inflight')bodyErr('当前一幕正在生成，请勿重复请求');
+    if(getTaskState(p.id,c.id,'meeting')?.status==='paused')bodyErr('先处理当前暂停的生成任务，再重 Roll 上一幕');
+    const rows=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid&&!m.recalled&&m.engine!=='recalled');
+    const old=rows.at(-1);
+    if(!old||old.sender!=='ai'||(messageId&&old.id!==messageId))bodyErr('只可重 Roll 当前见面的最后一段角色正文');
+    if(pub().mode==='normal')bodyErr('未连接可用模型，原正文已保留');
+    const before=episodeSignature(rows),oldAt=Date.parse(old.created_at),anchor=Number.isFinite(oldAt)?oldAt:Date.now();
+    const controller=typeof AbortController==='function'?new AbortController():null;
+    const roll={controller,token:uid()};meetingRerolls.set(key,roll);
+    let timer,raw='',engine='demo';
+    try{
+      if(controller&&typeof setTimeout==='function')timer=setTimeout(()=>controller.abort(),120000);
+      if(pub().mode==='live'){
+        const ms=prompt(p,c,'meeting',[],{entry_point:'meeting_reroll',excludeMessageIds:[old.id],rerollAt:anchor});
+        // Leave the user's original final turn and all preset roles in their original positions.
+        raw=await llm(ms,{profile:p,character:c,mode:'meeting',entry_point:'meeting_reroll',task_id:'task_'+roll.token,signal:controller?.signal,reject_truncated:true});
+        engine='live';
+      }else raw=demo(p,c,'meeting');
+      const body=cleanMeetingNovelText(raw);
+      if(!body||/^[\s.…。]+$/.test(body))throw Error('未返回有效正文');
+      const live=relation(p.id,c.id),current=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid&&!m.recalled&&m.engine!=='recalled');
+      if(meetingRerolls.get(key)!==roll||live?.status!=='matched'||live.mode!=='meeting'||live.active_meeting_id!==mid||episodeSignature(current)!==before||!archiveStoredCurrent()){
+        return {ok:false,removedIds:[],replies:[],reply:null,warning:'见面状态或原文已变化，已丢弃迟到的重 Roll 结果。'};
+      }
+      // Atomic replacement: do not remove the old scene until a complete alternative
+      // has arrived, passed checks, and the original source is still current.
+      const snapshot=JSON.stringify(db),id=uid();
+      try{
+        const replacement={...old,id,text:body,engine,created_at:old.created_at,rerolled_at:stamp(),reroll_count:(Number(old.reroll_count)||0)+1};
+        const index=db.messages.findIndex(m=>m.id===old.id&&m.profile_id===p.id&&m.character_id===c.id);
+        if(index<0)throw Error('原文不存在');
+        db.messages[index]=replacement;invalidateTranslation(old.id);
+        const invalid=new Set();
+        for(const mem of db.episodicMemories){
+          if(mem.profile_id!==p.id||mem.owner_id!==c.id)continue;
+          if([...(mem.raw_msg_ids||[]),...(mem.meeting_data?.message_ids||[])].includes(old.id)){
+            mem.archive_stale=true;invalid.add(mem.id);
+          }
+        }
+        for(const mem of db.episodicMemories)if(mem.profile_id===p.id&&mem.owner_id===c.id&&invalid.has(mem.clarifies_id))mem.archive_stale=true;
+        db.events=db.events.filter(e=>!(e.profile_id===p.id&&e.character_id===c.id&&e.type==='ai_message'&&(e.message_id===old.id||(!e.message_id&&e.summary===c.name+' 回应 '+p.name+'：'+old.text.slice(0,180)&&Math.abs(Date.parse(e.created_at)-anchor)<10000))));
+        event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+body.slice(0,180),anchor);db.events.at(-1).message_id=id;
+        const oldDiary=db.diaries[key]?.byDate?.[localDateStr(anchor)];if(oldDiary)oldDiary.stale_after_recovery=true;
+        if(typeof location==='string'&&location.trim())live.meeting_location=location.trim().slice(0,40);
+        const updated=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid);
+        upsertMeetingRecord(p,c,mid,updated,live.meeting_location||'');
+        episodeList(p,c);live.updated_at=stamp();save();
+        return {ok:true,removedIds:[old.id],replies:[replacement],reply:replacement,warning:'',apiError:null};
+      }catch(error){db=JSON.parse(snapshot);throw error;}
+    }catch(e){return {ok:false,removedIds:[],replies:[],reply:null,warning:'重 Roll 未完成，原正文已保留。'+String(e.message||e),apiError:e.apiError||null};}
+    finally{if(timer&&typeof clearTimeout==='function')clearTimeout(timer);if(meetingRerolls.get(key)===roll)meetingRerolls.delete(key);}
+  }
   async function request(path,data){
     const [route,qs='']=path.split('?'), params=new URLSearchParams(qs);data=data||{};
     switch(route){
@@ -3784,7 +3809,7 @@
             return await produceReply(p,c,'chat',lastUser,curTs?.task_type||'chat_continue',{retryOfTaskId:curTs?.id||''});
           }
           const ep=curTs?.task_type||'meeting_continue';
-          const lastUserMsg=ep==='meeting_opening'?null:(messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.sender==='user').slice(-1)[0]||null);
+          const lastUserMsg=ep==='meeting_opening'?null:(messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===r?.active_meeting_id&&m.sender==='user').slice(-1)[0]||null);
           const res=await produceReply(p,c,'meeting',lastUserMsg,ep,{retryOfTaskId:curTs?.id||''});
           if(r?.active_meeting_id&&res.reply){
             const mMsgs=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===r.active_meeting_id);
@@ -3939,6 +3964,7 @@
             r.updated_at=stamp();
             syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
             event(p.id,c.id,'meeting','与 '+p.name+' 开始面对面见面');
+            save(); // the real start survives a failed or interrupted opening
             if(data.triggerOpening===true&&pub().mode!=='normal'){
               const res=await produceReply(p,c,'meeting',null,'meeting_opening');
               openingReply=res.reply;
@@ -3949,7 +3975,7 @@
               meetingRecord=upsertMeetingRecord(p,c,r.active_meeting_id,mMsgs,r.meeting_location);
             }
           }else{
-            const activeMid=r.active_meeting_id||'';
+            const activeMid=r.active_meeting_id||'',finishedAt=stamp();
             const allMsgs=messagesOf(p.id,c.id);
             let mMsgs=activeMid?allMsgs.filter(x=>x.mode==='meeting'&&x.meeting_id===activeMid):[];
             if(!activeMid&&!mMsgs.length){
@@ -3975,14 +4001,15 @@
                   recordBgError(p.id,c.id,'meeting_finalize',e.apiError||{message:String(e.message||e)});
                 }
               }
-              meetingRecord=upsertMeetingRecord(p,c,mid,mMsgs,aiLoc,aiSum);
+              meetingRecord=upsertMeetingRecord(p,c,mid,mMsgs,aiLoc,aiSum,finishedAt);
               if(meetingRecord)syncSurveillanceOnMeetingEnd(p,c,meetingRecord);
             }
             r.mode='chat';
             r.active_meeting_id='';
-            r.updated_at=stamp();
+            r.meeting_started_at='';
+            r.updated_at=finishedAt;
             clearTaskState(p.id,c.id,'meeting');
-            event(p.id,c.id,'return','与 '+p.name+' 返回手机聊天');
+            event(p.id,c.id,'return','与 '+p.name+' 返回手机聊天',Date.parse(finishedAt));
           }
         }else if(m==='meeting'&&r.active_meeting_id){
           if(locInput)syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
@@ -4049,7 +4076,8 @@
       }
       case '/message-regenerate':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id);
-        if(r.mode!=='chat')bodyErr('仅支持在手机聊天模式重新生成');
+        if(r.mode==='meeting')return regenerateMeeting(p,c,r,String(data.messageId||'').trim(),data.location);
+        if(r.mode!=='chat')bodyErr('当前模式不支持重新生成');
         const threadMsgs=messagesOf(p.id,c.id).filter(m=>!isChatArtifact(m));
         const trailingAi=[];
         for(let i=threadMsgs.length-1;i>=0;i--){
@@ -4306,6 +4334,8 @@
       }
       case '/message':case '/reply':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id),mode=r.mode;
+        if(mode==='meeting'&&meetingRerolls.has(pairKey(p.id,c.id)))bodyErr('正在重 Roll，请等待当前一幕完成');
+        if(mode==='meeting'&&typeof data.location==='string'&&data.location.trim())r.meeting_location=data.location.trim().slice(0,40);
         let user=null;
         if(route==='/message'){
           const txt=String(data.text||'').trim();if(!txt||txt.length>4000)bodyErr('消息长度需在 1–4000 字之间');

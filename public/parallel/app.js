@@ -534,6 +534,7 @@ async function loadThread(cid,render=true){
   state.chatMode=r.relation.mode;
   state.hotChat=Boolean(r.relation.hot_chat||r.queue?.hotChat);
   state.activeMeetingId=r.relation.active_meeting_id||'';
+  state.meetingStartedAt=r.relation.meeting_started_at||'';
   state.meetingLocation=r.relation.meeting_location||'';
   state.queue=r.queue||{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paused:false,paceMode:state.hotChat?'hot':'daily',hotChat:state.hotChat};
   state.taskState=r.taskState||r.queue?.taskState||null;
@@ -775,6 +776,13 @@ async function openChatPhoto(mid){
     modal('<h2>照片</h2><img src="'+esc(data)+'" alt="真实照片" style="max-width:100%;max-height:70vh;object-fit:contain;border-radius:12px;">','<button class="btn primary" data-action="close-modal">关闭</button>');
   }catch(e){toast(e.message);}
 }
+function meetingClockText(){
+  const now=Date.now(),start=Date.parse(state.meetingStartedAt||'');
+  const elapsed=Number.isFinite(start)?Math.max(0,Math.floor((now-start)/1000)):0;
+  const h=Math.floor(elapsed/3600),m=Math.floor(elapsed%3600/60),sec=elapsed%60;
+  return '实时 1:1 · 已见面 '+(h?h+'时 ':'')+m+'分 '+String(sec).padStart(2,'0')+'秒';
+}
+setInterval(()=>{if(state.chatMode==='meeting'){const el=$('meeting-real-clock');if(el)el.textContent=meetingClockText();}},1000);
 function renderChatMessagesHtml(c){
   const pendingSet=new Set(state.queue?.pendingIds||[]);
   const charTyping=isCharacterTyping();
@@ -792,14 +800,17 @@ function renderChatMessagesHtml(c){
       }
     }
     const locVal=state.meetingLocation||(sessionMsgs.length?findOrBuildMeetingRecord(sessionMsgs,c).location:'约定的街角咖啡馆');
+    const finalTurn=sessionMsgs.filter(m=>m.id!=='typing').at(-1);
     const turnsHtml=sessionMsgs.filter(m=>m.id!=='typing').map((m,idx)=>{
       const isUser=m.sender==='user';
-      return `<article class="novel-turn ${isUser?'novel-user':'novel-ai'}">
+      const canRoll=!isUser&&m===finalTurn&&m.id&&m.id!=='pending'&&!m.recalled&&m.engine!=='recalled'&&!charTyping&&!state.chatBusy&&!state.flushBusy&&!isCurrentThreadPaused();
+      return `<article class="novel-turn ${isUser?'novel-user':'novel-ai'}" data-message-id="${esc(m.id||'')}">
         <header class="novel-turn-head">
           <span class="novel-speaker">${isUser?`${esc(pName)} · 你的行动与台词`:`${esc(c.name)} · 现场描写`}</span>
           <span class="novel-turn-meta">#${idx+1} · ${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示':''}</span>
         </header>
         <div class="novel-prose">${formatNovelParagraphs(m.text,m.sender)}</div>
+        ${canRoll?`<div class="chat-time"><button type="button" class="msg-action-btn" data-action="regenerate-message" data-id="${esc(m.id)}" title="保留原文，重新生成同一幕">${I('refresh')} 重 Roll</button>${m.reroll_count?`<span>已重 Roll ${m.reroll_count} 次</span>`:''}</div>`:''}
       </article>`;
     }).join('');
     const emptyNovelHtml=(!turnsHtml&&!charTyping)?`<div class="novel-empty-card">
@@ -816,7 +827,7 @@ function renderChatMessagesHtml(c){
           <span>见面地点</span>
           <input id="meeting-location-input" class="meeting-loc-input" type="text" maxlength="36" value="${esc(locVal)}" placeholder="如：街角咖啡馆门口" title="可随时修改本次见面地点，结束见面后将写入见面卡片">
         </div>
-        <span class="meeting-stage-hint">文字小说模式 · 点击右上角「结束见面」将归档为见面卡片</span>
+        <span class="meeting-stage-hint" id="meeting-real-clock">${esc(meetingClockText())}</span>
       </div>
       <div class="meeting-novel-pages">
         ${emptyNovelHtml}
@@ -1701,7 +1712,7 @@ async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
   if(mode==='meeting'&&!wasPaused)state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:now,engine:'human'});
   renderMessages();
   try{
-    const r=await api('/message',{profileId,characterId:id,text:txt});
+    const r=await api('/message',{profileId,characterId:id,text:txt,...(mode==='meeting'?{location:state.meetingLocation}: {})});
     if(isCurrentPair(profileId,id)&&hasCurrentThreadSnapshot()){
       if(r.queue)state.queue=r.queue;
       if(r.taskState)state.taskState=r.taskState;
@@ -1725,7 +1736,7 @@ async function continueReply(){if(state.chatBusy||state.flushBusy||state.queue?.
   if(state.chatMode==='chat'&&state.queue?.count){return flushChat(true)}
   state.chatBusy=true;const id=state.threadId,profileId=state.activeId,mode=state.chatMode;state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:new Date().toISOString(),engine:'human'});renderMessages();
   try{
-    const r=await api('/reply',{profileId,characterId:id});
+    const r=await api('/reply',{profileId,characterId:id,...(mode==='meeting'?{location:state.meetingLocation}: {})});
     if(isCurrentPair(profileId,id)&&hasCurrentThreadSnapshot()&&r.taskState)state.taskState=r.taskState;
     if(r.apiError){
       state.chatBusy=false;
@@ -1784,14 +1795,15 @@ async function submitEditMessage(mid){
 }
 async function regenerateMessage(mid){
   if(!state.threadId||!state.activeId||state.chatBusy||state.flushBusy||state.revealingBubbles)return;
-  const id=state.threadId,profileId=state.activeId;
+  const id=state.threadId,profileId=state.activeId,mode=state.chatMode;
   state.chatBusy=true;
   renderMessages();
   try{
-    const r=await api('/message-regenerate',{profileId,characterId:id,messageId:mid});
+    const r=await api('/message-regenerate',{profileId,characterId:id,messageId:mid,...(mode==='meeting'?{location:state.meetingLocation}: {})});
     state.chatBusy=false;
     if(r.apiError){
-      showApiErrorModal(r.apiError,null,{type:'reply',profileId,characterId:id,mode:'chat'});
+      if(mode==='meeting'){toast(r.warning||'重 Roll 失败，原文已保留。');}
+      else showApiErrorModal(r.apiError,null,{type:'reply',profileId,characterId:id,mode:'chat'});
       renderMessages();
       return;
     }
@@ -1809,7 +1821,7 @@ async function regenerateMessage(mid){
     }else if(state.activeId===profileId&&state.threadId===id&&state.tab==='messages'){
       await loadThreads(id);
     }
-    if(r.ok)toast('已重新生成回复');
+    if(r.ok)toast(mode==='meeting'?'已替换为新的现场描写':'已重新生成回复');
   }catch(e){
     state.chatBusy=false;
     toast('重新生成失败：'+e.message);
