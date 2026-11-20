@@ -560,12 +560,67 @@
     if(heading.test(text))return null;
     return text;
   };
+  // Chat photo descriptions are text metadata; the UI image is never model input.
+  const parseChatPhoto=raw=>{
+    const m=String(raw??'').trim().match(/^\[\[PHOTO:\s*([^\r\n]+?)\]\]$/);
+    const d=m?.[1]?.trim();
+    return d&&d.length<=2000&&!d.includes('[[')&&!d.includes(']]')&&!/\|{2,}/.test(d)?d:'';
+  };
+  const photoDescriptionText=(sender,description)=>'['+(sender==='user'?'对方':'你')+'发送了一张照片：'+description+']';
+  const isGalleryImage=v=>typeof v==='string'&&v.length<=1500000&&/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(v);
+  let photoDbPromise;
+  const openChatPhotoDb=()=>{
+    if(typeof indexedDB==='undefined')return Promise.reject(Error('浏览器不支持独立照片存储'));
+    if(!photoDbPromise)photoDbPromise=new Promise((resolve,reject)=>{
+      const req=indexedDB.open('parallel-chat-photos-v1',1);
+      req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains('photos'))req.result.createObjectStore('photos');};
+      req.onsuccess=()=>resolve(req.result);
+      req.onerror=()=>reject(Error('无法打开本地照片库'));
+      req.onblocked=()=>reject(Error('本地照片库被占用'));
+    }).catch(e=>{photoDbPromise=null;throw e;});
+    return photoDbPromise;
+  };
+  const saveChatPhotoBatch=async rows=>{
+    const store=await openChatPhotoDb();
+    await new Promise((resolve,reject)=>{
+      const tx=store.transaction('photos','readwrite'),os=tx.objectStore('photos');
+      for(const row of rows)os.put(row.data,row.ref);
+      tx.oncomplete=()=>resolve();
+      tx.onabort=tx.onerror=()=>reject(Error('照片保存失败，可能是浏览器空间不足'));
+    });
+  };
+  const readChatPhoto=async ref=>{
+    const store=await openChatPhotoDb();
+    return new Promise((resolve,reject)=>{
+      const req=store.transaction('photos','readonly').objectStore('photos').get(ref);
+      req.onsuccess=()=>isGalleryImage(req.result)?resolve(req.result):reject(Error('本地照片文件不存在或已损坏'));
+      req.onerror=()=>reject(Error('读取本地照片失败'));
+    });
+  };
+  const removeChatPhotos=async refs=>{
+    if(!refs.length)return;
+    const store=await openChatPhotoDb();
+    await new Promise((resolve,reject)=>{
+      const tx=store.transaction('photos','readwrite');
+      for(const ref of refs)tx.objectStore('photos').delete(ref);
+      tx.oncomplete=()=>resolve();tx.onerror=tx.onabort=()=>reject(Error('清理本地照片失败'));
+    });
+  };
+  const resolveChatPhotoInput=async(messages,read=readChatPhoto)=>Promise.all(messages.map(async m=>{
+    if(!m.photo_ref)return m;
+    const {photo_ref,...plain}=m;
+    if(plain.role!=='user')throw Error('无效的照片来源');
+    const url=await read(photo_ref);
+    if(!isGalleryImage(url))throw Error('本地照片格式无效');
+    return {...plain,content:[{type:'text',text:plain.content},{type:'image_url',image_url:{url}}]};
+  }));
+  const maskPhotoInput=payload=>({...payload,messages:payload.messages.map(m=>Array.isArray(m.content)?{...m,content:m.content.map(part=>part.type==='image_url'?{type:'image_url',image_url:{url:'[LOCAL PHOTO REDACTED]'}}:part)}:m)});
   const splitChatBubbles=raw=>{
     const rawStr=String(raw||'').trim();
     if(!rawStr)return ['…'];
     let parts=explicitChatParts(rawStr);
     if(!parts.length&&(isBareChatDivider(rawStr.replace(PROTOCOL_LEADING_TAG_RE,''))||isNarrationMarker(cleanChatBubbleText(rawStr))))return [];
-    if(parts.length===1&&parts[0].length>=120){
+    if(parts.length===1&&parts[0].length>=120&&!parseChatPhoto(parts[0])){
       const sentences=parts[0].match(/[^。！？!?]+[。！？!?]+|[^。！？!?]+$/g)?.map(s=>cleanChatBubbleText(s)).filter(Boolean)||[parts[0]];
       if(sentences.length>=2){
         parts=[];
@@ -2303,10 +2358,12 @@
   };
   const write=(pid,cid,sender,mode,text,engine='human',at=0)=>{
     const r=relation(pid,cid);
-    const cleanTxt=(sender==='ai'&&engine!=='error'&&engine!=='recalled')
+    const photoDescription=sender==='ai'&&mode==='chat'&&engine==='live'?parseChatPhoto(text):'';
+    const cleanTxt=photoDescription?photoDescriptionText(sender,photoDescription):(sender==='ai'&&engine!=='error'&&engine!=='recalled')
       ?(mode==='meeting'?cleanMeetingNovelText(text):(cleanChatBubbleText(text)||'…'))
       :String(text??'');
     const m={id:uid(),profile_id:pid,character_id:cid,sender,mode,text:cleanTxt,engine,meeting_id:mode==='meeting'?(r?.active_meeting_id||''):'',created_at:at?new Date(at).toISOString():stamp(),...(at?{generated_at:stamp()}: {})};
+    if(photoDescription){m.photo_kind='virtual';m.photo_description=photoDescription;}
     // A user can send another message while historical recovery is generating.
     // Insert recovered bubbles at their original chronological position in this pair.
     const later=at?db.messages.findIndex(row=>row.profile_id===pid&&row.character_id===cid&&Date.parse(row.created_at)>at):-1;
@@ -2440,7 +2497,8 @@
       const who=m.sender==='ai'?c.name:p.name;
       timelineLines.push(`#${idx+1} ${tTag}（${mLabel}·${who}）`);
       const cleanBody=m.sender==='user'?String(m.text??''):(m.mode==='meeting'?cleanMeetingNovelText(m.text):(cleanChatBubbleText(m.text)||'…'));
-      historyTurns.push({role,content:cleanBody});
+      const useVision=mode==='chat'&&m.sender==='user'&&m.photo_kind==='gallery'&&m.photo_ref&&(protectedIds.includes(m.id)||(!protectedIds.length&&workingHistory.slice(idx+1).every(x=>x.sender==='user')));
+      historyTurns.push({role,content:cleanBody,...(useVision?{photo_ref:m.photo_ref}:{})});
     });
     if(timelineLines.length){
       sys+=`\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n`+timelineLines.join(' ｜ ');
@@ -2493,6 +2551,7 @@
     const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「${curSurv.location}」·「${curSurv.activity}」。${isSleepingSlot(curSurv)?'原日程为睡眠，但你正在阅读并准备发送手机消息，应视作已暂时醒来；不要声称自己仍在熟睡。':''}实际互动优先于预设日程，不必主动汇报行踪或生硬解释日程。`:'';
     const langHint='\n'+buildCharacterLanguageDirective(db.connection?.character_language_pref||'natural',db.connection?.character_language_custom||'');
     sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+chatClockContext(workingHistory,options.simulatedAt||Date.now())+survHint+batchHint+langHint;
+    sys+='\n【照片消息】可以在自然合适的时候自主发送虚拟照片，也可以回应对方索要照片。每张照片必须单独占一个气泡，格式严格为 [[PHOTO: 一段镜头内可见的照片描写]]，其中不能包含换行或 |||；普通短信仍按原有格式回复，最多四个气泡。不要把文字说明或分析当成照片，不需要每轮发图。对方照片描写或视觉输入仅作为对方实际发送的照片内容。';
     const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)})),...historyTurns];
     return chat;
   };
@@ -2654,7 +2713,7 @@
     const cObj=options.character||null;
     const entryPoint=options.entry_point||mode;
     const reqMaxTokens=resolveTaskMaxTokens(db.connection,mode,entryPoint,options.max_tokens);
-    const payload={model:s.model,messages,temperature:options.temperature??s.temperature,top_p:s.top_p,max_tokens:reqMaxTokens};
+    const payload={model:s.model,messages:await resolveChatPhotoInput(messages),temperature:options.temperature??s.temperature,top_p:s.top_p,max_tokens:reqMaxTokens};
     if(options.json_mode)payload.response_format={type:'json_object'};
     const presetMode=(mode==='meeting'||mode==='chat')?mode:null;
     const modePresets=presetMode?(db.presets||[]).filter(x=>x.mode===presetMode).sort((a,b)=>a.sort_order-b.sort_order):[];
@@ -2731,7 +2790,7 @@
       active_presets:activePresetsSummary,
       disabled_presets:disabledPresets.map(x=>({id:x.id,name:x.name,group:inferPresetGroup(x),role:x.role})),
       simulated_reply_at:options.simulatedAt?new Date(options.simulatedAt).toISOString():'',
-      request_payload:JSON.parse(JSON.stringify(payload))
+      request_payload:JSON.parse(JSON.stringify(maskPhotoInput(payload)))
     };
     let res;
     try{
@@ -3826,6 +3885,8 @@
         if(!mid)bodyErr('缺少消息 ID');
         const targetMsg=db.messages.find(m=>m.id===mid&&m.profile_id===p.id&&m.character_id===c.id);
         if(targetMsg){
+          const photoRef=targetMsg.photo_ref;
+          delete targetMsg.photo_ref;delete targetMsg.photo_kind;delete targetMsg.photo_description;
           targetMsg.text='[系统提示：对方撤回了一条消息（你没有看清具体内容）]';
           targetMsg.engine='recalled';
           targetMsg.recalled=true;
@@ -3837,6 +3898,8 @@
             }
           }
           event(p.id,c.id,'message_recalled',p.name+' 撤回了一条消息');
+          // Keep bytes until the recall metadata has been committed.
+          if(photoRef){save();void removeChatPhotos([photoRef]).catch(()=>{});}
         }
         const q=db.queue[pairKey(p.id,c.id)];
         if(q){q.pending=q.pending.filter(x=>x!==mid);if(!q.pending.length)q.dueAt=0;}
@@ -3853,7 +3916,11 @@
         if(!targetMsg)bodyErr('消息不存在');
         if(targetMsg.recalled||targetMsg.engine==='recalled')bodyErr('已撤回的消息无法编辑');
         if(targetMsg.mode!=='chat')bodyErr('仅支持编辑手机聊天消息');
-        targetMsg.text=targetMsg.sender==='ai'?(cleanChatBubbleText(rawTxt)||rawTxt):rawTxt;
+        if(targetMsg.photo_kind==='gallery')bodyErr('真实照片不能编辑，请撤回后重新发送');
+        if(targetMsg.photo_kind==='virtual'){
+          if(rawTxt.length>2000)bodyErr('照片描写最多 2000 字');
+          targetMsg.photo_description=rawTxt;targetMsg.text=photoDescriptionText(targetMsg.sender,rawTxt);
+        }else targetMsg.text=targetMsg.sender==='ai'?(cleanChatBubbleText(rawTxt)||rawTxt):rawTxt;
         targetMsg.edited_at=stamp();
         invalidateTranslation(mid);
         save();
@@ -3921,7 +3988,7 @@
         const threadMsgs=messagesOf(p.id,c.id);
         const reqIdSet=Array.isArray(data.messageIds)&&data.messageIds.length?new Set(data.messageIds.map(x=>String(x))):null;
         const targetMsgs=threadMsgs.filter(m=>{
-          if(!m||m.sender!=='ai'||m.mode!=='chat'||m.recalled||m.engine==='recalled'||m.engine==='error'||m.isolated_error||isChatArtifact(m))return false;
+          if(!m||m.sender!=='ai'||m.mode!=='chat'||m.photo_kind||m.recalled||m.engine==='recalled'||m.engine==='error'||m.isolated_error||isChatArtifact(m))return false;
           if(reqIdSet&&!reqIdSet.has(m.id))return false;
           return true;
         });
@@ -4065,6 +4132,56 @@
           save();
           return {ok:false,calledApi:true,engine:'live',translations:getMatchedTranslationsForThread(p.id,c.id,threadMsgs),translatedIds:[],cachedIds,skippedIds,failedIds,apiError:apiErr};
         }
+      }
+      case '/chat-photos':{
+        const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id);
+        if(r.mode!=='chat')bodyErr('照片只能在手机聊天模式发送');
+        const items=data.items;
+        if(!Array.isArray(items)||!items.length||items.length>12)bodyErr('每次请选择 1–12 张照片');
+        const prepared=items.map(item=>{
+          if(item?.kind==='virtual'){
+            const description=String(item.description||'').trim();
+            if(!description||description.length>2000)bodyErr('照片描写需在 1–2000 字之间');
+            return {kind:'virtual',description};
+          }
+          if(item?.kind==='gallery'&&isGalleryImage(item.data)){
+            if(pub().mode!=='live')bodyErr('真实照片需要已连接的聊天视觉模型');
+            return {kind:'gallery',ref:uid(),data:item.data};
+          }
+          bodyErr('照片格式无效');
+        });
+        const photos=prepared.filter(x=>x.kind==='gallery');
+        if(photos.length)await saveChatPhotoBatch(photos);
+        if(relation(p.id,c.id)!==r||r.status!=='matched'||r.mode!=='chat'){
+          await removeChatPhotos(photos.map(x=>x.ref)).catch(()=>{});bodyErr('当前会话已改变，未发送照片');
+        }
+        const snapshot=JSON.stringify(db);
+        try{
+          const users=[];
+          for(const item of prepared){
+            const txt=item.kind==='virtual'?photoDescriptionText('user',item.description):'[对方发送了一张真实照片]';
+            const m=write(p.id,c.id,'user','chat',txt);
+            m.photo_kind=item.kind;
+            if(item.kind==='virtual')m.photo_description=item.description;else m.photo_ref=item.ref;
+            event(p.id,c.id,'user_message','与 '+p.name+' 的聊天：'+txt.slice(0,180));
+            enqueue(p.id,c.id,m.id,txt);
+            users.push(m);
+          }
+          save();
+          const queue=queueInfo(p.id,c.id);
+          return {users,queue,queued:true,paused:Boolean(queue.paused),taskState:getTaskState(p.id,c.id,'chat')};
+        }catch(e){
+          db=JSON.parse(snapshot);
+          await removeChatPhotos(photos.map(x=>x.ref)).catch(()=>{});
+          throw e;
+        }
+      }
+      case '/chat-photo-read':{
+        const p=getP(data.profileId),c=getC(data.characterId);
+        requireMatch(p.id,c.id);
+        const m=messagesOf(p.id,c.id).find(x=>x.id===data.messageId&&x.photo_kind==='gallery'&&x.photo_ref&&x.engine!=='recalled'&&!x.recalled);
+        if(!m)bodyErr('照片不存在或已撤回');
+        return {data:await readChatPhoto(m.photo_ref)};
       }
       case '/message':case '/reply':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id),mode=r.mode;
@@ -4252,6 +4369,7 @@
     cleanMeetingNovelText,
     splitChatBubbles,
     guardChatReasoning,
+    parseChatPhoto, resolveChatPhotoInput, maskPhotoInput,
     sanitizeStoredData,
     diagnosePresets,
     getTaskState,
