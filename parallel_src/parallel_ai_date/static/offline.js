@@ -3199,8 +3199,9 @@
     // Two in flight at most; a proxy hiccup must not cancel other batches.
     await Promise.all([worker(),worker()]);
     const allowed=new Set(eligible.map(c=>c.id)),batchIds=new Set(),batchKeys=new Set(),selected=[],failed=[];
-    let new_count=0;
+    let new_count=0,generated_count=0;
     for(const result of results){
+      if(selected.length>=10)break;
       if(result.error){failed.push(result.error);continue;}
       let accepted=0;
       for(const row of result.rows){
@@ -3214,7 +3215,7 @@
         batchIds.add(c.id);batchKeys.add(identityKey(c));
         if(isNew){db.discoveredCharacters[c.id]=c;byId.set(c.id,c);allowed.add(c.id);new_count++;}
         db.bios[c.id]=bio;db.bioTags[c.id]=tags;db.photoDescriptions[c.id]={description:photo,engine:'live-text'};
-        selected.push(c);accepted++;if(selected.length===10)break;
+        selected.push(c);accepted++;generated_count++;if(selected.length>=10)break;
       }
       if(!accepted)failed.push(new Error('这一批人物不符合原作身份、年龄、性别或照片完整性校验'));
     }
@@ -3233,10 +3234,10 @@
     selected.sort((x,y)=>Number(seen.has(x.id))-Number(seen.has(y.id)));
     db.discoverSeen[p.id]=[...new Set([...seen,...selected.map(c=>c.id)])].slice(-1000);
     save();
-    if(failed.length){
-      if(!forceRefresh)recordBgError('_','_','discover_bios',failed.find(e=>e?.apiError)?.apiError||{message:'部分候选小批次生成失败'});
-    }else clearBgError('_','_','discover_bios');
-    return {selected,generation:new_count||selected.some(c=>batchIds.has(c.id))?'live-generated':'cached-ai-bios',new_count,apiError:null,batch_failures:failed.length,warning:failed.length?'有 '+failed.length+' 个分批未成功；已保留其他成功生成的档案，未写入损坏内容。':''};
+    // Individual provider errors remain visible in System Logs without raising
+    // a blocking background-error banner when some cards are actually usable.
+    clearBgError('_','_','discover_bios');
+    return {selected,generation:generated_count?'live-generated':'cached-ai-bios',new_count,apiError:null,batch_failures:failed.length,warning:failed.length?'有 '+failed.length+' 个分批未成功；已保留其他成功生成的档案，未写入损坏内容。':''};
   }
   const demo=(p,c,mode)=>{
     const allMsgs=messagesOf(p.id,c.id);
