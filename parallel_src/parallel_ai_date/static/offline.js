@@ -2754,7 +2754,7 @@
     const entryPoint=options.entry_point||mode;
     const reqMaxTokens=resolveTaskMaxTokens(db.connection,mode,entryPoint,options.max_tokens);
     const payload={model:s.model,messages:await resolveChatPhotoInput(messages),temperature:options.temperature??s.temperature,top_p:s.top_p,max_tokens:reqMaxTokens};
-    if(options.json_mode)payload.response_format={type:'json_object'};
+    if(options.json_mode&&options.omit_response_format!==true)payload.response_format={type:'json_object'};
     const presetMode=(mode==='meeting'||mode==='chat')?mode:null;
     const modePresets=presetMode?(db.presets||[]).filter(x=>x.mode===presetMode).sort((a,b)=>a.sort_order-b.sort_order):[];
     const enabledPresets=modePresets.filter(x=>x.enabled);
@@ -2821,8 +2821,8 @@
         'Authorization':'Bearer '+maskApiKey(s.api_key)
       },
       sampling:{
-        temperature:s.temperature,
-        top_p:s.top_p,
+        temperature:payload.temperature,
+        top_p:payload.top_p,
         max_tokens:reqMaxTokens
       },
       active_preset_count:enabledPresets.length,
@@ -3154,40 +3154,89 @@
     if(!eligibleCandidate(p,c))return null;
     return {c,bio,photo,tags,isNew:true};
   }
+  // Do not make ten independently long portrait records one all-or-nothing
+  // structured completion. Puppy and other OpenAI-style proxies occasionally
+  // reply with HTTP 200 + finish_reason=stop but only the tail of invalid prose.
+  // Small, separately validated batches preserve successful new identities.
   async function generateDiscovery(p,pool,forceRefresh=false,excludedIds=[]){
     const seen=new Set(db.discoverSeen[p.id]||[]),excluded=new Set(excludedIds);
     const eligible=pool.filter(c=>!excluded.has(c.id));
     const ordered=[...shuffle(eligible.filter(c=>!seen.has(c.id))),...shuffle(eligible.filter(c=>seen.has(c.id)))];
-    if(pub().mode!=='live')return {selected:ordered.slice(0,10),generation:'catalog-demo',apiError:null,new_count:0};
-    const compact=ordered.slice(0,30).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,canon:c.canon,seen:seen.has(c.id)}));
-    const known=Array.from(byId.values()).filter(c=>!p.sources.length||p.sources.some(tag=>sourceMatches(tag,c))).slice(0,240).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,aliases:c.aliases,eligible:eligible.some(x=>x.id===c.id)}));
-    const rules='你是同人约会软件的发现页选角与档案生成器。根据玩家指定作品、性别、年龄筛选，推荐最多10位确实存在于原作的成年虚构角色。优先推荐本轮从未出现过、未被收录的真实原作人物或未见过的已收录人物。只有在符合条件的新人确实不足时，才补充过去刷到过的人物；不要为了凑数造人，不要只改写现有人物简介，不创造原创人物，不猜测未知年龄或原作事实，不虚构作品。不够10位时宁可少返回。已知同一作品、同一版本人物必须使用提供的 exact id，不可为同一人另起 ID（英文名、中文名、别名都属于同一身份）；不可推荐已匹配或玩家自己扮演的版本，不满足筛选则跳过。新人物须提供原作常用全名、别名、作品系列 source（尽量沿用已有作品的系列与媒介写法）、明确作品版本 version（含年份）、已知成年年龄 age、gender、简明原作身份 canon。每个档案同时生成自然独特的中文 bio（80字以内）、2–3个tags，以及具体的一张个人档案照片的 photo_description（60–100字，仅描述可见外貌、衣着、神态、构图和场景，符合人物与时期，不用通用模板）。已知ID仅填 id,bio,tags,photo_description；新人物填 name,aliases,source,version,age,gender,canon,bio,tags,photo_description。只输出完整 JSON 对象 {"profiles":[...]}，不要分析或额外文本。';
-    try{
-      const out=await llm([{role:'system',content:rules},{role:'user',content:JSON.stringify({requested:10,sources:p.sources,gender:p.interested_in,min_age:p.min_age,max_age:p.max_age,player_role_id:p.role_character_id||'',eligible_known:compact,known_identities:known,seen_ids:[...seen].slice(-200),excluded_ids:[...excluded]})}],{json_mode:true,mode:'bio',entry_point:'discover_bios',background:!forceRefresh});
-      const val=JSON.parse(out);
-      if(!Array.isArray(val?.profiles))throw Error('档案返回缺少 profiles 列表');
-      const allowed=new Set(eligible.map(c=>c.id)),batchIds=new Set(),batchKeys=new Set(),selected=[];
-      let new_count=0;
-      for(const row of val.profiles.slice(0,30)){
+    if(pub().mode!=='live')return {selected:ordered.slice(0,10),generation:'catalog-demo',apiError:null,new_count:0,batch_failures:0};
+    const knownIdentities=Array.from(byId.values())
+      .filter(c=>!p.sources.length||p.sources.some(tag=>sourceMatches(tag,c)))
+      .slice(0,90).map(c=>[c.name,c.source,c.version].join(' @ ')).join('；');
+    const candidatesWithIdentity=ordered.slice(0,6);
+    const shared='你负责同人约会软件的候选人物档案。仅使用真实存在的原作人物，不创作OC、不胡编作品或年龄，电影版和游戏版分开。人物属于用户选定的作品，符合其性别及年龄筛选。人物年龄若无法确认符合范围就跳过，宁可少人。每人写一条自然的中文约会简介 bio、两个或三个 tags，并写60-100字 photo_description：一张符合人物年代与外貌、服装、神情、镜头和环境的具体个人照片。只输出完整 JSON：{"profiles":[...]}，绝不写分析、草稿、字数检查或 Markdown。';
+    const common={sources:p.sources,gender:p.interested_in,min_age:p.min_age,max_age:p.max_age};
+    const knownRows=arr=>arr.map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,canon:c.canon}));
+    const jobs=[
+      {kind:'new',index:0,limit:2,unformatted:true,
+        body:{...common,kind:'new',requested:2,focus:'主要人物、重要配角、朋友或队友，优先之前未收录的男性角色',already_in_catalog:knownIdentities,format:'仅填 name,aliases,source,version,age,gender,canon,bio,tags,photo_description；source 尽量采用同系列的中文作品名'}},
+      {kind:'new',index:1,limit:2,unformatted:false,
+        body:{...common,kind:'new',requested:2,focus:'原作中真实存在但尚未收录的次要人物或不同作品时期，避免和上一批完全相同的人选',already_in_catalog:knownIdentities,format:'仅填 name,aliases,source,version,age,gender,canon,bio,tags,photo_description；source 尽量采用同系列的中文作品名'}},
+      {kind:'known',index:2,limit:3,unformatted:true,ids:candidatesWithIdentity.slice(0,3).map(c=>c.id),
+        body:{kind:'known',requested:3,people:knownRows(candidatesWithIdentity.slice(0,3)),format:'只为输入的 exact id 补齐 bio,tags,photo_description；不要添加其他人物或更改身份'}},
+      {kind:'known',index:3,limit:3,unformatted:false,ids:candidatesWithIdentity.slice(3,6).map(c=>c.id),
+        body:{kind:'known',requested:3,people:knownRows(candidatesWithIdentity.slice(3,6)),format:'只为输入的 exact id 补齐 bio,tags,photo_description；不要添加其他人物或更改身份'}}
+    ].filter(job=>job.kind!=='known'||job.ids.length);
+    const results=new Array(jobs.length);
+    let cursor=0;
+    const worker=async()=>{
+      while(cursor<jobs.length){
+        const i=cursor++,job=jobs[i];
+        try{
+          const out=await llm([
+            {role:'system',content:shared+(job.kind==='new'?' 请推荐尚未收录的全新人物，不要用当前目录人物换名字充数。':' 只能填提供的已收录人物资料，不得更改原作设定。')},
+            {role:'user',content:JSON.stringify(job.body)}
+          ],{json_mode:true,omit_response_format:job.unformatted,mode:'bio',entry_point:'discover_bios',background:!forceRefresh,temperature:0.35});
+          const parsed=JSON.parse(out);
+          if(!parsed||!Array.isArray(parsed.profiles)||!parsed.profiles.length)throw Error('这一批没有返回任何完整的候选人物 JSON');
+          results[i]={rows:parsed.profiles.slice(0,job.limit),job};
+        }catch(error){results[i]={error,job};}
+      }
+    };
+    // Two in flight at most; a proxy hiccup must not cancel other batches.
+    await Promise.all([worker(),worker()]);
+    const allowed=new Set(eligible.map(c=>c.id)),batchIds=new Set(),batchKeys=new Set(),selected=[],failed=[];
+    let new_count=0;
+    for(const result of results){
+      if(result.error){failed.push(result.error);continue;}
+      let accepted=0;
+      for(const row of result.rows){
+        if(result.job.kind==='known'&&(!row?.id||!result.job.ids.includes(row.id)))continue;
+        if(result.job.kind==='new'&&row?.id)continue;
         const item=parseDiscoveryRow(row,p,allowed);
         if(!item)continue;
         const {c,bio,photo,tags,isNew}=item;
+        if(result.job.kind==='new'&&!isNew)continue;
         if(batchIds.has(c.id)||batchKeys.has(identityKey(c)))continue;
         batchIds.add(c.id);batchKeys.add(identityKey(c));
         if(isNew){db.discoveredCharacters[c.id]=c;byId.set(c.id,c);allowed.add(c.id);new_count++;}
         db.bios[c.id]=bio;db.bioTags[c.id]=tags;db.photoDescriptions[c.id]={description:photo,engine:'live-text'};
-        selected.push(c);if(selected.length===10)break;
+        selected.push(c);accepted++;if(selected.length===10)break;
       }
-      if(!selected.length)throw Error('本次没有返回符合身份筛选且包含照片描写的完整档案');
-      // Do not quietly fill incomplete AI batches with fixed templates.
-      selected.sort((a,b)=>Number(seen.has(a.id))-Number(seen.has(b.id)));
-      db.discoverSeen[p.id]=[...new Set([...seen,...selected.map(c=>c.id)])].slice(-1000);
-      save();clearBgError('_','_','discover_bios');
-      return {selected,generation:'live-generated',new_count,apiError:null};
-    }catch(e){
-      if(!forceRefresh)recordBgError('_','_','discover_bios',e.apiError||{message:String(e.message||e)});
-      return {selected:ordered.filter(c=>db.photoDescriptions[c.id]?.engine==='live-text'&&db.bios[c.id]).slice(0,10),generation:'cached-ai-bios',new_count:0,apiError:e.apiError||createApiError({error_code:'DISCOVERY_PROFILE_INVALID',title:'候选档案未完整生成',message:String(e.message||e)}),warning:String(e.message||e)};
+      if(!accepted)failed.push(new Error('这一批人物不符合原作身份、年龄、性别或照片完整性校验'));
     }
+    // Existing completed model-generated portraits are a safe fallback:
+    // never substitute the same static photo template while claiming AI success.
+    for(const c of ordered){
+      if(selected.length>=10)break;
+      if(batchIds.has(c.id)||!db.photoDescriptions[c.id]?.description||db.photoDescriptions[c.id]?.engine!=='live-text'||!db.bios[c.id])continue;
+      batchIds.add(c.id);selected.push(c);
+    }
+    if(!selected.length){
+      const first=failed.find(e=>e?.apiError)?.apiError;
+      if(!forceRefresh)recordBgError('_','_','discover_bios',first||{message:String(failed[0]?.message||'所有分批均未返回有效人物 JSON')});
+      return {selected:[],generation:'failed',apiError:first||createApiError({error_code:'DISCOVERY_BATCHES_FAILED',title:'角色档案生成失败',message:'四个独立小批次均未生成有效档案。可能是模型或反代返回了损坏的 JSON；原始回复已留在生成日志中。'}),new_count:0,batch_failures:failed.length,warning:'未生成新档案；原有角色和照片未被覆盖'};
+    }
+    selected.sort((x,y)=>Number(seen.has(x.id))-Number(seen.has(y.id)));
+    db.discoverSeen[p.id]=[...new Set([...seen,...selected.map(c=>c.id)])].slice(-1000);
+    save();
+    if(failed.length){
+      if(!forceRefresh)recordBgError('_','_','discover_bios',failed.find(e=>e?.apiError)?.apiError||{message:'部分候选小批次生成失败'});
+    }else clearBgError('_','_','discover_bios');
+    return {selected,generation:new_count||selected.some(c=>batchIds.has(c.id))?'live-generated':'cached-ai-bios',new_count,apiError:null,batch_failures:failed.length,warning:failed.length?'有 '+failed.length+' 个分批未成功；已保留其他成功生成的档案，未写入损坏内容。':''};
   }
   const demo=(p,c,mode)=>{
     const allMsgs=messagesOf(p.id,c.id);
