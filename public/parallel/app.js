@@ -277,7 +277,7 @@ async function loadCandidates(showToast=false){$('topbar-actions').innerHTML=`${
         const deck={key,candidates:d.candidates,index:0,total:d.total_available};discoverDecks.set(pid,deck);
         if(isCurrentDiscover(pid,key)){
           showDiscoverDeck(pid,deck);
-          if(showToast)toast(`已刷新：${d.candidates.length} 位候选${d.generation==='live-generated'?' · '+(d.new_count||0)+' 位新收录角色 · 照片描写已生成':''}${d.candidates.length<10?'（本轮不足 10 位）':''}`);
+          if(showToast)toast(`已刷新：${d.candidates.length} 位候选 · ${d.new_count||0} 位新收录${d.batch_failures?' · '+d.batch_failures+' 个分批失败（其他档案已保留）':''}${d.candidates.length<10?' · 本轮不足 10 位':''}`);
         }
       }catch(e){
         if(discoverRequests.get(pid)!==request||!isCurrentDiscover(pid,key))return;
