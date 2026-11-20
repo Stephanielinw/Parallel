@@ -328,21 +328,43 @@ async function generateCardPortrait(regenerate=false,silent=false){
 let activeSwipeGesture=false;
 function attachSwipe(){
   const el=$('swipe-card');if(!el)return;
-  let startX=0,startY=0,dx=0,dragging=false,pointer=null,raf=0;
+  let startX=0,startY=0,dx=0,dragging=false,pointer=null,raf=0,captured=false,suppressClick=false;
+  const canSwipe=()=>!state.loading&&!discoverRequests.has(state.activeId)&&el.isConnected;
   const paint=()=>{raf=0;if(!el.isConnected)return;el.style.transform='translate3d('+dx+'px,0,0) rotate('+dx/24+'deg)';const like=el.querySelector('#stamp-like'),nope=el.querySelector('#stamp-nope');if(like)like.style.opacity=Math.min(1,Math.max(0,dx/100));if(nope)nope.style.opacity=Math.min(1,Math.max(0,-dx/100));};
-  const release=(commit=false)=>{if(!dragging)return;dragging=false;activeSwipeGesture=false;el.classList.remove('dragging');if(raf){cancelAnimationFrame(raf);raf=0;}try{if(el.hasPointerCapture(pointer))el.releasePointerCapture(pointer);}catch{}if(commit&&Math.abs(dx)>75){doSwipe(dx>0?'right':'left');}else{dx=0;paint();el.style.transform='';}};
-  el.addEventListener('pointerdown',e=>{if(!e.isPrimary||e.button!==0||e.target.closest('button'))return;dragging=true;activeSwipeGesture=true;pointer=e.pointerId;startX=e.clientX;startY=e.clientY;dx=0;el.classList.add('dragging');try{el.setPointerCapture(pointer);}catch{}});
-  el.addEventListener('pointermove',e=>{if(!dragging||e.pointerId!==pointer)return;dx=e.clientX-startX;if(Math.abs(e.clientY-startY)>45&&Math.abs(dx)<30){release(false);return;}if(!raf)raf=requestAnimationFrame(paint);});
+  const release=(commit=false)=>{
+    if(pointer===null)return;
+    const old=pointer,wasDragging=dragging;
+    pointer=null;dragging=false;activeSwipeGesture=false;el.classList.remove('dragging');
+    if(raf){cancelAnimationFrame(raf);raf=0;}
+    if(captured){try{if(el.hasPointerCapture(old))el.releasePointerCapture(old);}catch{}captured=false;}
+    if(wasDragging)suppressClick=true;
+    if(wasDragging&&commit&&Math.abs(dx)>75&&canSwipe())void doSwipe(dx>0?'right':'left');
+    else{dx=0;paint();el.style.transform='';}
+  };
+  el.addEventListener('pointerdown',e=>{if(!e.isPrimary||e.button!==0||!canSwipe())return;pointer=e.pointerId;startX=e.clientX;startY=e.clientY;dx=0;suppressClick=false;});
+  el.addEventListener('pointermove',e=>{
+    if(pointer===null||e.pointerId!==pointer)return;
+    dx=e.clientX-startX;const dy=e.clientY-startY;
+    if(!dragging){
+      if(Math.abs(dy)>14&&Math.abs(dy)>Math.abs(dx)){release(false);return;}
+      if(Math.abs(dx)<9||Math.abs(dx)<Math.abs(dy))return;
+      dragging=true;activeSwipeGesture=true;el.classList.add('dragging');
+      try{el.setPointerCapture(pointer);captured=true;}catch{}
+    }
+    if(!raf)raf=requestAnimationFrame(paint);
+  });
   el.addEventListener('pointerup',e=>{if(e.pointerId===pointer){dx=e.clientX-startX;release(true);}});
-  el.addEventListener('pointercancel',()=>release(false));
-  el.addEventListener('lostpointercapture',()=>release(false));
+  el.addEventListener('pointercancel',()=>release(false));el.addEventListener('lostpointercapture',()=>release(false));
+  el.addEventListener('pointerleave',()=>{if(!captured)release(false);});
+  el.addEventListener('click',e=>{if(suppressClick){suppressClick=false;e.preventDefault();e.stopImmediatePropagation();}},true);
+  activeSwipeGesture=false;
 }
 async function doSwipe(direction){
   const pid=state.activeId,deck=discoverDecks.get(pid);
   if(state.loading||discoverRequests.has(pid)||!deck||!isCurrentDiscover(pid,deck.key))return;
   const index=deck.index,c=deck.candidates[index];if(!c)return;
   const key=pid+'|'+c.id;
-  if(pendingDiscoverSwipes.has(key))return;
+  if(pendingDiscoverSwipes.has(key)){const card=$('swipe-card');if(card){card.style.transform='';card.style.opacity='1';}return;}
   pendingDiscoverSwipes.set(key,{pid,cid:c.id});
   state.loading=true;const card=$('swipe-card');
   if(card){card.style.transform='translate3d('+(direction==='right'?600:-600)+'px,0,0) rotate('+(direction==='right'?25:-25)+'deg)';card.style.opacity='0';}
@@ -357,7 +379,7 @@ async function doSwipe(direction){
         refreshInboxQuietly(pid);
         if(isCurrentDiscover(pid,deck.key)&&discoverDecks.get(pid)===deck){
           if(res.apiError){toast('已匹配 '+c.name+'，开场消息可在聊天中重试');}
-          else if(deck.index===index+1&&!state.loading)matchModal(c,res);
+          else if(deck.index===index+1&&!state.loading&&!activeSwipeGesture)matchModal(c,res);
           else toast('你与 '+c.name+' 互相喜欢了！');
         }
       }else if(isCurrentDiscover(pid,deck.key)&&direction==='right'){
@@ -383,7 +405,7 @@ async function photoDescriptionModal(regenerate=false,forceText=false){const c=s
     const buttons=`<button class="btn ghost" data-action="close-modal">关闭</button><button class="btn soft" data-action="photo-text-fallback">${I('book')} 查看文字描写</button>${state.settings.image_mode==='live'?`<button class="btn primary" data-action="regenerate-portrait">${I('refresh')} 重新生成图片</button>`:''}`;
     return modal(content,buttons);
   }
-  try{const r=!regenerate&&c.photo_description?{description:c.photo_description,engine:c.photo_engine}:await api('/photo-description',{characterId:c.id,regenerate});
+  try{const r=!regenerate&&c.photo_description&&(state.settings.mode!=='live'||c.photo_engine==='live-text')?{description:c.photo_description,engine:c.photo_engine}:await api('/photo-description',{characterId:c.id,regenerate});
     if(state.candidates[state.deckIndex]!==c||state.tab!=='discover')return;
     c.photo_description=r.description;c.photo_engine=r.engine;
     const content=`<div class="kicker">A PHOTO, IN WORDS</div><h2>${esc(c.name)} 的照片</h2><p class="caption">${esc(c.source)} · ${esc(c.version)}</p><div class="photo-description-paper"><p>${esc(r.description)}</p></div><p class="caption">${state.settings.image_mode==='live'?'你也可以点击下方按钮使用图片 API 生成实际图片。':`当前未填写图片生成 API，使用文字呈现照片。${r.engine==='live-text'?'这段描写由你配置的文字模型生成。':'这是固定的文字示意；连接文字模型后可生成更细致的描写，或在终端填写图片 API 生成图片。'}`}</p>`;
@@ -1930,7 +1952,7 @@ function bindModelPickers(){
   }
 }
 
-const TASK_TOKEN_FIELDS=[["meeting","面对面小说",null],["surveillance","全天监控",4096],["diary","角色日记",4096],["bio","候选人物档案（每批）",2048],["match","匹配判断",1024],["first_message","首次匹配与重逢开场",1024],["proactive","主动联系",1024],["meeting_summary","见面摘要",1024],["archive","情节归档",4000],["photo","照片文字描写",1024],["translation","双语翻译（每批）",null],["chat_continue","聊天续写",null]];
+const TASK_TOKEN_FIELDS=[["meeting","面对面小说",null],["surveillance","全天监控",4096],["diary","角色日记",4096],["bio","候选人物档案（每批）",8192],["match","匹配判断",1024],["first_message","首次匹配与重逢开场",1024],["proactive","主动联系",1024],["meeting_summary","见面摘要",1024],["archive","情节归档",4000],["photo","照片文字描写",1024],["translation","双语翻译（每批）",null],["chat_continue","聊天续写",null]];
 function renderTaskTokenSettings(s){
   const overrides=s.task_max_tokens||{};
   const hint=(k,d)=>d===null?(k==='meeting'?'继承手机聊天上限':k==='translation'?'自动按译文批次计算':'自动（沿用原有续写上限）'):'默认 '+d;

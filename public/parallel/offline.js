@@ -28,7 +28,7 @@
   const pairKey=(p,c)=>p+'|'+c;
   const DEFAULT_PRESET_IDS=new Set(DEFAULT_PRESETS.map(x=>x.id));
   // Output budget is independent of prompt, provider and sampling. Only explicit user overrides are persisted.
-  const TASK_TOKEN_DEFAULTS=Object.freeze({"surveillance":4096,"diary":4096,"bio":2048,"match":1024,"first_message":1024,"proactive":1024,"meeting_summary":1024,"archive":4000,"photo":1024});
+  const TASK_TOKEN_DEFAULTS=Object.freeze({"surveillance":4096,"diary":4096,"bio":8192,"match":1024,"first_message":1024,"proactive":1024,"meeting_summary":1024,"archive":4000,"photo":1024});
   const TASK_TOKEN_KEYS=Object.freeze(["meeting","surveillance","diary","bio","match","first_message","proactive","meeting_summary","archive","photo","translation","chat_continue"]);
   const validTokenBudget=v=>((typeof v==='number'||(typeof v==='string'&&/^\d+$/.test(v.trim())))&&Number.isInteger(Number(v))&&Number(v)>=100&&Number(v)<=32768)?Number(v):null;
   function taskTokenOverrides(raw,strict=false){
@@ -2504,7 +2504,7 @@
       '钢铁侠':'tony stark'
     };
     const mapped=norm(aliasMap[nq]||q);
-    return Array.from(byId.values()).filter(c=>(!source||c.source===source||c.version===source||sourceMatches(source,c))&&[c.name,...c.aliases].some(a=>a.toLowerCase()===q||a.toLowerCase().split(/\s+/).includes(q)||norm(a)===nq||norm(a)===mapped||(nq.length>=2&&norm(a).includes(nq)))).slice(0,20).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,age:c.age,canon:c.canon}));
+    return Array.from(byId.values()).filter(c=>(!source||c.source===source||c.version===source||sourceMatches(source,c))&&[c.name,...c.aliases].some(a=>a.toLowerCase()===q||a.toLowerCase().split(/\s+/).includes(q)||norm(a)===nq||norm(a)===mapped||(nq.length>=2&&norm(a).includes(nq)))).slice(0,20).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,age:c.age,canon:c.canon,identity_origin:c.identity_origin||'curated'}));
   };
   const prompt=(p,c,mode,pendingIds=[],options={})=>{
     const macros=t=>expandPresetMacros(t,p,c);
@@ -3193,7 +3193,7 @@
     if(pub().mode!=='live')return {selected:ordered.slice(0,10),generation:'catalog-demo',apiError:null,new_count:0};
     const compact=ordered.slice(0,30).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,canon:c.canon,seen:seen.has(c.id)}));
     const known=Array.from(byId.values()).filter(c=>!p.sources.length||p.sources.some(tag=>sourceMatches(tag,c))).slice(0,240).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,aliases:c.aliases,eligible:eligible.some(x=>x.id===c.id)}));
-    const rules='你是同人约会软件的发现页选角与档案生成器。根据玩家指定作品、性别、年龄筛选，推荐最多10位确实存在于原作的成年虚构角色。优先未见过的新人物或明确不同的原作时期；不要只改写现有人物简介，不创造原创人物，不猜测未知年龄或原作事实，不虚构作品。不够10位时宁可少返回。已知同一作品、同一版本人物必须使用提供的 exact id，不可为同一人另起 ID（英文名、中文名、别名都属于同一身份）；不可推荐已匹配或玩家自己扮演的版本，不满足筛选则跳过。新人物须提供原作常用全名、别名、作品系列 source（尽量沿用已有作品的系列与媒介写法）、明确作品版本 version（含年份）、已知成年年龄 age、gender、简明原作身份 canon。每个档案同时生成自然独特的中文 bio（80字以内）、2–3个tags，以及具体的一张个人档案照片的 photo_description（60–100字，仅描述可见外貌、衣着、神态、构图和场景，符合人物与时期，不用通用模板）。已知ID仅填 id,bio,tags,photo_description；新人物填 name,aliases,source,version,age,gender,canon,bio,tags,photo_description。只输出完整 JSON 对象 {"profiles":[...]}，不要分析或额外文本。';
+    const rules='你是同人约会软件的发现页选角与档案生成器。根据玩家指定作品、性别、年龄筛选，推荐最多10位确实存在于原作的成年虚构角色。优先推荐本轮从未出现过、未被收录的真实原作人物或未见过的已收录人物。只有在符合条件的新人确实不足时，才补充过去刷到过的人物；不要为了凑数造人，不要只改写现有人物简介，不创造原创人物，不猜测未知年龄或原作事实，不虚构作品。不够10位时宁可少返回。已知同一作品、同一版本人物必须使用提供的 exact id，不可为同一人另起 ID（英文名、中文名、别名都属于同一身份）；不可推荐已匹配或玩家自己扮演的版本，不满足筛选则跳过。新人物须提供原作常用全名、别名、作品系列 source（尽量沿用已有作品的系列与媒介写法）、明确作品版本 version（含年份）、已知成年年龄 age、gender、简明原作身份 canon。每个档案同时生成自然独特的中文 bio（80字以内）、2–3个tags，以及具体的一张个人档案照片的 photo_description（60–100字，仅描述可见外貌、衣着、神态、构图和场景，符合人物与时期，不用通用模板）。已知ID仅填 id,bio,tags,photo_description；新人物填 name,aliases,source,version,age,gender,canon,bio,tags,photo_description。只输出完整 JSON 对象 {"profiles":[...]}，不要分析或额外文本。';
     try{
       const out=await llm([{role:'system',content:rules},{role:'user',content:JSON.stringify({requested:10,sources:p.sources,gender:p.interested_in,min_age:p.min_age,max_age:p.max_age,player_role_id:p.role_character_id||'',eligible_known:compact,known_identities:known,seen_ids:[...seen].slice(-200),excluded_ids:[...excluded]})}],{json_mode:true,mode:'bio',entry_point:'discover_bios',background:!forceRefresh});
       const val=JSON.parse(out);
@@ -3212,6 +3212,7 @@
       }
       if(!selected.length)throw Error('本次没有返回符合身份筛选且包含照片描写的完整档案');
       // Do not quietly fill incomplete AI batches with fixed templates.
+      selected.sort((a,b)=>Number(seen.has(a.id))-Number(seen.has(b.id)));
       db.discoverSeen[p.id]=[...new Set([...seen,...selected.map(c=>c.id)])].slice(-1000);
       save();clearBgError('_','_','discover_bios');
       return {selected,generation:'live-generated',new_count,apiError:null};
@@ -3470,7 +3471,7 @@
     switch(route){
       case '/bootstrap':episodeStore();save();return {profiles:db.profiles.slice(),sources:[...new Set([...SOURCES,...Array.from(byId.values(),c=>c.source)])].sort(),settings:pub(),catalog_size:byId.size};
       case '/health':return {ok:true,name:'Parallel Portable',version:'0.5.1'};
-      case '/identify':return {matches:idMatches(params.get('name')||'',params.get('source')||''),verified:'curated-catalog'};
+      case '/identify':return {matches:idMatches(params.get('name')||'',params.get('source')||''),verified:'mixed-catalog'};
       case '/settings':{
         if(!arguments[1])return pub();
         const s=db.connection;
