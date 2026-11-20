@@ -56,7 +56,7 @@
     return validTokenBudget(explicit)||main;
   }
   const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},taskStates:{},bgErrors:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},translations:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,task_max_tokens:{},auto_portraits:false,proactive_mode:'daily',auto_translate:true,character_language_pref:'natural',character_language_custom:''}});
-  let db;let storageAvailable=true;let mainStoreReadable=true;
+  let db;let storageAvailable=true;let mainStoreReadable=true;let lastSavedRaw=null;
   const LEGACY_ERROR_BUBBLE_RE=/^(?:（模型连接失败，历史已保存。请检查终端设置，再尝试角色回复。）|（模型连接失败，请检查终端设置后重试。）)$/;
   const PROXY_ERROR_SIGNATURE_RE=/(?:所有\s*API\s*密钥均请求失败|具体错误请查看轮询日志|所有(?:渠道|密钥|节点|令牌|账号)(?:均|都)?(?:请求|调用|连接)?失败[\s\S]{0,80}(?:轮询日志|配额|额度|重试|失败))/i;
   const PROXY_HEADER_ERROR_RE=/^\s*(?:\[\s*(?:API|Upstream|Proxy|Gateway|OpenAI|Gemini|Claude|Anthropic|DeepSeek|OneAPI|NewAPI)\s*(?:Error|Exception|Fault)\s*\]|【\s*(?:API|接口|反代|上游|网关|系统)(?:错误|报错|异常|请求失败)\s*】)\s*[:：\-]?/i;
@@ -359,6 +359,7 @@
   let legacySystemLogs=[];
   try {
     const raw=localStorage.getItem(STORE_KEY);
+    lastSavedRaw=raw;
     db=raw?JSON.parse(raw):empty();
     if(!db||!Array.isArray(db.profiles))throw Error('broken');
     legacySystemLogs=Array.isArray(db.systemLogs)?db.systemLogs:[];
@@ -367,7 +368,7 @@
   }catch(err){db=empty();storageAvailable=false;mainStoreReadable=false;}
   const save=()=>{
     if(!mainStoreReadable)throw Error('无法安全读取原存档，已停止覆盖；请先导出备份。');
-    try{localStorage.setItem(STORE_KEY,JSON.stringify(db));storageAvailable=true;}
+    try{const raw=JSON.stringify(db);localStorage.setItem(STORE_KEY,raw);lastSavedRaw=raw;storageAvailable=true;}
     catch(err){storageAvailable=false;throw Error('浏览器本地空间不足或禁止保存。请先导出备份并释放空间。后续保存会继续尝试，不会静默跳过。');}
   };
   // Diagnostics never share the authoritative save or its failure state.
@@ -389,7 +390,7 @@
   };
   const safeLog=entry=>{
     let serialized=JSON.stringify(entry);
-    for(const secret of [db.connection.api_key,db.connection.image_api_key]){
+    for(const secret of [db.connection.api_key,db.connection.image_api_key,db.connection.archive_api_key]){
       if(secret&&secret.length>=8)serialized=serialized.split(JSON.stringify(secret).slice(1,-1)).join('***REDACTED***');
     }
     return JSON.parse(serialized);
@@ -2118,7 +2119,7 @@
         if(previous.disputed)continue;
       }
       const job=store.jobs.find(x=>x.owner_id===c.id&&x.profile_id===p.id&&x.source_key===source.source_key&&x.signature===source.signature);
-      out.push({...source,rows,job,previous,automatic:Date.parse(source.event_at)+EPISODE_GAP>=store.since});
+      out.push({...source,rows,job,previous,automatic:true});
     }
     for(const item of old){
       const current=groups.find(rows=>episodeKey(rows)===item.source_key&&episodeSignature(rows)===item.signature&&sameIds(rows.map(m=>String(m.id)),item.raw_msg_ids||[]));
@@ -2151,26 +2152,59 @@
     if(chunk.length)chunks.push(chunk);return chunks;
   };
   let archiveBusy=false,lastArchiveTick=0;
-  const archiveStoredCurrent=()=>{try{const raw=localStorage.getItem(STORE_KEY);return raw===JSON.stringify(db);}catch{return false;}};
-  const archiveChatBusy=()=>Object.values(db.queue||{}).some(q=>q?.status==='inflight'||q?.pending?.length)||Object.values(db.taskStates||{}).some(t=>['inflight','running','generating'].includes(t?.status));
-  async function archiveOne(p,c,candidate,manual=false){
-    if(archiveBusy||(!manual&&db.connection.archive_enabled===false)||archiveChatBusy())return false;
+  // Compare against the last successfully saved version, not transient in-memory
+  // changes. An older tab still must not commit over a newer tab.
+  const archiveStoredCurrent=()=>{try{return mainStoreReadable&&localStorage.getItem(STORE_KEY)===lastSavedRaw;}catch{return false;}};
+  const archiveChatBusy=()=>Object.values(db.queue||{}).some(q=>q?.status==='inflight')||Object.values(db.taskStates||{}).some(t=>['inflight','running','generating'].includes(t?.status));
+  const ARCHIVE_LEASE_KEY='parallel-episode-archive-lease-v1';
+  const archiveOutcome=(status,reason='',extra={})=>({ok:status==='done',status,reason,...extra});
+  const archiveRetryDelay=attempt=>Math.min(6*3600000,300000*2**Math.min(7,Math.max(0,(Number(attempt)||1)-1)));
+  const archiveJobReady=(job,now)=>!job||((job.status!=='running'||now-Number(job.attempt_at||0)>=150000)&&Number(job.retry_at||0)<=now);
+  const archiveConfigProblem=()=>{
     const cfg=archiveConfig();
-    if(!cfg.base_url||!cfg.api_key||!cfg.model)return false;
+    return cfg.base_url&&cfg.api_key&&cfg.model?'':(db.connection.archive_mode==='custom'?'独立归档 AI 配置不完整，请在终端补全或改为跟随主 AI。':'主聊天模型配置不完整。');
+  };
+  // Web Locks where available; storage lease as a best-effort cross-tab fallback.
+  // Persisted job/token and last-saved snapshot checks still protect commits.
+  async function withArchiveLease(run){
+    if(typeof navigator!=='undefined'&&navigator.locks?.request){
+      let entered=false;
+      try{return await navigator.locks.request('parallel-episode-archive',{ifAvailable:true},lock=>{
+        if(!lock)return archiveOutcome('busy','另一页面正在整理记忆');
+        entered=true;return run();
+      });}catch(e){if(entered)return archiveOutcome('failed',String(e?.message||e));}
+    }
+    const token=uid(),now=Date.now();
+    try{
+      const held=JSON.parse(localStorage.getItem(ARCHIVE_LEASE_KEY)||'null');
+      if(held&&Number(held.until)>now)return archiveOutcome('busy','另一页面正在整理记忆');
+      localStorage.setItem(ARCHIVE_LEASE_KEY,JSON.stringify({token,until:now+150000}));
+      if(JSON.parse(localStorage.getItem(ARCHIVE_LEASE_KEY)||'null')?.token!==token)return archiveOutcome('busy','另一页面正在整理记忆');
+    }catch{return archiveOutcome('blocked','无法保存归档锁，请检查浏览器本地存储');}
+    try{return await run();}
+    finally{try{if(JSON.parse(localStorage.getItem(ARCHIVE_LEASE_KEY)||'null')?.token===token)localStorage.setItem(ARCHIVE_LEASE_KEY,'');}catch{}}
+  }
+  async function archiveOne(p,c,candidate,manual=false){
+    if(archiveBusy)return archiveOutcome('busy','另一个情节正在归档');
+    if(!manual&&db.connection.archive_enabled===false)return archiveOutcome('disabled','自动归档已关闭');
+    if(archiveChatBusy())return archiveOutcome('busy','正在生成聊天回复，空闲后自动整理');
+    const cfg=archiveConfig(),problem=archiveConfigProblem();
+    if(problem)return archiveOutcome('config',problem);
     const run=async()=>{
-      if(archiveBusy||!archiveStoredCurrent())return false;
+      if(archiveBusy||archiveChatBusy())return archiveOutcome('busy','正在处理其他回复或归档');
+      if(!archiveStoredCurrent())return archiveOutcome('blocked','存档已在另一页面更新，请使用最新页面');
       const fresh=episodeList(p,c).find(x=>x.source_key===candidate.source_key&&x.signature===candidate.signature);
-      if(!fresh)return false;
+      if(!fresh)return archiveOutcome('changed','情节已归档或原文已变化');
       const store=episodeStore(),now=Date.now();
       let job=fresh.job;
-      if(job?.status==='running'&&now-Number(job.attempt_at||0)<150000)return false;
-      if(!manual&&job&&(job.attempts>=2||Number(job.retry_at||0)>now))return false;
+      if(job?.status==='running'&&now-Number(job.attempt_at||0)<150000)return archiveOutcome('busy','此情节正在归档');
+      if(!manual&&!archiveJobReady(job,now))return archiveOutcome('waiting','等待下次自动重试');
       if(!job){
         job={owner_id:c.id,profile_id:p.id,source_key:fresh.source_key,signature:fresh.signature,status:'pending',attempts:0};
         store.jobs.push(job);
       }
       archiveBusy=true;
-      job.status='running';job.attempts=manual?1:(job.attempts||0)+1;job.attempt_at=now;job.error='';
+      job.status='running';job.attempts=(Number(job.attempts)||0)+1;job.attempt_at=now;job.error='';
       const token=uid();job.token=token;
       let abortTimer;
       try{
@@ -2183,44 +2217,70 @@
         const ask=async(data,allowed)=>parseEpisodeResult(await llm([{role:'system',content:ARCHIVE_SYSTEM+'\n归档角色：'+c.name+'；直接互动对象：'+p.name},{role:'user',content:JSON.stringify(data)}],options),allowed);
         const parts=[];
         for(const chunk of chunks){
-          if(archiveChatBusy())throw Error('聊天任务优先，归档暂停');
+          if(archiveChatBusy()&&!parts.length){
+            job.status='pending';job.attempts=Math.max(0,job.attempts-1);job.retry_at=Date.now()+60000;
+            if(archiveStoredCurrent())save();
+            return archiveOutcome('busy','聊天优先，归档已自动延期');
+          }
           parts.push(await ask({records:chunk},chunk.map(m=>m.id)));
         }
         const result=parts.length===1?parts[0]:await ask({instruction:'合并分段小结为一个情节，不新增事实，保留重要信息与原文 ID。',parts},ids);
-        // A different tab, edited source, correction or deletion must not be overwritten by a late response.
-        if(!archiveStoredCurrent())return false;
+        // Revalidate original source and persisted ownership after async provider work.
+        if(!archiveStoredCurrent())return archiveOutcome('blocked','归档期间另一页面更新了存档，已保留原文');
         const again=episodeList(p,c).find(x=>x.source_key===fresh.source_key&&x.signature===fresh.signature);
-        if(!again||job.token!==token||job.status!=='running'||again.previous?.disputed)return false;
+        if(!again||job.token!==token||job.status!=='running'||again.previous?.disputed){
+          if(job.token===token&&job.status==='running'){job.status='superseded';save();}
+          return archiveOutcome('changed','原文已更新或被纠正，将重新检查');
+        }
         const rec={id:again.previous?.id||uid(),owner_id:c.id,profile_id:p.id,source_type:'episode-summary',memory_type:'episode_summary',source_key:fresh.source_key,knowledge_mode:'experienced',summary:result.summary,tags:result.keywords,importance:3,emotional_weight:2,unresolved:0,disputed:0,clarifies_id:'',raw_msg_ids:ids,event_at:fresh.event_at,created_at:stamp(),started_at:fresh.started_at,signature:fresh.signature,archive_stale:false,episode:{...result,participants:[p.name,c.name],startedAt:fresh.started_at,endedAt:fresh.event_at}};
         if(again.previous)Object.assign(again.previous,rec);else db.episodicMemories.push(rec);
-        job.status='done';job.retry_at=0;save();return true;
+        job.status='done';job.retry_at=0;store.retry_at=0;save();
+        return archiveOutcome('done','',{profileId:p.id,characterId:c.id});
       }catch(e){
+        const reason=String([e?.apiError?.error_code,e?.apiError?.message||e?.message||e].filter(Boolean).join(' · ')).slice(0,500);
         if(archiveStoredCurrent()&&job.token===token){
-          job.status='failed';job.error=String(e?.apiError?.title||e?.message||e).slice(0,240);job.retry_at=Date.now()+Math.min(3600000,300000*job.attempts);save();
+          job.status='failed';job.error=reason;
+          const providerDelay=Math.min(24*3600000,Math.max(0,Number(e?.apiError?.retry_after)||0)*1000);
+          job.retry_at=Date.now()+Math.max(archiveRetryDelay(job.attempts),providerDelay);
+          // Avoid hammering a broken provider with the rest of the backlog.
+          store.retry_at=Date.now()+Math.max(300000,providerDelay);
+          save();
         }
-        return false;
+        return archiveOutcome('failed',reason,{profileId:p.id,characterId:c.id,retryAt:job.retry_at||0});
       }finally{
         if(abortTimer&&typeof clearTimeout==='function')clearTimeout(abortTimer);
         archiveBusy=false;
       }
     };
-    // Web Locks prevents simultaneous archive requests across tabs. Without it only explicit user requests run.
-    if(typeof navigator!=='undefined'&&navigator.locks?.request)return navigator.locks.request('parallel-episode-archive',{ifAvailable:true},lock=>lock?run():false);
-    return manual?run():false;
+    return withArchiveLease(run);
   }
   async function tickEpisodeArchive(profileId){
-    if(archiveBusy||Date.now()-lastArchiveTick<60000||db.connection.archive_enabled===false)return;
-    lastArchiveTick=Date.now();
-    if(archiveChatBusy()||!archiveStoredCurrent())return;
-    const p=db.profiles.find(x=>x.id===profileId);if(!p)return;
+    if(archiveBusy||Date.now()-lastArchiveTick<60000||db.connection.archive_enabled===false)return archiveOutcome('idle');
+    if(archiveChatBusy()||!archiveStoredCurrent())return archiveOutcome('busy');
+    const problem=archiveConfigProblem();if(problem)return archiveOutcome('config',problem);
+    const store=episodeStore(),now=Date.now();
+    if(Number(store.retry_at||0)>now)return archiveOutcome('waiting');
+    lastArchiveTick=now;
+    const candidates=[];
     for(const rel of Object.values(db.relations||{})){
-      if(rel.profile_id!==p.id||rel.status!=='matched')continue;
-      const c=byId.get(rel.character_id);if(!c)continue;
-      const candidate=episodeList(p,c).find(x=>x.automatic&&(!x.job||((x.job.status!=='running'||Date.now()-x.job.attempt_at>=150000)&&x.job.attempts<2&&Number(x.job.retry_at||0)<=Date.now())));
-      if(candidate){if(!archiveStoredCurrent())save();await archiveOne(p,c,candidate);return;}
+      if(rel.status!=='matched')continue;
+      const p=db.profiles.find(x=>x.id===rel.profile_id),c=byId.get(rel.character_id);
+      if(!p||!c)continue;
+      for(const candidate of episodeList(p,c))if(archiveJobReady(candidate.job,now))candidates.push({p,c,candidate});
     }
+    if(!archiveStoredCurrent())return archiveOutcome('blocked','存档已在另一页面更新');
+    if(JSON.stringify(db)!==lastSavedRaw)save();
+    // Oldest eligible episode first, regardless of which Profile is open.
+    candidates.sort((a,b)=>Date.parse(a.candidate.event_at)-Date.parse(b.candidate.event_at));
+    const next=candidates[0];
+    return next?archiveOne(next.p,next.c,next.candidate):archiveOutcome('idle');
   }
-  const episodePendingCard=x=>({id:'pending:'+x.source_key,owner_id:x.owner_id,profile_id:x.profile_id,source_type:'episode-pending',source_key:x.source_key,signature:x.signature,summary:x.previous?'原文已变更，需要重新归档':'情节已结束，等待语义归档',tags:[],raw_msg_ids:x.raw_msg_ids,started_at:x.started_at,event_at:x.event_at,created_at:x.event_at,archive_status:x.job?.status==='running'?'正在归档':x.job?.status==='failed'?'归档失败：'+x.job.error:x.automatic?'待归档':'历史情节 · 可手动归档',episode:{startedAt:x.started_at,endedAt:x.event_at}});
+  const episodePendingCard=x=>{
+    const problem=archiveConfigProblem(),retryAt=Math.max(Number(x.job?.retry_at||0),Number(episodeStore().retry_at||0));
+    const running=x.job?.status==='running'&&Date.now()-Number(x.job.attempt_at||0)<150000;
+    const status=running?'正在归档':db.connection.archive_enabled===false?'自动归档已关闭':problem?problem:x.job?.status==='failed'?'上次失败：'+x.job.error+'；系统将自动重试':'等待后台自动归档';
+    return {id:'pending:'+x.source_key,owner_id:x.owner_id,profile_id:x.profile_id,source_type:'episode-pending',source_key:x.source_key,signature:x.signature,summary:x.previous?'原文已变更，等待自动重新归档':'情节已结束，等待语义归档',tags:[],raw_msg_ids:x.raw_msg_ids,started_at:x.started_at,event_at:x.event_at,created_at:x.event_at,archive_status:status,archive_state:running?'running':x.job?.status||'pending',archive_retry_at:retryAt>Date.now()?new Date(retryAt).toISOString():'',episode:{startedAt:x.started_at,endedAt:x.event_at}};
+  };
   const retrieveRelevantMemories=(pid,cid,queryText='',excludeMsgIds=new Set(),limit=4,maxChars=1200,asOf=0)=>{
     const allItems=db.episodicMemories.filter(x=>x.owner_id===cid&&x.profile_id===pid&&!x.isolated_error&&!x.archive_stale&&(!asOf||(Date.parse(x.event_at)<=asOf&&(x.raw_msg_ids||[]).every(id=>db.messages.some(m=>m.id===id&&Date.parse(m.created_at)<=asOf))))).filter(x=>x.source_type!=='daily-summary'||!db.episodicMemories.some(y=>y.owner_id===cid&&y.profile_id===pid&&y.source_type==='episode-summary'&&!y.archive_stale&&overlapIds(x.raw_msg_ids,y.raw_msg_ids))).sort((a,b)=>b.event_at.localeCompare(a.event_at));
     if(!allItems.length)return [];
@@ -3384,6 +3444,9 @@
         for(const k of ['model','image_model'])if(k in data)s[k]=String(data[k]||'').slice(0,200);
         for(const k of ['temperature','top_p','max_tokens'])if(k in data)s[k]=Number(data[k]);
         if(nextTaskTokens!==null)s.task_max_tokens=nextTaskTokens;
+        if(Object.keys(data).some(k=>['archive_enabled','archive_mode','archive_base_url','archive_model','archive_api_key','base_url','api_key','model','task_max_tokens'].includes(k))){
+          const store=episodeStore();store.retry_at=0;for(const j of store.jobs)if(j.status==='failed')j.retry_at=0;lastArchiveTick=0;
+        }
         save();return {settings:pub()};
       }
       case '/models':{
@@ -3702,7 +3765,7 @@
         save();
         return {ok:true,nickname:nick,character:char(c,p.id),relation:r};
       }
-      case '/episode-archive-tick':{void tickEpisodeArchive(String(data.profileId||'')).catch(()=>{});return {ok:true};}
+      case '/episode-archive-tick':return await tickEpisodeArchive(String(data.profileId||''));
       case '/memories':{
         const p=getP(params.get('profileId')||data.profileId),c=getC(params.get('characterId')||data.characterId),qText=String(params.get('query')||data.query||'').trim();
         const mode=relation(p.id,c.id)?.mode||'chat';
@@ -3753,7 +3816,8 @@
         if(act==='archive-episode'){
           const candidate=episodeList(p,c).find(x=>x.source_key===data.sourceKey&&x.signature===data.signature);
           if(!candidate)bodyErr('情节已变化或已经归档');
-          save();const ok=await archiveOne(p,c,candidate,true);return {ok};
+          if(!archiveStoredCurrent())return archiveOutcome('blocked','存档已在另一页面更新，请使用最新页面');
+          save();return await archiveOne(p,c,candidate,true);
         }
         if(act==='delete'){
           const mid=String(data.memoryId||data.id||'');if(!mid)bodyErr('缺少记忆 ID');
