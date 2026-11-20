@@ -248,7 +248,8 @@ async function identifyAction(){const name=$('pf-name').value.trim();if(!name){t
 async function uploadAvatar(e){const file=e.target.files?.[0];if(!file)return;if(!file.type.startsWith('image/')){toast('请选择图片');return}const img=new Image(),url=URL.createObjectURL(file);img.onload=()=>{const cv=document.createElement('canvas');const scale=Math.min(1,520/Math.max(img.width,img.height));cv.width=Math.round(img.width*scale);cv.height=Math.round(img.height*scale);cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);state.profileDraft=readProfileDraft();state.profileDraft.avatar=cv.toDataURL('image/jpeg',.74);URL.revokeObjectURL(url);renderProfile(state.profileDraft);toast('头像已添加，保存 Profile 后生效')};img.onerror=()=>toast('头像读取失败');img.src=url}
 // Discover and swipe
 // One discovery batch per Profile; tab navigation must not regenerate it.
-const discoverDecks=new Map(),discoverRequests=new Map(),discoverAllSources=new Set();
+const discoverDecks=new Map(),discoverRequests=new Map(),discoverAllSources=new Set(),pendingDiscoverSwipes=new Map();
+let discoverSwipeChain=Promise.resolve();
 function discoverFilterKey(p){return JSON.stringify([p.id,p.sources||[],p.interested_in||[],p.min_age,p.max_age,p.role_character_id||''])}
 function isCurrentDiscover(pid,key){const p=activeProfile();return state.tab==='discover'&&state.activeId===pid&&p&&discoverFilterKey(p)===key}
 function showDiscoverDeck(pid,deck){if(!isCurrentDiscover(pid,deck.key)||discoverDecks.get(pid)!==deck)return;state.candidates=deck.candidates;state.deckIndex=deck.index;renderDiscover(deck.total)}
@@ -263,7 +264,7 @@ async function loadCandidates(showToast=false){$('topbar-actions').innerHTML=`${
     const request={key,promise:null};discoverRequests.set(pid,request);
     request.promise=(async()=>{
       try{
-        const d=await api('/discover',{profileId:pid,refresh:Boolean(showToast)});
+        const d=await api('/discover',{profileId:pid,refresh:Boolean(showToast),excludeIds:[...pendingDiscoverSwipes.values()].filter(x=>x.pid===pid).map(x=>x.cid)});
         if(discoverRequests.get(pid)!==request)return;
         if(d.apiError){
           if(isCurrentDiscover(pid,key)){
@@ -276,7 +277,7 @@ async function loadCandidates(showToast=false){$('topbar-actions').innerHTML=`${
         const deck={key,candidates:d.candidates,index:0,total:d.total_available};discoverDecks.set(pid,deck);
         if(isCurrentDiscover(pid,key)){
           showDiscoverDeck(pid,deck);
-          if(showToast)toast(`已刷新：${d.candidates.length} 位候选${d.generation==='live-generated'?' · AI 已重新生成角色档案':''}${d.candidates.length<10?'（当前目录不足 10 位）':''}`);
+          if(showToast)toast(`已刷新：${d.candidates.length} 位候选${d.generation==='live-generated'?' · '+(d.new_count||0)+' 位新收录角色 · 照片描写已生成':''}${d.candidates.length<10?'（本轮不足 10 位）':''}`);
         }
       }catch(e){
         if(discoverRequests.get(pid)!==request||!isCurrentDiscover(pid,key))return;
@@ -324,39 +325,67 @@ async function generateCardPortrait(regenerate=false,silent=false){
     if(state.tab==='discover')renderDiscover();
   }
 }
-function attachSwipe(){const el=$('swipe-card');let startX=0,dx=0,dragging=false;el.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;dragging=true;startX=e.clientX;dx=0;el.classList.add('dragging');el.setPointerCapture(e.pointerId)});el.addEventListener('pointermove',e=>{if(!dragging)return;dx=e.clientX-startX;el.style.transform=`translateX(${dx}px) rotate(${dx/24}deg)`;$('stamp-like').style.opacity=Math.min(1,Math.max(0,dx/100));$('stamp-nope').style.opacity=Math.min(1,Math.max(0,-dx/100))});el.addEventListener('pointerup',e=>{if(!dragging)return;dragging=false;el.classList.remove('dragging');if(Math.abs(dx)>95){doSwipe(dx>0?'right':'left')}else{el.style.transform='';$('stamp-like').style.opacity=0;$('stamp-nope').style.opacity=0}})}
+let activeSwipeGesture=false;
+function attachSwipe(){
+  const el=$('swipe-card');if(!el)return;
+  let startX=0,startY=0,dx=0,dragging=false,pointer=null,raf=0;
+  const paint=()=>{raf=0;if(!el.isConnected)return;el.style.transform='translate3d('+dx+'px,0,0) rotate('+dx/24+'deg)';const like=el.querySelector('#stamp-like'),nope=el.querySelector('#stamp-nope');if(like)like.style.opacity=Math.min(1,Math.max(0,dx/100));if(nope)nope.style.opacity=Math.min(1,Math.max(0,-dx/100));};
+  const release=(commit=false)=>{if(!dragging)return;dragging=false;activeSwipeGesture=false;el.classList.remove('dragging');if(raf){cancelAnimationFrame(raf);raf=0;}try{if(el.hasPointerCapture(pointer))el.releasePointerCapture(pointer);}catch{}if(commit&&Math.abs(dx)>75){doSwipe(dx>0?'right':'left');}else{dx=0;paint();el.style.transform='';}};
+  el.addEventListener('pointerdown',e=>{if(!e.isPrimary||e.button!==0||e.target.closest('button'))return;dragging=true;activeSwipeGesture=true;pointer=e.pointerId;startX=e.clientX;startY=e.clientY;dx=0;el.classList.add('dragging');try{el.setPointerCapture(pointer);}catch{}});
+  el.addEventListener('pointermove',e=>{if(!dragging||e.pointerId!==pointer)return;dx=e.clientX-startX;if(Math.abs(e.clientY-startY)>45&&Math.abs(dx)<30){release(false);return;}if(!raf)raf=requestAnimationFrame(paint);});
+  el.addEventListener('pointerup',e=>{if(e.pointerId===pointer){dx=e.clientX-startX;release(true);}});
+  el.addEventListener('pointercancel',()=>release(false));
+  el.addEventListener('lostpointercapture',()=>release(false));
+}
 async function doSwipe(direction){
   const pid=state.activeId,deck=discoverDecks.get(pid);
   if(state.loading||discoverRequests.has(pid)||!deck||!isCurrentDiscover(pid,deck.key))return;
   const index=deck.index,c=deck.candidates[index];if(!c)return;
+  const key=pid+'|'+c.id;
+  if(pendingDiscoverSwipes.has(key))return;
+  pendingDiscoverSwipes.set(key,{pid,cid:c.id});
   state.loading=true;const card=$('swipe-card');
-  if(card){card.style.transform=`translateX(${direction==='right'?600:-600}px) rotate(${direction==='right'?25:-25}deg)`;card.style.opacity='0'}
-  try{
-    const res=await api('/swipe',{profileId:pid,characterId:c.id,direction});
-    if(discoverDecks.get(pid)!==deck)return;
-    deck.index=index+1;
-    if(isCurrentDiscover(pid,deck.key)){state.deckIndex=deck.index;setTimeout(()=>showDiscoverDeck(pid,deck),130);}
-    if(res.matched&&!res.already_matched){
-      refreshInboxQuietly(pid);
-      setTimeout(()=>{if(!isCurrentDiscover(pid,deck.key)||discoverDecks.get(pid)!==deck)return;
-        if(res.apiError)showApiErrorModal(res.apiError,res.taskState,{type:'first_message',characterId:c.id,profileId:pid});else matchModal(c,res);
-      },330);
-    }else if(isCurrentDiscover(pid,deck.key)){
-      if(res.already_matched)toast('你们已经在匹配列表中了');
-      else if(direction==='right')toast(res.engine==='demo'?'对方这次没有选择匹配（演示判定）':'对方这次没有选择匹配');
-    }
-  }catch(e){if(isCurrentDiscover(pid,deck.key)&&discoverDecks.get(pid)===deck){if(e.apiError)showApiErrorModal(e.apiError,null,{type:'swipe',direction,profileId:pid,characterId:c.id});else toast(e.message);if(card){card.style.transform='';card.style.opacity='1'}}}
-  finally{state.loading=false}
+  if(card){card.style.transform='translate3d('+(direction==='right'?600:-600)+'px,0,0) rotate('+(direction==='right'?25:-25)+'deg)';card.style.opacity='0';}
+  // Advance on the animation timer, never on the network response.
+  await new Promise(resolve=>setTimeout(resolve,150));
+  if(discoverDecks.get(pid)===deck){deck.index=index+1;if(isCurrentDiscover(pid,deck.key))showDiscoverDeck(pid,deck);}
+  state.loading=false;
+  const run=async()=>{
+    try{
+      const res=await api('/swipe',{profileId:pid,characterId:c.id,direction});
+      if(res.matched&&!res.already_matched){
+        refreshInboxQuietly(pid);
+        if(isCurrentDiscover(pid,deck.key)&&discoverDecks.get(pid)===deck){
+          if(res.apiError){toast('已匹配 '+c.name+'，开场消息可在聊天中重试');}
+          else if(deck.index===index+1&&!state.loading)matchModal(c,res);
+          else toast('你与 '+c.name+' 互相喜欢了！');
+        }
+      }else if(isCurrentDiscover(pid,deck.key)&&direction==='right'){
+        toast(res.already_matched?'你们已经在匹配列表中了':res.engine==='demo'?'对方这次没有选择匹配（演示判定）':'对方这次没有选择匹配');
+      }
+    }catch(e){
+      // Never discard a failed swipe: append the original card for retry.
+      const latest=discoverDecks.get(pid);
+      if(latest&&latest.key===deck.key&&!latest.candidates.slice(latest.index).some(x=>x.id===c.id)){
+        latest.candidates.push(c);if(isCurrentDiscover(pid,latest.key)&&!state.loading)showDiscoverDeck(pid,latest);
+      }
+      if(isCurrentDiscover(pid,deck.key))toast('滑卡请求未完成：'+c.name+' 已放回候选，可再次尝试');
+    }finally{pendingDiscoverSwipes.delete(key);}
+  };
+  discoverSwipeChain=discoverSwipeChain.then(run,run);
+  return discoverSwipeChain;
 }
 function matchModal(c,r){const isNormal=state.settings.mode==='normal';const html=`<div class="match-spotlight">${I('hearts')}<div class="match-text">IT'S A MATCH</div></div><h2>${r.again?'又遇见了，'+esc(c.name):'你们互相喜欢！'}</h2><p>${r.again?'你们之前的聊天和经历都还在。':(isNormal?'你们已经建立匹配，连接 API 后角色会用真实模型向你打招呼，你也可以现在先发消息。':'你可以现在开始聊天，角色也给你发来了第一条消息。')}${r.engine==='demo'?' 当前匹配判定为演示模式。':''}</p>`;modal(html,`<button class="btn ghost" data-action="close-modal">继续发现</button><button class="btn primary" data-action="open-match" data-id="${esc(c.id)}">${I('letter')} 去聊天</button>`)}
-function cardModal(){const c=state.candidates[state.deckIndex];if(!c)return;modal(`<div class="kicker">CANON PROFILE</div><h2>${esc(c.name)} · ${c.age||'年龄未公开'}</h2><p>${esc(c.source)} / ${esc(c.version)}</p><div class="glass-info"><b>已收录原作背景</b><p>${esc(c.canon)}</p></div><p>简介是约会软件中的公开资料，不等于这个角色拥有的全部秘密。</p>`,`<button class="btn soft" data-action="close-modal">返回卡片</button>`)}
+function cardModal(){const c=state.candidates[state.deckIndex];if(!c)return;modal(`<div class="kicker">CANON PROFILE</div><h2>${esc(c.name)} · ${c.age||'年龄未公开'}</h2><p>${esc(c.source)} / ${esc(c.version)}</p><div class="glass-info"><b>已收录原作背景</b><p>${esc(c.canon)}</p></div><p>简介是约会软件中的公开资料，不等于这个角色拥有的全部秘密。</p>${c.identity_origin==='ai-discovered'?'<p class="caption">这个角色版本由 AI 扩展收录，原作资料尚未独立核验。</p>':''}`,`<button class="btn soft" data-action="close-modal">返回卡片</button>`)}
 async function photoDescriptionModal(regenerate=false,forceText=false){const c=state.candidates[state.deckIndex];if(!c)return;
   if(!forceText&&c.portrait){
     const content=`<div class="kicker">AI GENERATED PHOTO</div><h2>${esc(c.name)} 的照片</h2><p class="caption">${esc(c.source)} · ${esc(c.version)}</p><div class="portrait-modal-preview"><img src="${esc(c.portrait)}" alt="${esc(c.name)}"></div><p class="caption">由你配置的图片生成 API 生成并保存在本地。</p>`;
     const buttons=`<button class="btn ghost" data-action="close-modal">关闭</button><button class="btn soft" data-action="photo-text-fallback">${I('book')} 查看文字描写</button>${state.settings.image_mode==='live'?`<button class="btn primary" data-action="regenerate-portrait">${I('refresh')} 重新生成图片</button>`:''}`;
     return modal(content,buttons);
   }
-  try{const r=await api('/photo-description',{characterId:c.id,regenerate});
+  try{const r=!regenerate&&c.photo_description?{description:c.photo_description,engine:c.photo_engine}:await api('/photo-description',{characterId:c.id,regenerate});
+    if(state.candidates[state.deckIndex]!==c||state.tab!=='discover')return;
+    c.photo_description=r.description;c.photo_engine=r.engine;
     const content=`<div class="kicker">A PHOTO, IN WORDS</div><h2>${esc(c.name)} 的照片</h2><p class="caption">${esc(c.source)} · ${esc(c.version)}</p><div class="photo-description-paper"><p>${esc(r.description)}</p></div><p class="caption">${state.settings.image_mode==='live'?'你也可以点击下方按钮使用图片 API 生成实际图片。':`当前未填写图片生成 API，使用文字呈现照片。${r.engine==='live-text'?'这段描写由你配置的文字模型生成。':'这是固定的文字示意；连接文字模型后可生成更细致的描写，或在终端填写图片 API 生成图片。'}`}</p>`;
     const buttons=`<button class="btn ghost" data-action="close-modal">关闭</button>${state.settings.mode==='live'?`<button class="btn soft" data-action="photo-description-refresh">${I('refresh')} 重新描写（文字 API）</button>`:''}${state.settings.image_mode==='live'?`<button class="btn primary" data-action="regenerate-portrait">${I('camera')} 用图片 API 生成照片</button>`:''}`;
     modal(content,buttons);

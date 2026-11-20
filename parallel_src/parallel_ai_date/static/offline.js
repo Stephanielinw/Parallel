@@ -15,6 +15,14 @@
   const CATALOG=[{"id":"re-game:leon:re2","name":"Leon S. Kennedy","age":21,"gender":"male","source":"生化危机 · 游戏","version":"Resident Evil 2 · 1998","canon":"刚加入浣熊市警局的新人警察，亲历浣熊市事件；此时期尚未成为政府特工。","bio":"新工作第一天就有点失控。咖啡，摩托车，以及不太擅长的自我介绍。","accent":"#647c9d","tags":["警察","善良","幽默"],"aliases":["里昂","Leon","Leon Kennedy"]},{"id":"re-game:leon:re4","name":"Leon S. Kennedy","age":27,"gender":"male","source":"生化危机 · 游戏","version":"Resident Evil 4 · 2004","canon":"浣熊市幸存者，现为美国政府特工，被派往西班牙营救总统女儿。","bio":"经常出差。回复不一定快，但不会故意失联。","accent":"#53798c","tags":["特工","讽刺幽默"],"aliases":["里昂"]},{"id":"re-game:leon:re6","name":"Leon S. Kennedy","age":36,"gender":"male","source":"生化危机 · 游戏","version":"Resident Evil 6 · 2013","canon":"经验丰富的美国政府特工；经历浣熊市及数次生化危机事件。","bio":"日程有点混乱。我承诺会在安全的地方回消息。","accent":"#495d77","tags":["特工","成熟"],"aliases":["里昂"]},{"id":"re-game:ada:re2","name":"Ada Wong","age":0,"gender":"female","source":"生化危机 · 游戏","version":"Resident Evil 2 · 1998","canon":"神秘的情报人员，在浣熊市执行任务；和 Leon 产生交集，真实动机隐秘。","bio":"关于我，留点悬念比较好。","accent":"#9e555d","tags":["神秘","独立"],"aliases":["艾达","Ada"]},{"id":"re-game:ada:re4","name":"Ada Wong","age":0,"gender":"female","source":"生化危机 · 游戏","version":"Resident Evil 4 · 2004","canon":"独立行动的间谍；与 Leon 在西班牙任务中再次相遇。","bio":"喜欢聪明的人。更喜欢他们知道什么时候不该提问。","accent":"#aa5058","tags":["间谍"],"aliases":["艾达"]},{"id":"re-game:claire:re2","name":"Claire Redfield","age":19,"gender":"female","source":"生化危机 · 游戏","version":"Resident Evil 2 · 1998","canon":"来到浣熊市寻找哥哥 Chris 的大学生，和 Leon 一起从生化灾难中求生。","bio":"骑摩托、找哥哥、顺便拯救世界。先喝杯咖啡？","accent":"#a95656","tags":["摩托车","勇敢"],"aliases":["克莱尔","Claire"]},{"id":"re-game:jill:re3","name":"Jill Valentine","age":24,"gender":"female","source":"生化危机 · 游戏","version":"Resident Evil 3 · 1998","canon":"前 S.T.A.R.S. 队员，努力在浣熊市灾难中活下去。","bio":"喜欢行动派。空口承诺就不必了。","accent":"#6f7d8c","tags":["S.T.A.R.S.","果断"],"aliases":["吉尔","Jill"]},{"id":"re-game:carlos:re3","name":"Carlos Oliveira","age":21,"gender":"male","source":"生化危机 · 游戏","version":"Resident Evil 3 · 1998","canon":"受雇于 U.B.C.S. 的佣兵，在浣熊市参与撤离行动，并结识 Jill。","bio":"有个好消息：我会讲笑话。坏消息是笑话不一定好笑。","accent":"#8e876e","tags":["佣兵","幽默"],"aliases":["卡洛斯","Carlos"]},{"id":"re-game:chris:re5","name":"Chris Redfield","age":36,"gender":"male","source":"生化危机 · 游戏","version":"Resident Evil 5 · 2009","canon":"BSAA 成员，长期打击生化恐怖主义，Jill 的战友。","bio":"平时很忙，但希望认识能理解这一点的人。","accent":"#6d8678","tags":["BSAA","坚定"],"aliases":["克里斯","Chris"]},{"id":"re-game:wesker:re5","name":"Albert Wesker","age":0,"gender":"male","source":"生化危机 · 游戏","version":"Resident Evil 5 · 2009","canon":"曾任 S.T.A.R.S. 队长，涉足生化阴谋并追求超越人类的力量。","bio":"标准很高。也许你会让我改变主意。","accent":"#6e6d81","tags":["野心","冷静"],"aliases":["威斯克","Wesker"]},{"id":"re-game:ashley:re4","name":"Ashley Graham","age":20,"gender":"female","source":"生化危机 · 游戏","version":"Resident Evil 4 · 2004","canon":"美国总统的女儿，曾遭绑架，Leon 负责营救她。","bio":"想去一个不会突然发生意外的地方散步。","accent":"#ae9a6c","tags":["学生","开朗"],"aliases":["阿什莉","Ashley"]},{"id":"re-game:luis:re4","name":"Luis Serra","age":0,"gender":"male","source":"生化危机 · 游戏","version":"Resident Evil 4 · 2004","canon":"曾参与寄生虫研究，在村庄事件中协助 Leon。","bio":"不是所有秘密都适合第一顿晚餐。","accent":"#a07965","tags":["研究者","机智"],"aliases":["路易斯","Luis"]},{"id":"re-game:sherry:re6","name":"Sherry Birkin","age":26,"gender":"female","source":"生化危机 · 游戏","version":"Resident Evil 6 · 2012","canon":"浣熊市幸存者，长大后成为美国政府特工。","bio":"我很珍惜平静的日子，也不介意一场冒险。","accent":"#9c8283","tags":["特工","温柔"],"aliases":["雪莉","Sherry"]},{"id":"re-game:jake:re6","name":"Jake Muller","age":20,"gender":"male","source":"生化危机 · 游戏","version":"Resident Evil 6 · 2012","canon":"佣兵，Albert Wesker 之子，与 Sherry 在生化事件中共同逃亡。","bio":"无聊的聊天我会先退出。好玩的另说。","accent":"#7c6e64","tags":["佣兵","嘴硬"],"aliases":["杰克","Jake"]},{"id":"re-game:ethan:re7","name":"Ethan Winters","age":33,"gender":"male","source":"生化危机 · 游戏","version":"Resident Evil 7 · 2017","canon":"寻找失踪妻子 Mia 的普通工程师，卷入路易斯安那的贝克家族事件。","bio":"比起惊喜，我更希望一切平安。","accent":"#768d8a","tags":["工程师","坚韧"],"aliases":["伊森","Ethan"]},{"id":"re-game:rebecca:re0","name":"Rebecca Chambers","age":18,"gender":"female","source":"生化危机 · 游戏","version":"Resident Evil 0 · 1998","canon":"S.T.A.R.S. Bravo 小队的年轻医疗专家，经历阿克雷山区事件。","bio":"喜欢有趣的科学问题。也喜欢真正懂得倾听的人。","accent":"#8d9b84","tags":["医疗","聪慧"],"aliases":["瑞贝卡","Rebecca"]},{"id":"re-film:alice:re1","name":"Alice","age":0,"gender":"female","source":"生化危机 · 电影","version":"Resident Evil · 2002","canon":"电影时间线中与保护伞公司及蜂巢事件密切相关的幸存者。","bio":"我有一些不能轻易解释的过去。","accent":"#7a718c","tags":["生存者","行动"],"aliases":["爱丽丝"]},{"id":"re-film:rain:re1","name":"Rain Ocampo","age":0,"gender":"female","source":"生化危机 · 电影","version":"Resident Evil · 2002","canon":"电影时间线中突击进入蜂巢的保护伞公司特遣队员。","bio":"我不需要被保护。只需要你说话算数。","accent":"#6b8492","tags":["战术","直率"],"aliases":["蕾恩","Rain"]},{"id":"re-film:jill:re2","name":"Jill Valentine","age":0,"gender":"female","source":"生化危机 · 电影","version":"Apocalypse · 2004","canon":"电影时间线中的浣熊市警员，与游戏的 Jill 为不同连续性。","bio":"如果我答应见面，我通常会准时。","accent":"#78839c","tags":["警员","果断"],"aliases":["吉尔"]},{"id":"re-film:carlos:re2","name":"Carlos Olivera","age":0,"gender":"male","source":"生化危机 · 电影","version":"Apocalypse · 2004","canon":"电影时间线中参与浣熊市生存行动的佣兵。","bio":"不如先告诉我你最喜欢的歌？","accent":"#827865","tags":["佣兵","可靠"],"aliases":["卡洛斯"]},{"id":"re-film:claire:re3","name":"Claire Redfield","age":0,"gender":"female","source":"生化危机 · 电影","version":"Extinction · 2007","canon":"电影时间线里领导幸存者车队，和游戏 Claire 属不同连续性。","bio":"我在路上。也许某天会找到愿意停留的地方。","accent":"#a06466","tags":["幸存者","领袖"],"aliases":["克莱尔"]},{"id":"re-film:leon:re5","name":"Leon S. Kennedy","age":0,"gender":"male","source":"生化危机 · 电影","version":"Retribution · 2012","canon":"电影时间线中的 Leon，参与营救 Alice 的行动，与游戏版 Leon 不属于同一个连续性。","bio":"出任务不一定轻松。约会能不能别再有突发状况？","accent":"#6b7990","tags":["行动","沉着"],"aliases":["里昂","Leon"]},{"id":"re-film:ada:re5","name":"Ada Wong","age":0,"gender":"female","source":"生化危机 · 电影","version":"Retribution · 2012","canon":"电影时间线中与 Alice 一起行动的 Ada Wong；不继承游戏版 Ada 的个人关系记忆。","bio":"我有自己的计划。你可以试着跟上。","accent":"#9f6679","tags":["间谍","独立"],"aliases":["艾达","Ada"]},{"id":"re-film:barry:re5","name":"Barry Burton","age":0,"gender":"male","source":"生化危机 · 电影","version":"Retribution · 2012","canon":"电影时间线中参与对保护伞设施突袭的成员。","bio":"靠谱的人总有办法找到回家的路。","accent":"#746b64","tags":["队友","坚定"],"aliases":["巴瑞","Barry"]},{"id":"re-film:luther:re4","name":"Luther West","age":0,"gender":"male","source":"生化危机 · 电影","version":"Afterlife · 2010","canon":"电影时间线中的幸存者，在洛杉矶监狱与 Alice 等人并肩行动。","bio":"喜欢好天气，以及没有丧尸的篮球场。","accent":"#947965","tags":["运动","乐观"],"aliases":["Luther","卢瑟"]},{"id":"re-film:chris:re4","name":"Chris Redfield","age":0,"gender":"male","source":"生化危机 · 电影","version":"Afterlife · 2010","canon":"电影时间线中 Claire 的哥哥，出现在洛杉矶监狱；与游戏版 Chris 为不同连续性。","bio":"希望下一次聚会不会有人拿枪指着门。","accent":"#778479","tags":["冷静","保护者"],"aliases":["Chris","克里斯"]},{"id":"re-film:kaplan:re1","name":"Chad Kaplan","age":0,"gender":"male","source":"生化危机 · 电影","version":"Resident Evil · 2002","canon":"电影第一部中进入蜂巢的保护伞特遣队技术成员。","bio":"技术问题可以找我。感情问题……也许我们一起学。","accent":"#6a8091","tags":["技术","谨慎"],"aliases":["Kaplan","卡普兰"]},{"id":"re-film:matt:re1","name":"Matt Addison","age":0,"gender":"male","source":"生化危机 · 电影","version":"Resident Evil · 2002","canon":"与 Alice 共同卷入蜂巢事件的环保活动者，试图揭露保护伞公司的秘密。","bio":"我总觉得真相值得被认真对待。","accent":"#777987","tags":["理想主义","执着"],"aliases":["Matt","马特"]},{"id":"re-film:one:re1","name":"One","age":0,"gender":"male","source":"生化危机 · 电影","version":"Resident Evil · 2002","canon":"第一部电影中率领特遣队进入蜂巢的队长。","bio":"直接一点吧。我更喜欢知道接下来该做什么。","accent":"#666b74","tags":["队长","果断"],"aliases":["One"]},{"id":"re-film:wesker:re4","name":"Albert Wesker","age":0,"gender":"male","source":"生化危机 · 电影","version":"Afterlife · 2010","canon":"电影时间线中保护伞公司的高层人物，不与游戏版合并记忆。","bio":"效率是一种美德。","accent":"#686a7a","tags":["权力","冷酷"],"aliases":["威斯克"]},{"id":"marvel:mcu:steve-ws","name":"Steve Rogers","age":0,"gender":"male","source":"漫威 · MCU","version":"The Winter Soldier · 2014","canon":"复仇者联盟成员，美国队长，二战时期的超级士兵。","bio":"喜欢老歌，散步，以及坦诚的人。","accent":"#6c859e","tags":["军人","正直"],"aliases":["Steve","美国队长"]},{"id":"marvel:mcu:bucky-ws","name":"Bucky Barnes","age":0,"gender":"male","source":"漫威 · MCU","version":"The Winter Soldier · 2014","canon":"史蒂夫的旧友，被九头蛇长期控制并称作冬日战士。","bio":"我在努力重新认识这个世界。慢慢来。","accent":"#657478","tags":["神秘","沉静"],"aliases":["Bucky","巴基"]},{"id":"marvel:mcu:natasha-ws","name":"Natasha Romanoff","age":0,"gender":"female","source":"漫威 · MCU","version":"The Winter Soldier · 2014","canon":"前间谍，复仇者联盟成员，与 Steve 一起行动。","bio":"我更欣赏有趣的问题，而不是标准答案。","accent":"#91606a","tags":["间谍","幽默"],"aliases":["Natasha","黑寡妇"]},{"id":"marvel:mcu:tony-im3","name":"Tony Stark","age":0,"gender":"male","source":"漫威 · MCU","version":"Iron Man 3 · 2013","canon":"工程师、发明家，钢铁侠，经历纽约之战后努力面对创伤。","bio":"会修东西。除了有些复杂的人际关系。","accent":"#98744c","tags":["工程师","机智"],"aliases":["Tony","托尼"]},{"id":"marvel:mcu:loki-tva","name":"Loki","age":0,"gender":"male","source":"漫威 · MCU","version":"Loki · TVA","canon":"由 TVA 管束的洛基变体，熟悉阿斯加德与时间线概念。","bio":"不保证你猜得透我。但你可以试试。","accent":"#6d8670","tags":["魔法","狡黠"],"aliases":["洛基"]},{"id":"witcher:game:geralt-3","name":"Geralt of Rivia","age":0,"gender":"male","source":"巫师 · 游戏","version":"The Witcher 3","canon":"利维亚的杰洛特，狩魔猎人，和叶奈法、希里有长期羁绊。","bio":"喜欢安静、有好酒的地方。话不太多。","accent":"#8a8a83","tags":["狩魔猎人","寡言"],"aliases":["Geralt","杰洛特"]},{"id":"witcher:game:yennefer-3","name":"Yennefer of Vengerberg","age":0,"gender":"female","source":"巫师 · 游戏","version":"The Witcher 3","canon":"强大的女术士，与杰洛特和希里关系深厚。","bio":"我欣赏有主见的人。也欣赏尊重界限的人。","accent":"#7f6a87","tags":["魔法","独立"],"aliases":["叶奈法","Yennefer"]},{"id":"witcher:game:triss-3","name":"Triss Merigold","age":0,"gender":"female","source":"巫师 · 游戏","version":"The Witcher 3","canon":"女术士，曾与杰洛特有感情经历，并帮助受迫害的法师。","bio":"喜欢温暖的家，也愿意为朋友踏上旅途。","accent":"#b47d65","tags":["魔法","温柔"],"aliases":["特莉丝","Triss"]},{"id":"witcher:game:cirilla-3","name":"Cirilla","age":21,"gender":"female","source":"巫师 · 游戏","version":"The Witcher 3","canon":"希里，拥有上古之血，杰洛特的养女，长期在不同世界之间穿梭。","bio":"喜欢自由，别试着把我困在一个地方。","accent":"#8c898c","tags":["剑术","自由"],"aliases":["Ciri","希里"]},{"id":"cyberpunk:game:judy","name":"Judy Alvarez","age":0,"gender":"female","source":"赛博朋克 2077","version":"Cyberpunk 2077","canon":"超梦体验技术专家，居住在夜之城，重视朋友与正义。","bio":"海边胜过霓虹。别问我为什么。","accent":"#6b989d","tags":["超梦编辑","理想主义"],"aliases":["Judy","朱迪"]},{"id":"cyberpunk:game:panam","name":"Panam Palmer","age":0,"gender":"female","source":"赛博朋克 2077","version":"Cyberpunk 2077","canon":"游民，曾属阿德卡多家族，独立而直接。","bio":"长途公路旅行、夜空和信任。","accent":"#a17969","tags":["游民","热情"],"aliases":["Panam","帕南"]},{"id":"cyberpunk:game:river","name":"River Ward","age":0,"gender":"male","source":"赛博朋克 2077","version":"Cyberpunk 2077","canon":"夜之城前警探，重视家庭，执着寻找真相。","bio":"我喜欢认真吃饭和认真听人说话。","accent":"#8f846a","tags":["警探","家庭"],"aliases":["River","瑞弗"]},{"id":"cyberpunk:game:kerry","name":"Kerry Eurodyne","age":0,"gender":"male","source":"赛博朋克 2077","version":"Cyberpunk 2077","canon":"摇滚乐手，曾是武侍乐队成员，长期活跃于夜之城音乐圈。","bio":"音乐是谈话的好开头。也可能是吵架的开头。","accent":"#8b6f80","tags":["音乐","自由"],"aliases":["Kerry","克里"]}];
   const SOURCES=[...new Set(CATALOG.map(c=>c.source))].sort();
   const byId=new Map(CATALOG.map(c=>[c.id,c]));
+  const builtinIds=new Set(CATALOG.map(c=>c.id));
+  const identityNorm=v=>String(v||'').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
+  const identityKey=c=>[identityNorm(c.name),identityNorm(c.source),identityNorm(c.version)].join('|');
+  const syncDiscoveredCatalog=target=>{
+    for(const id of byId.keys())if(!builtinIds.has(id))byId.delete(id);
+    target.discoveredCharacters ||= {};
+    for(const [id,c] of Object.entries(target.discoveredCharacters))if(id.startsWith('discovered:')&&c?.id===id&&c.name&&c.source&&c.version&&Array.isArray(c.aliases)&&Array.isArray(c.tags))byId.set(id,c);
+  };
   const stamp=()=>new Date().toISOString();
   const uid=()=>typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID():'p'+Math.random().toString(36).slice(2)+Date.now().toString(36);
   const pairKey=(p,c)=>p+'|'+c;
@@ -278,6 +286,8 @@
   };
   const ensureDbFields=target=>{
     target.photoDescriptions ||= {};
+    target.discoveredCharacters ||= {};
+    target.discoverSeen ||= {};
     target.queue ||= {};
     target.taskStates ||= {};
     target.bgErrors ||= {};
@@ -364,7 +374,7 @@
     if(!db||!Array.isArray(db.profiles))throw Error('broken');
     legacySystemLogs=Array.isArray(db.systemLogs)?db.systemLogs:[];
     delete db.systemLogs;
-    ensureDbFields(db);
+    ensureDbFields(db);syncDiscoveredCatalog(db);
   }catch(err){db=empty();storageAvailable=false;mainStoreReadable=false;}
   const save=()=>{
     if(!mainStoreReadable)throw Error('无法安全读取原存档，已停止覆盖；请先导出备份。');
@@ -2471,8 +2481,9 @@
     if(rawTarget.includes('赛博朋克'))extra.push('赛博朋克2077 cyberpunk2077 2077');
     return clean(rawTarget+' '+extra.join(' ')).includes(cq);
   };
-  const candidates=p=>CATALOG.filter(c=>relation(p.id,c.id)?.status!=='matched'&&(!p.sources.length||p.sources.some(tag=>sourceMatches(tag,c)))&&p.role_character_id!==c.id&&(!p.interested_in.length||p.interested_in.includes('all')||p.interested_in.includes(c.gender))&&(!c.age||c.age>=p.min_age&&c.age<=p.max_age));
-  const shuffle=a=>a.slice().sort(()=>Math.random()-.5);
+  const eligibleCandidate=(p,c)=>relation(p.id,c.id)?.status!=='matched'&&(!p.sources.length||p.sources.some(tag=>sourceMatches(tag,c)))&&p.role_character_id!==c.id&&(!p.interested_in.length||p.interested_in.includes('all')||p.interested_in.includes(c.gender))&&(!c.age||c.age>=p.min_age&&c.age<=p.max_age);
+  const candidates=p=>Array.from(byId.values()).filter(c=>eligibleCandidate(p,c));
+  const shuffle=a=>{const out=a.slice();for(let i=out.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[out[i],out[j]]=[out[j],out[i]];}return out;};
   const idMatches=(name,source='')=>{
     const q=name.toLowerCase().trim().replace(/\s+/g,' ');
     if(!q)return [];
@@ -2493,7 +2504,7 @@
       '钢铁侠':'tony stark'
     };
     const mapped=norm(aliasMap[nq]||q);
-    return CATALOG.filter(c=>(!source||c.source===source||c.version===source||sourceMatches(source,c))&&[c.name,...c.aliases].some(a=>a.toLowerCase()===q||a.toLowerCase().split(/\s+/).includes(q)||norm(a)===nq||norm(a)===mapped||(nq.length>=2&&norm(a).includes(nq)))).slice(0,20).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,age:c.age,canon:c.canon}));
+    return Array.from(byId.values()).filter(c=>(!source||c.source===source||c.version===source||sourceMatches(source,c))&&[c.name,...c.aliases].some(a=>a.toLowerCase()===q||a.toLowerCase().split(/\s+/).includes(q)||norm(a)===nq||norm(a)===mapped||(nq.length>=2&&norm(a).includes(nq)))).slice(0,20).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,age:c.age,canon:c.canon}));
   };
   const prompt=(p,c,mode,pendingIds=[],options={})=>{
     const macros=t=>expandPresetMacros(t,p,c);
@@ -3137,35 +3148,76 @@
     });
     return options.json_mode?rawTrimmed.replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i,'$1').trim():replyContent;
   }
-  async function generateBios(selected,forceRefresh=false){
-    if(pub().mode!=='live')return {generation:'catalog-demo',apiError:null};
-    const pending=forceRefresh?selected:selected.filter(c=>!db.bios[c.id]);
-    if(!pending.length)return {generation:'cached-ai-bios',apiError:null};
-    const compact=pending.map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,canon:c.canon,current_bio:db.bios[c.id]||c.bio,tags:c.tags}));
-    const rules='根据给定的、已收录的原作人物身份，为他们各写一条符合当下性格与心境的约会软件公开档案（包含一句自然独特的个人简介 bio，以及 2–3 个个性标签 tags）。不得编造新的角色、错误时间线或伪造重要原作事实；若是刷新，请换一个贴合人设的新角度描写。每条中文 bio 不超过80字，真实自然。只输出 JSON 对象，形如 {"profiles":[{"id":"exact-id","bio":"...","tags":["标签1","标签2"]}]}，只用输入中的ID。';
+  // Discovery uses stable identities, not random IDs for each new card.
+  const discoveryText=(value,max)=>typeof value==='string'?value.trim().slice(0,max):'';
+  const discoveryTags=value=>Array.isArray(value)?[...new Set(value.filter(v=>typeof v==='string').map(v=>v.trim().slice(0,12)).filter(Boolean))].slice(0,3):[];
+  function findKnownIdentity(c){
+    const names=new Set([c.name,...(c.aliases||[])].map(identityNorm).filter(Boolean));
+    const src=identityNorm(c.source),ver=identityNorm(c.version);
+    return Array.from(byId.values()).find(x=>identityKey(x)===identityKey(c)||
+      ([x.name,...(x.aliases||[])].some(n=>names.has(identityNorm(n)))&&identityNorm(x.source)===src&&identityNorm(x.version)===ver));
+  }
+  function parseDiscoveryRow(row,p,eligibleIds){
+    const bio=discoveryText(row?.bio,160),photo=discoveryText(row?.photo_description,600),tags=discoveryTags(row?.tags);
+    if(bio.length<6||photo.length<15||tags.length<2)return null;
+    if(row.id&&byId.has(row.id)){
+      const c=byId.get(row.id);
+      return eligibleIds.has(c.id)&&eligibleCandidate(p,c)?{c,bio,photo,tags,isNew:false}:null;
+    }
+    // New entries must be actual named, adult canon characters. AI suggestions
+    // are not independently verified, and never replace existing canon facts.
+    const c={name:discoveryText(row.name,100),source:discoveryText(row.source,100),version:discoveryText(row.version,120),canon:discoveryText(row.canon,600),age:Number(row.age),gender:row.gender,aliases:Array.isArray(row.aliases)?row.aliases.filter(v=>typeof v==='string').map(v=>v.trim().slice(0,80)).filter(Boolean).slice(0,6):[],accent:'#857b89',bio,tags,identity_origin:'ai-discovered'};
+    if(!c.name||!c.source||!c.version||c.canon.length<12||!Number.isInteger(c.age)||c.age<18||c.age>120||!['male','female','nonbinary','other'].includes(c.gender))return null;
+    const known=findKnownIdentity(c);
+    if(known)return eligibleIds.has(known.id)&&eligibleCandidate(p,known)?{c:known,bio,photo,tags,isNew:false}:null;
+    // Refuse ambiguous same-name versions: require an explicitly different
+    // dated work/era instead of accepting spelling variations as new people.
+    const names=new Set([c.name,...c.aliases].map(identityNorm));
+    const ambiguous=Array.from(byId.values()).some(x=>{
+      if(![x.name,...(x.aliases||[])].some(n=>names.has(identityNorm(n))))return false;
+      const sameWork=identityNorm(x.source)===identityNorm(c.source)||sourceMatches(x.source,c)||sourceMatches(c.source,x);
+      if(!sameWork)return false;
+      const oldYears=[...String(x.version).matchAll(/\b(?:19|20)\d{2}\b/g)].map(m=>m[0]);
+      const newYears=[...c.version.matchAll(/\b(?:19|20)\d{2}\b/g)].map(m=>m[0]);
+      return !oldYears.length||!newYears.length||oldYears.some(y=>newYears.includes(y));
+    });
+    if(ambiguous)return null;
+    c.id='discovered:'+encodeURIComponent(identityKey(c));
+    if(!eligibleCandidate(p,c))return null;
+    return {c,bio,photo,tags,isNew:true};
+  }
+  async function generateDiscovery(p,pool,forceRefresh=false,excludedIds=[]){
+    const seen=new Set(db.discoverSeen[p.id]||[]),excluded=new Set(excludedIds);
+    const eligible=pool.filter(c=>!excluded.has(c.id));
+    const ordered=[...shuffle(eligible.filter(c=>!seen.has(c.id))),...shuffle(eligible.filter(c=>seen.has(c.id)))];
+    if(pub().mode!=='live')return {selected:ordered.slice(0,10),generation:'catalog-demo',apiError:null,new_count:0};
+    const compact=ordered.slice(0,30).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,canon:c.canon,seen:seen.has(c.id)}));
+    const known=Array.from(byId.values()).filter(c=>!p.sources.length||p.sources.some(tag=>sourceMatches(tag,c))).slice(0,240).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,aliases:c.aliases,eligible:eligible.some(x=>x.id===c.id)}));
+    const rules='你是同人约会软件的发现页选角与档案生成器。根据玩家指定作品、性别、年龄筛选，推荐最多10位确实存在于原作的成年虚构角色。优先未见过的新人物或明确不同的原作时期；不要只改写现有人物简介，不创造原创人物，不猜测未知年龄或原作事实，不虚构作品。不够10位时宁可少返回。已知同一作品、同一版本人物必须使用提供的 exact id，不可为同一人另起 ID（英文名、中文名、别名都属于同一身份）；不可推荐已匹配或玩家自己扮演的版本，不满足筛选则跳过。新人物须提供原作常用全名、别名、作品系列 source（尽量沿用已有作品的系列与媒介写法）、明确作品版本 version（含年份）、已知成年年龄 age、gender、简明原作身份 canon。每个档案同时生成自然独特的中文 bio（80字以内）、2–3个tags，以及具体的一张个人档案照片的 photo_description（60–100字，仅描述可见外貌、衣着、神态、构图和场景，符合人物与时期，不用通用模板）。已知ID仅填 id,bio,tags,photo_description；新人物填 name,aliases,source,version,age,gender,canon,bio,tags,photo_description。只输出完整 JSON 对象 {"profiles":[...]}，不要分析或额外文本。';
     try{
-      const out=await llm([{role:'system',content:rules},{role:'user',content:JSON.stringify(compact)}],{json_mode:true,mode:'bio',entry_point:'discover_bios',background:!forceRefresh});
+      const out=await llm([{role:'system',content:rules},{role:'user',content:JSON.stringify({requested:10,sources:p.sources,gender:p.interested_in,min_age:p.min_age,max_age:p.max_age,player_role_id:p.role_character_id||'',eligible_known:compact,known_identities:known,seen_ids:[...seen].slice(-200),excluded_ids:[...excluded]})}],{json_mode:true,mode:'bio',entry_point:'discover_bios',background:!forceRefresh});
       const val=JSON.parse(out);
-      const valid=new Set(pending.map(c=>c.id));let count=0;
-      for(const x of (val?.profiles||[])){
-        if(x&&valid.has(x.id)&&typeof x.bio==='string'){
-          const bio=x.bio.trim();
-          if(bio.length>=6&&bio.length<=160){
-            db.bios[x.id]=bio;
-            if(Array.isArray(x.tags)){
-              const cleanTags=x.tags.map(t=>String(t||'').trim().slice(0,12)).filter(Boolean).slice(0,4);
-              if(cleanTags.length)db.bioTags[x.id]=cleanTags;
-            }
-            count++;
-          }
-        }
+      if(!Array.isArray(val?.profiles))throw Error('档案返回缺少 profiles 列表');
+      const allowed=new Set(eligible.map(c=>c.id)),batchIds=new Set(),batchKeys=new Set(),selected=[];
+      let new_count=0;
+      for(const row of val.profiles.slice(0,30)){
+        const item=parseDiscoveryRow(row,p,allowed);
+        if(!item)continue;
+        const {c,bio,photo,tags,isNew}=item;
+        if(batchIds.has(c.id)||batchKeys.has(identityKey(c)))continue;
+        batchIds.add(c.id);batchKeys.add(identityKey(c));
+        if(isNew){db.discoveredCharacters[c.id]=c;byId.set(c.id,c);allowed.add(c.id);new_count++;}
+        db.bios[c.id]=bio;db.bioTags[c.id]=tags;db.photoDescriptions[c.id]={description:photo,engine:'live-text'};
+        selected.push(c);if(selected.length===10)break;
       }
-      if(count)save();
-      clearBgError('_','_','discover_bios');
-      return {generation:count?'live-generated':'catalog-demo',apiError:null};
+      if(!selected.length)throw Error('本次没有返回符合身份筛选且包含照片描写的完整档案');
+      // Do not quietly fill incomplete AI batches with fixed templates.
+      db.discoverSeen[p.id]=[...new Set([...seen,...selected.map(c=>c.id)])].slice(-1000);
+      save();clearBgError('_','_','discover_bios');
+      return {selected,generation:'live-generated',new_count,apiError:null};
     }catch(e){
       if(!forceRefresh)recordBgError('_','_','discover_bios',e.apiError||{message:String(e.message||e)});
-      return {generation:'catalog-demo',apiError:forceRefresh?(e.apiError||null):null,warning:String(e.message||e)};
+      return {selected:ordered.filter(c=>db.photoDescriptions[c.id]?.engine==='live-text'&&db.bios[c.id]).slice(0,10),generation:'cached-ai-bios',new_count:0,apiError:e.apiError||createApiError({error_code:'DISCOVERY_PROFILE_INVALID',title:'候选档案未完整生成',message:String(e.message||e)}),warning:String(e.message||e)};
     }
   }
   const demo=(p,c,mode)=>{
@@ -3416,7 +3468,7 @@
   async function request(path,data){
     const [route,qs='']=path.split('?'), params=new URLSearchParams(qs);data=data||{};
     switch(route){
-      case '/bootstrap':episodeStore();save();return {profiles:db.profiles.slice(),sources:SOURCES,settings:pub(),catalog_size:CATALOG.length};
+      case '/bootstrap':episodeStore();save();return {profiles:db.profiles.slice(),sources:[...new Set([...SOURCES,...Array.from(byId.values(),c=>c.source)])].sort(),settings:pub(),catalog_size:byId.size};
       case '/health':return {ok:true,name:'Parallel Portable',version:'0.5.1'};
       case '/identify':return {matches:idMatches(params.get('name')||'',params.get('source')||''),verified:'curated-catalog'};
       case '/settings':{
@@ -3470,22 +3522,25 @@
         if(existing)Object.assign(existing,profile);else db.profiles.push(profile);save();return {profile};
       }
       case '/discover':case '/candidates':{
-        const p=getP(data.profileId||params.get('profileId'));const pool=candidates(p),selected=shuffle(pool).slice(0,10);
+        const p=getP(data.profileId||params.get('profileId'));const pool=candidates(p);
         const forceRefresh=Boolean(data.refresh||params.get('refresh')==='1');
-        const bioRes=route==='/discover'?await generateBios(selected,forceRefresh):{generation:'catalog-demo',apiError:null};
-        const cs=selected.map(c=>({...char(c),previous_swipe:db.swipes[pairKey(p.id,c.id)]?.direction||null,relation_status:relation(p.id,c.id)?.status||null}));
-        return {candidates:cs,total_available:pool.length,requested:10,generation:bioRes.generation,apiError:bioRes.apiError||null,warning:bioRes.warning||'',demo:pub().mode==='demo'};
+        const excluded=Array.isArray(data.excludeIds)?data.excludeIds.filter(x=>typeof x==='string'):[];
+        const bioRes=route==='/discover'?await generateDiscovery(p,pool,forceRefresh,excluded):{selected:shuffle(pool).slice(0,10),generation:'catalog-demo',apiError:null,new_count:0};
+        const cs=bioRes.selected.filter(c=>eligibleCandidate(p,c)).map(c=>({...char(c),photo_description:db.photoDescriptions[c.id]?.description||'',photo_engine:db.photoDescriptions[c.id]?.engine||'',previous_swipe:db.swipes[pairKey(p.id,c.id)]?.direction||null,relation_status:relation(p.id,c.id)?.status||null}));
+        return {candidates:cs,total_available:candidates(p).length,requested:10,new_count:bioRes.new_count,generation:bioRes.generation,apiError:bioRes.apiError||null,warning:bioRes.warning||'',demo:pub().mode==='demo'};
       }
       case '/swipe':{
         const p=getP(data.profileId),c=getC(data.characterId),d=data.direction;if(p.role_character_id===c.id)bodyErr('当前扮演身份不能匹配同一原作角色版本的自己');if(!['left','right'].includes(d))bodyErr('滑卡方向无效');
         db.swipes[pairKey(p.id,c.id)]={direction:d,updated_at:stamp()};const prior=relation(p.id,c.id);const again=!!prior;
         if(d==='left'){save();return {direction:d,matched:false,previously_matched:prior?.status==='matched'}}
         if(prior?.status==='matched'){save();return {direction:'right',matched:true,already_matched:true,character:char(c)}}
+        save(); // record the swipe before any slow model call
         const attempt=(prior?.attempts||0)+1,{matched,engine}=await matchDecision(p,c,attempt);
         db.relations[pairKey(p.id,c.id)]={profile_id:p.id,character_id:c.id,status:matched?'matched':'pending',mode:'chat',hot_chat:Boolean(prior?.hot_chat),attempts:attempt,updated_at:stamp()};
         let greetingReplies=[],apiError=null,taskState=null,warning='';
         if(matched){
           event(p.id,c.id,'matched',p.name+(again?' 重新匹配':' 首次匹配'));
+          save();
           const first=await firstMessage(p,c,again);
           if(first.bubbles&&first.bubbles.length){
             greetingReplies=first.bubbles.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,first.engine));
@@ -4411,9 +4466,9 @@
       }
       case '/photo-description':{
         const c=getC(data.characterId||params.get('characterId'));
-        const old=db.photoDescriptions[c.id];if(old&&!data.regenerate)return {description:old.description,engine:old.engine};
+        const old=db.photoDescriptions[c.id];if(old&&!data.regenerate&&(old.engine==='live-text'||pub().mode!=='live'))return {description:old.description,engine:old.engine};
         let description=photoText(c),engine='curated-demo';
-        if(data.regenerate&&pub().mode==='live'){
+        if(pub().mode==='live'){
           const instructions=`描述一张交友软件上虚构原作角色上传的照片（80至150个简体汉字），只描写画面中的外貌、姿态、光影、服饰和场景，保持人设与时期准确，不公开秘密，不编造重大剧情。${c.name}，${c.source}，${c.version}，设定：${c.canon}`;
           description=(await llm([{role:'system',content:instructions},{role:'user',content:'描述这张照片。'}],{character:c,mode:'photo',entry_point:'photo_description'})).slice(0,1200);engine='live-text';
         }
@@ -4497,7 +4552,7 @@
       delete loaded.systemLogs;
       ensureDbFields(loaded);
       const previous=db;
-      db=loaded;try{save();}catch(e){db=previous;throw e;}return {profiles:db.profiles.length,messages:db.messages.length};
+      db=loaded;try{save();syncDiscoveredCatalog(db);}catch(e){db=previous;syncDiscoveredCatalog(db);throw e;}return {profiles:db.profiles.length,messages:db.messages.length};
     }
   };
 })();
