@@ -3603,7 +3603,7 @@
         const excluded=Array.isArray(data.excludeIds)?data.excludeIds.filter(x=>typeof x==='string'):[];
         const bioRes=route==='/discover'?await generateDiscovery(p,pool,forceRefresh,excluded):{selected:shuffle(pool).slice(0,10),generation:'catalog-demo',apiError:null,new_count:0};
         const cs=bioRes.selected.filter(c=>eligibleCandidate(p,c)).map(c=>({...char(c),photo_description:db.photoDescriptions[c.id]?.description||'',photo_engine:db.photoDescriptions[c.id]?.engine||'',previous_swipe:db.swipes[pairKey(p.id,c.id)]?.direction||null,relation_status:relation(p.id,c.id)?.status||null}));
-        return {candidates:cs,total_available:candidates(p).length,requested:10,new_count:bioRes.new_count,generation:bioRes.generation,apiError:bioRes.apiError||null,warning:bioRes.warning||'',demo:pub().mode==='demo'};
+        return {candidates:cs,total_available:candidates(p).length,requested:10,new_count:bioRes.new_count,batch_failures:bioRes.batch_failures||0,generation:bioRes.generation,apiError:bioRes.apiError||null,warning:bioRes.warning||'',demo:pub().mode==='demo'};
       }
       case '/swipe':{
         const p=getP(data.profileId),c=getC(data.characterId),d=data.direction;if(p.role_character_id===c.id)bodyErr('当前扮演身份不能匹配同一原作角色版本的自己');if(!['left','right'].includes(d))bodyErr('滑卡方向无效');
