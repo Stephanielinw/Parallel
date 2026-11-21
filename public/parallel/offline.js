@@ -1500,7 +1500,8 @@
     const nowHHMM=fmtHHMM(at)||'12:00';
     const nowMin=hhmmToMin(nowHHMM);
     if(r?.mode==='meeting'){
-      const loc=r.meeting_location||'约定的街角咖啡馆';
+      const history=activeMeetingLocationHistory(p,c);
+      const loc=history.at(-1)?.location||'约定的见面地点';
       return {
         id:'live_meeting',
         start:r.meeting_started_at&&localDateStr(r.meeting_started_at)!==localDateStr(at)?'00:00':fmtHHMM(r.meeting_started_at||at)||nowHHMM,
@@ -1533,9 +1534,10 @@
     for(const date of dates){
       if(date<localDateStr(begin)||date>localDateStr(finish))continue;
       rec=getOrInitSurveillance(p,c,date);
-      const slot={id:'slot_meet_'+meetingRecord.id+'_'+date,start:date===localDateStr(begin)?fmtHHMM(begin):'00:00',end:date===localDateStr(finish)?fmtHHMM(finish):'23:59',location:loc,status:'线下见面足迹',activity:'与 '+p.name+' 在「'+loc+'」当面见面',scene:meetingRecord.summary,source:'meeting',meeting_id:meetingRecord.id,actual_started_at:meetingRecord.started_at,actual_ended_at:meetingRecord.ended_at};
+      const segmentRows=meetingSurveillanceSegments(p,c,date,finish,meetingRecord.summary).map(x=>({...x,meeting_id:meetingRecord.id,actual_ended_at:meetingRecord.ended_at,isCurrent:false}));
+      const slots=segmentRows.length?segmentRows:[{id:'slot_meet_'+meetingRecord.id+'_'+date,start:date===localDateStr(begin)?fmtHHMM(begin):'00:00',end:date===localDateStr(finish)?fmtHHMM(finish):'23:59',location:loc,status:'线下见面足迹',activity:'与 '+p.name+' 在「'+loc+'」当面见面',scene:meetingRecord.summary,source:'meeting',meeting_id:meetingRecord.id}];
       const base=rec.slots.filter(x=>x.meeting_id!==meetingRecord.id);
-      rec.slots=overlayActualSlots(base,[slot]);rec.updated_at=stamp();
+      rec.slots=overlayActualSlots(base,slots);rec.updated_at=stamp();
     }
     return rec;
   };
@@ -1663,22 +1665,22 @@
     const nowHHMM=fmtHHMM(Date.now())||'12:00';
     const nowMin=hhmmToMin(nowHHMM);
     const current=isToday?getCurrentSurveillanceSlot(p,c):null;
+    // The live meeting is an authoritative interval, not an extra event
+    // appended alongside an incompatible generated schedule.
+    const actualMeetingSlots=isToday&&current?.isMeetingLive?
+      meetingSurveillanceSegments(p,c,selDate,Date.now()):[];
+    const visibleSlots=actualMeetingSlots.length?overlayActualSlots(rec.slots,actualMeetingSlots):rec.slots;
     const unlocked=[];
     let lockedCount=0;
-    for(const s of rec.slots){
+    for(const s of visibleSlots){
       if(!isToday||hhmmToMin(s.start)<=nowMin){
         unlocked.push({
           ...s,
-          isCurrent:Boolean(isToday&&current&&!current.isMeetingLive&&(s.id===current.id||(s.start===current.start&&s.location===current.location)))
+          isCurrent:Boolean(isToday&&current&&(current.isMeetingLive?s.source==='meeting'&&s.start===actualMeetingSlots.at(-1)?.start&&s.location===current.location:(s.id===current.id||(s.start===current.start&&s.location===current.location))))
         });
       }else{
         lockedCount++;
       }
-    }
-    if(isToday&&current?.isMeetingLive){
-      const mid=relation(p.id,c.id)?.active_meeting_id;
-      for(let i=unlocked.length-1;i>=0;i--)if(mid&&unlocked[i].meeting_id===mid)unlocked.splice(i,1);
-      unlocked.push({...current,isCurrent:true});
     }
     const bgErr=db.bgErrors?.[pairKey(p.id,c.id)]?.surveillance||null;
     const apiErr=rec._lastApiError||null;
@@ -1882,11 +1884,17 @@
   // Location recognition is advisory only; the user chooses when to enter meeting mode.
   const SCENE_RULES={cancel:new RegExp("^(?:不去了|取消(?:见面|约会|计划)?|改天(?:吧|再见)?|算了(?:吧)?|我(?:不能|没法|不想)去|(?:let['’]s )?cancel|not coming|can['’]t make it|rain check|another day)",'i'),confirm:new RegExp("^(?:好(?:啊|呀|的|吧|哦|，|,|。|！|!|$)|行(?:啊|呀|，|。|$)|可以(?:啊|呀|，|。|$)|没问题|就这么定了|不见不散|我会到|我会去|一言为定|okay\\b|ok\\b|sure\\b|deal\\b|sounds good\\b|see you there\\b|i['’]ll be there\\b|agreed\\b)",'i'),arrival:new RegExp("^(?:我(?:已经|刚刚?)?(?:到了|到啦|抵达了)|(?:已经|刚刚?)?到(?:了|啦)|我到啦|i['’]m here|i am here|i(?:['’]ve| have| just)? arrived|made it)(?:[！!。.,，\\s…~～]*(?:你在哪(?:儿)?[？?]?|where are you[?]?|$))$",'i'),proposalZh:new RegExp("(?:在|去|到|约在)\\s*[「『“\"]?([^，。！？；、\\n「」『』“”\"]{1,40}?)[」』”\"]?\\s*(?:见面|碰面|见吧|见你|等你|汇合)",'i'),proposalEn:new RegExp("\\b(?:let['’]s meet|meet me|we (?:can|could|should) meet|shall we meet|how about meeting)\\s+(?:at|in|on|by|outside|inside)\\s+([^.!?;,\\n]{1,100})",'i'),stateZh:new RegExp("^(?:我(?:现在|此刻|目前)?(?:正)?在|我(?:刚刚?|已经)?(?:抵达|到了|到达|回到|登上|来到)|(?:刚刚?|已经)(?:到了|抵达|回到|登上|来到)|(?:我)?正(?:坐|站|躺)在)\\s*[「『“\"]?([^，。！？；、\\n「」『』“”\"]{1,48})",'i'),stateEn:new RegExp("^(?:i(?:['’]m| am)\\s+(?:(?:currently|right now|already)\\s+)?(?:at|in|on|inside|outside|by)|i\\s+(?:(?:just|already)\\s+)?(?:arrived at|got to|reached|returned to))\\s+([^.!?;,\\n]{1,100})",'i'),reject:new RegExp("^(?:想|考虑|思考|打算|准备|计划|担心|等你|等着|忙|工作|吃|喝|睡|看|说|做|跟|和你|给|想象|这里|那里|这儿|那儿|路上|发消息|开玩笑|生气|等一下|trouble\\b|love\\b|a loss\\b|a hurry\\b|the mood\\b|it\\b|my way\\b|your side\\b|the middle of\\b|pain\\b|shock\\b|a good mood\\b|a bad mood\\b|need\\b|doubt\\b|denial\\b|tears\\b|danger\\b|the phone\\b|a call\\b|touch\\b|charge\\b|a position\\b)",'i'),uncertain:new RegExp("(?:如果|假如|可能|也许|假设|还没|没有到|没到|不是|不在|打算|准备去|等会儿|待会|(?:\\bif\\b|\\bmaybe\\b|\\bprobably\\b|\\bnot yet\\b|\\bwould\\b|\\bwill be\\b|\\bgoing to\\b))",'i')};
   const normalizeSceneText=t=>String(t??'').trim().replace(/’/g,"'");
+  // Interjections after an arrival ("我已经到了诶…") are not place names.
+  const isNonPlaceText=raw=>{
+    const val=String(raw||'').trim();
+    return !val||/^[\s.,，。…！!?？~～-]*$/.test(val)||
+      /^(?:诶|欸|哎|唉|啊|呀|嗯|呃|额|哦|噢|啦|了|嘿|hey|uh|um|eh|huh)[\s.,，。…！!?？~～-]*$/i.test(val);
+  };
   function cleanScenePlace(raw,isEnglish=false){
     let value=normalizeSceneText(raw).replace(/^[「『“"'（(]+|[」』”"')）.!。！?？]+$/g,'').trim();
     if(isEnglish)value=value.replace(/\s+(?:at\s+\d|tomorrow\b|tonight\b|today\b|this (?:evening|afternoon|morning)\b|right now\b|now\b|waiting for\b|waiting\b|having\b|with\b).*$/i,'').trim();
     else value=value.replace(/(?:等你|等着你|等着|等人|看风景|吹风|喝咖啡|休息|坐着|站着|给你发消息|呢|这里|这儿).*$/,'').trim();
-    if(!value||value.length>40||SCENE_RULES.reject.test(value)||/[\n\r:：?？<>]/.test(value)||SCENE_RULES.uncertain.test(value))return '';
+    if(isNonPlaceText(value)||value.length>40||SCENE_RULES.reject.test(value)||/[\n\r:：?？<>]/.test(value)||SCENE_RULES.uncertain.test(value))return '';
     if(isEnglish&&/^(?:here|there|somewhere|anywhere|nowhere)$/i.test(value))return '';
     if(!isEnglish&&/^(?:家|外面|里面)$/.test(value))return value;
     return value;
@@ -1914,6 +1922,91 @@
     if(!text||/^[「『“"*>]/.test(text)||SCENE_RULES.uncertain.test(text)||SCENE_RULES.cancel.test(text))return '';
     const en=text.match(SCENE_RULES.proposalEn);if(en)return cleanScenePlace(en[1],true);
     const zh=text.match(SCENE_RULES.proposalZh);return zh?cleanScenePlace(zh[1],false):'';
+  }
+  // Locations taken from an actual player's present-tense description, never
+  // from an AI guess or a hypothetical future plan.
+  function meetingPlaceInPlayerTurn(raw,profileName){
+    const t=String(raw||'').trim();
+    if(!t||/^(?:假如|如果|要是|万一|明天|下次|以后)/.test(t))return '';
+    const bedroom=/(?:赖|躺|睡|窝|待|坐|留|趴|靠|滚|倒).{0,16}(?:我(?:家)?(?:的)?床(?:上|边)?)/;
+    const namedBedroom=/(?:正在|现在|已经|此刻|就|还|仍|已经).{0,24}(?:在|待在|回到|走进|进入|来到)我(?:家)?(?:的)?(?:卧室|房间)/;
+    const home=/(?:正在|现在|已经|此刻|就|还|仍).{0,20}(?:在|到了|回到|走进|进入|来到)我(?:的)?家(?:里)?/;
+    if(bedroom.test(t)||namedBedroom.test(t)||/\b(?:on my bed|in my bedroom)\b/i.test(t))return profileName+' 的卧室';
+    if(home.test(t)||/\b(?:at my place|in my home)\b/i.test(t))return profileName+' 的家';
+    return '';
+  }
+  function activeMeetingLocationHistory(p,c){
+    const r=relation(p.id,c.id);
+    if(!r||r.mode!=='meeting')return [];
+    const startMs=Date.parse(r.meeting_started_at||'');
+    const began=Number.isFinite(startMs)?startMs:Date.now();
+    const prior=Array.isArray(r.meeting_location_history)?r.meeting_location_history:[];
+    const initial=prior.find(x=>x.source==='start');
+    const startingLoc=initial&&!isNonPlaceText(initial.location)?initial.location:
+      (!isNonPlaceText(r.meeting_location)?String(r.meeting_location).trim():'约定的见面地点');
+    const events=[{at:new Date(began).toISOString(),location:startingLoc,source:'start'}];
+    const manual=prior.filter(x=>x.source==='manual'&&Number.isFinite(Date.parse(x.at))&&Date.parse(x.at)>=began&&!isNonPlaceText(x.location));
+    const userTurns=messagesOf(p.id,c.id).filter(m=>m.sender==='user'&&m.mode==='meeting'&&
+      (!r.active_meeting_id||!m.meeting_id||m.meeting_id===r.active_meeting_id)&&
+      Number.isFinite(Date.parse(m.created_at))&&Date.parse(m.created_at)>=began);
+    for(const m of userTurns){
+      const loc=meetingPlaceInPlayerTurn(m.text,p.name);
+      if(loc)events.push({at:m.created_at,location:loc,source:'scene'});
+    }
+    events.push(...manual);
+    const priority={start:0,scene:1,manual:2};
+    events.sort((a,b)=>Date.parse(a.at)-Date.parse(b.at)||(priority[a.source]-priority[b.source]));
+    const settled=[];
+    for(const event of events){
+      if(settled.at(-1)?.location===event.location){
+        // Still record a manual confirmation to keep later source precedence.
+        if(event.source==='manual')settled.at(-1).source='manual';
+        continue;
+      }
+      settled.push(event);
+    }
+    r.meeting_location_history=settled;
+    r.meeting_location=settled.at(-1)?.location||'约定的见面地点';
+    return settled;
+  }
+  function confirmActiveMeetingLocation(p,c,place){
+    const r=relation(p.id,c.id);
+    const loc=String(place||'').trim().slice(0,40);
+    if(!r||r.mode!=='meeting'||isNonPlaceText(loc))return;
+    const history=activeMeetingLocationHistory(p,c);
+    if(history.at(-1)?.location!==loc)
+      r.meeting_location_history.push({at:stamp(),location:loc,source:'manual'});
+    else if(history.length)r.meeting_location_history[history.length-1].source='manual';
+    r.meeting_location=loc;
+  }
+  function meetingSurveillanceSegments(p,c,date,untilMs=Date.now(),summary=''){
+    const history=activeMeetingLocationHistory(p,c);
+    const r=relation(p.id,c.id);
+    const startMs=Date.parse(r?.meeting_started_at||'');
+    const firstMs=Number.isFinite(startMs)?startMs:Date.now();
+    const dayStart=new Date(date+'T00:00:00').getTime();
+    const dayFinish=new Date(date+'T23:59:59').getTime();
+    const finish=Math.min(untilMs,dayFinish);
+    if(!history.length||!Number.isFinite(dayStart)||finish<Math.max(dayStart,firstMs))return [];
+    const parts=[];
+    for(let i=0;i<history.length;i++){
+      const e=history[i],next=history[i+1];
+      const begin=Math.max(firstMs,dayStart,Date.parse(e.at));
+      const end=Math.min(finish,next?Date.parse(next.at):finish);
+      if(!Number.isFinite(begin)||!Number.isFinite(end)||end<begin)continue;
+      const startLabel=fmtHHMM(begin),endLabel=fmtHHMM(end);
+      if(startLabel===endLabel&&i<history.length-1)continue;
+      parts.push({
+        id:'slot_meeting_'+i+'_'+date,
+        start:startLabel,end:endLabel,
+        location:e.location,status:'线下见面足迹',
+        activity:'与 '+p.name+' 在「'+e.location+'」当面见面',
+        scene:summary||c.name+'此刻与 '+p.name+' 当面相处，暂无其他已确认行踪。',
+        source:'meeting',meeting_id:r.active_meeting_id||'',actual_started_at:r.meeting_started_at||'',
+        isCurrent:i===history.length-1
+      });
+    }
+    return parts;
   }
   function currentPlanRows(pid,cid){
     const boundary=(db.events||[]).filter(e=>e.profile_id===pid&&e.character_id===cid&&['matched','unmatched','return','meeting'].includes(e.type)).at(-1);
@@ -4110,7 +4203,8 @@
         if(Object.prototype.hasOwnProperty.call(data,'autoArrivalId'))return {mode:r.mode,autoRejected:true};
         const locInput=String(data.location||data.meetingLocation||'').trim().slice(0,40);
         if(locInput){
-          r.meeting_location=locInput;
+          if(r.mode==='meeting')confirmActiveMeetingLocation(p,c,locInput);
+          else r.meeting_location=locInput;
         }
         let meetingRecord=null,openingReply=null,warning='',apiError=null,taskState=null;
         if(r.mode!==m){
@@ -4122,6 +4216,7 @@
             r.active_meeting_id='meet_'+uid();
             r.meeting_location=inferredLoc;
             r.meeting_started_at=stamp();
+            r.meeting_location_history=[{at:r.meeting_started_at,location:r.meeting_location,source:'start'}];
             r.updated_at=stamp();
             syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
             event(p.id,c.id,'meeting','与 '+p.name+' 开始面对面见面');
@@ -4545,11 +4640,18 @@
       case '/message':case '/reply':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id),mode=r.mode;
         if(mode==='meeting'&&meetingRerolls.has(pairKey(p.id,c.id)))bodyErr('正在重 Roll，请等待当前一幕完成');
-        if(mode==='meeting'&&typeof data.location==='string'&&data.location.trim())r.meeting_location=data.location.trim().slice(0,40);
+        if(mode==='meeting'&&typeof data.location==='string'&&data.location.trim()){
+          const inputLoc=data.location.trim().slice(0,40);
+          // UI location may be passed through each generation unchanged. Only
+          // a genuine difference becomes a new manually confirmed movement.
+          const currentLoc=activeMeetingLocationHistory(p,c).at(-1)?.location;
+          if(inputLoc!==currentLoc&&!isNonPlaceText(inputLoc))confirmActiveMeetingLocation(p,c,inputLoc);
+        }
         let user=null;
         if(route==='/message'){
           const txt=String(data.text||'').trim();if(!txt||txt.length>4000)bodyErr('消息长度需在 1–4000 字之间');
           user=write(p.id,c.id,'user',mode,txt);
+          if(mode==='meeting')activeMeetingLocationHistory(p,c);
           detectAndApplyCorrection(p,c,user);
           event(p.id,c.id,'user_message','与 '+p.name+' 的'+(mode==='meeting'?'见面':'聊天')+'：'+txt.slice(0,180));
           if(mode==='chat'){
