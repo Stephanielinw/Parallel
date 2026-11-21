@@ -2150,6 +2150,14 @@ def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0):
     meeting_id=MEETING_STATE.get((pid,cid),{}).get('active_meeting_id','') if mode=='meeting' else ''
     item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc(),meeting_id=meeting_id)
     db.execute('INSERT INTO messages (id,profile_id,character_id,sender,mode,text,engine,created_at,meeting_id) VALUES (?,?,?,?,?,?,?,?,?)',tuple(item.values()))
+    if sender=='user' and mode=='meeting' and not at and meeting_id:
+        p=profile_get(db,pid);c=BY_ID.get(cid)
+        if c:
+            place=meeting_place_in_player_turn(clean_txt,p['name'])
+            m_state=MEETING_STATE.get((pid,cid),{})
+            if place and m_state.get('meeting_location')!=place:
+                m_state['meeting_location']=place
+                sync_surveillance_on_meeting_start(db,p,c,place,meeting_id)
     if sender=='ai' and mode=='chat' and engine in ('live','demo') and not _is_chat_artifact(item):reconcile_phone_activity(db,pid,cid,at)
     if at:
         date=datetime.fromtimestamp(at/1000).astimezone().strftime('%Y-%m-%d')
