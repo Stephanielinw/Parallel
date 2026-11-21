@@ -47,6 +47,7 @@ function start(){
  now=Date.parse('2026-11-21T14:16:00-08:00');
  const closed=await app.request('/mode',{...pair,mode:'chat',finalizeMeeting:false});
  assert.equal(closed.meetingRecord.location,'Lin 的家');
+ assert((closed.meetingRecord.location_history||[]).some(e=>e.location==='Lin 的家'),'meeting archives its own on-scene transitions, not just a summary string');
  assert.equal(closed.meetingRecord.started_at,new Date(Date.parse('2026-11-21T09:29:00-08:00')).toISOString());
  assert(calls.some(x=>(x.messages?.[0]?.content||'').includes('你是角色个人日程规划器')),'end meeting must trigger one post-meeting replan');
  const plannerCall=calls.find(x=>(x.messages?.[0]?.content||'').includes('你是角色个人日程规划器'));
@@ -56,8 +57,21 @@ function start(){
  assert(surv.unlockedSlots.some(s=>s.source==='meeting_shift'&&s.start==='14:16'),'post-meeting begins at actual finish');
  assert(!surv.unlockedSlots.some(s=>s.source==='schedule'&&s.start==='14:14'),'old afternoon route must be superseded');
  now=Date.parse('2026-11-21T14:45:00-08:00');
+ // Reproduce the exact regression: after ending the meeting the current monitor
+ // and relationship now suggest a police location. They must NOT override the
+ // archived on-scene snapshot from the earlier date.
+ const archive=JSON.parse(app.exportData());
+ const staleRelation=Object.values(archive.data.relations).find(r=>r.profile_id===p.id&&r.character_id===pair.characterId);
+ staleRelation.meeting_location='警局二楼警员休息室';
+ staleRelation.meeting_location_history=[{at:new Date(now).toISOString(),location:'警局二楼警员休息室',source:'manual'}];
+ const target=Object.values(archive.data.surveillance).find(r=>r.byDate&&r.byDate['2026-11-21']);
+ if(target){
+   const today=target.byDate['2026-11-21'];
+   today.slots=[{id:'fake_police',start:'00:00',end:'23:59',location:'警局二楼警员休息室',status:'错误监控预排',activity:'值班',scene:'虚构的日程',source:'schedule'}];
+ }
+ app.importData(JSON.stringify(archive));
  const resumed=await app.request('/mode',{...pair,mode:'meeting',resumeMeetingId:initial.active_meeting_id,triggerOpening:false});
- assert.equal(resumed.location,'Lin 的家','reopening chooses last confirmed user scene over stale archive location');
+ assert.equal(resumed.location,'Lin 的家','reopening reads the archived scene despite monitor and relation falsely saying police station');
  surv=await app.request('/surveillance',{...pair,date:'2026-11-21'});
  assert.equal(surv.current.location,'Lin 的家');
  assert(!surv.unlockedSlots.some(s=>s.source==='meeting_shift'&&s.start==='14:16'),'previous post-meeting plan disappears on reopening');
