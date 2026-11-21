@@ -47,6 +47,7 @@ jobs:
           node tests/mobile-ui.test.cjs
           node tests/discover-session.test.cjs
           node tests/discover-profiles.test.cjs
+          node tests/discover-resume.test.cjs
           node parallel_src/parallel_ai_date/tests/test_portable.cjs
           python3 -m unittest parallel_src/parallel_ai_date/tests/test_api.py
       - name: Build

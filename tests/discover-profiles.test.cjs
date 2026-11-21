@@ -67,7 +67,7 @@ function start(){
   failAll=true;round=2;
   const kept=await e.request('/discover',{profileId:p.id,refresh:true});
   assert(!kept.apiError,'cached successful portraits should remain usable when every request fails');
-  assert.equal(kept.generation,'cached-ai-bios');assert.equal(kept.new_count,0);
+  assert.equal(kept.generation,'saved-deck');assert.equal(kept.refresh_not_applied,true);assert.equal(kept.new_count,0);
   assert(kept.candidates.some(x=>x.id===sourceId&&x.photo_description===validPhoto));
   const restored=JSON.parse(e.exportData()).data;
   assert.equal(Object.keys(restored.discoveredCharacters).length,1);
