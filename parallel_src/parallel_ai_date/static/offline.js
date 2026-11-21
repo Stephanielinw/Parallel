@@ -2156,6 +2156,70 @@
     if(updated){updated.raw_msg_ids=rec.message_ids.slice();updated.archive_stale=false;}
     return rec;
   };
+  // Permanent deletion differs from soft recall: no placeholder, archived transcript or linked memory survives.
+  function forgetMessages(p,c,messageIds,wholeMeetingIds=[]){
+    const ids=new Set(messageIds.map(String));
+    const whole=new Set(wholeMeetingIds.map(String));
+    const removed=db.messages.filter(m=>m.profile_id===p.id&&m.character_id===c.id&&ids.has(m.id));
+    if(!removed.length)return {removedIds:[],removedMeetingIds:[]};
+    const affectedMeetings=new Set([...whole,...removed.filter(m=>m.mode==='meeting').map(m=>m.meeting_id).filter(Boolean)]);
+    const affectedDates=new Set(removed.map(m=>localDateStr(Date.parse(m.created_at))));
+    const oldMeetingIds=new Set(affectedMeetings);
+    const oldMemIds=new Set();
+    for(const mem of db.episodicMemories||[]){
+      if(mem.owner_id!==c.id||mem.profile_id!==p.id)continue;
+      const sources=[...(mem.raw_msg_ids||[]),...(mem.meeting_data?.message_ids||[])];
+      if(sources.some(id=>ids.has(id))||
+         [...whole].some(mid=>mem.meeting_id===mid||mem.source_key==='meeting:'+mid)||
+         (mem.source_type==='daily-summary'&&affectedDates.has(String(mem.source_key||'').replace(/^day:/,'')))){
+        oldMemIds.add(mem.id);
+      }
+    }
+    db.episodicMemories=(db.episodicMemories||[]).filter(mem=>!oldMemIds.has(mem.id)&&!(mem.owner_id===c.id&&mem.profile_id===p.id&&oldMemIds.has(mem.clarifies_id)));
+    db.messages=db.messages.filter(m=>!(m.profile_id===p.id&&m.character_id===c.id&&ids.has(m.id)));
+    for(const id of ids)invalidateTranslation(id);
+    const oldEventIds=new Set(removed.map(m=>m.id));
+    db.events=(db.events||[]).filter(e=>{
+      if(e.profile_id!==p.id||e.character_id!==c.id)return true;
+      if(oldEventIds.has(e.message_id))return false;
+      if(['user_message','ai_message','message_recalled'].includes(e.type)&&removed.some(m=>Math.abs(Date.parse(e.created_at)-Date.parse(m.created_at))<1200&&String(e.summary||'').includes(String(m.text||'').slice(0,30))))return false;
+      return true;
+    });
+    const q=db.queue[pairKey(p.id,c.id)];
+    if(q){q.pending=(q.pending||[]).filter(id=>!ids.has(id));if(!q.pending.length)q.dueAt=0;}
+    for(const mode of ['chat','meeting']){
+      const ts=getTaskState(p.id,c.id,mode);
+      if(ts?.pending_ids)ts.pending_ids=ts.pending_ids.filter(id=>!ids.has(id));
+      if(mode==='meeting'&&affectedMeetings.has(ts?.meeting_id))clearTaskState(p.id,c.id,'meeting');
+    }
+    const store=episodeStore();
+    store.jobs=store.jobs.filter(job=>job.owner_id!==c.id||job.profile_id!==p.id||!(
+      ids.has(String(job.source_key||'').replace(/^episode:/,''))||
+      (job.raw_msg_ids||[]).some(id=>ids.has(id))
+    ));
+    store.deleted=store.deleted.filter(x=>x.owner_id!==c.id||x.profile_id!==p.id||!(x.raw_msg_ids||[]).some(id=>ids.has(id)));
+    const diary=db.diaries?.[pairKey(p.id,c.id)];
+    if(diary?.byDate)for(const date of affectedDates)delete diary.byDate[date];
+    const surveil=db.surveillance?.[pairKey(p.id,c.id)];
+    if(surveil?.byDate)for(const daily of Object.values(surveil.byDate)){
+      if(Array.isArray(daily.slots))daily.slots=daily.slots.filter(x=>!oldMeetingIds.has(x.meeting_id));
+    }
+    const removedMeetingIds=[];
+    for(const mid of affectedMeetings){
+      const remaining=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid);
+      if(remaining.length){
+        const rec=(db.meetings||[]).find(x=>x.id===mid);
+        if(rec){rec.ai_summary='';rec.finished_at=rec.finished_at||'';}
+        upsertMeetingRecord(p,c,mid,remaining,rec?.location||'');
+      }else{
+        db.meetings=(db.meetings||[]).filter(x=>!(x.id===mid&&x.profile_id===p.id&&x.character_id===c.id));
+        db.episodicMemories=(db.episodicMemories||[]).filter(x=>!(x.owner_id===c.id&&x.profile_id===p.id&&(x.meeting_id===mid||x.source_key==='meeting:'+mid)));
+        removedMeetingIds.push(mid);
+      }
+    }
+    episodeList(p,c);
+    return {removedIds:[...ids],removedMeetingIds};
+  }
   const ensureMeetingRecords=(p,c)=>{
     const allMsgs=messagesOf(p.id,c.id);
     const groups=new Map();
@@ -4377,6 +4441,41 @@
       case '/chat-recover':return recoverDueQueues(data);
       case '/chat-flush-due':{
         const p=getP(data.profileId);const result=await flushDueQueues(p,String(data.activeCharacterId||''));void tickEpisodeArchive(p.id).catch(()=>{});return result;
+      }
+      case '/message-forget':{
+        const p=getP(data.profileId),c=getC(data.characterId),mid=String(data.messageId||'');
+        if(!mid)bodyErr('缺少消息 ID');
+        const target=db.messages.find(m=>m.id===mid&&m.profile_id===p.id&&m.character_id===c.id);
+        if(!target)bodyErr('消息已不存在');
+        if(getTaskState(p.id,c.id,'meeting')?.status==='inflight'||getTaskState(p.id,c.id,'chat')?.status==='inflight')bodyErr('请在模型回复完成或暂停后删除');
+        if(!archiveStoredCurrent())bodyErr('存档已在其他页面更新，请刷新后再删除');
+        const snapshot=JSON.stringify(db);
+        try{
+          const photo=target.photo_ref;
+          const result=forgetMessages(p,c,[mid]);
+          save();
+          if(photo)void removeChatPhotos([photo]).catch(()=>{});
+          return {ok:true,...result};
+        }catch(e){db=JSON.parse(snapshot);throw e;}
+      }
+      case '/meeting-forget':{
+        const p=getP(data.profileId),c=getC(data.characterId),mid=String(data.meetingId||'');
+        const rec=(db.meetings||[]).find(x=>x.id===mid&&x.profile_id===p.id&&x.character_id===c.id);
+        if(!rec)bodyErr('见面记录已不存在');
+        const r=requireMatch(p.id,c.id);
+        if(r.mode==='meeting'&&r.active_meeting_id===mid)bodyErr('正在进行的见面不能整场删除，请先结束见面');
+        if(getTaskState(p.id,c.id,'meeting')?.status==='inflight')bodyErr('请等待当前模型生成结束');
+        if(!archiveStoredCurrent())bodyErr('存档已在其他页面更新，请刷新后再删除');
+        const snapshot=JSON.stringify(db);
+        try{
+          const rows=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid);
+          const photos=rows.map(m=>m.photo_ref).filter(Boolean);
+          const result=forgetMessages(p,c,rows.map(m=>m.id),[mid]);
+          if(!rows.length){db.meetings=db.meetings.filter(x=>x.id!==mid);db.episodicMemories=db.episodicMemories.filter(x=>x.source_key!=='meeting:'+mid);}
+          save();
+          if(photos.length)void removeChatPhotos(photos).catch(()=>{});
+          return {ok:true,...result};
+        }catch(e){db=JSON.parse(snapshot);throw e;}
       }
       case '/message-delete':{
         const p=getP(data.profileId),c=getC(data.characterId),mid=String(data.messageId||'');
