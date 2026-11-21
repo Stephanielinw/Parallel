@@ -2204,8 +2204,8 @@ function renderPresets(){
 function tokenCountOrNull(v){if(v===null||v===undefined||v==='')return null;const n=Number(v);return Number.isSafeInteger(n)&&n>=0?n:null}
 function requestTokenUsage(log){
  const u=log?.usage||{},input=tokenCountOrNull(u.prompt_tokens),output=tokenCountOrNull(u.completion_tokens),reported=tokenCountOrNull(u.total_tokens);
- const valid=[input,output,reported].some(x=>x!==null&&x>0),total=valid?(reported??(input!==null&&output!==null?input+output:null)):null;
- return {input:valid?input:null,output:valid?output:null,total,reasoning:valid?tokenCountOrNull(u.reasoning_tokens):null,source:!valid?'missing':reported!==null?'provider':total!==null?'sum':'partial',hasUsage:valid};
+ const valid=[input,output,reported].some(x=>x!==null&&x>0),verifiedTotal=reported!==null&&reported>0?reported:null,total=valid?(verifiedTotal??(input!==null&&output!==null?input+output:null)):null;
+ return {input:valid?input:null,output:valid?output:null,total,reasoning:valid?tokenCountOrNull(u.reasoning_tokens):null,source:!valid?'missing':verifiedTotal!==null?'provider':total!==null?'sum':'partial',hasUsage:valid};
 }
 function requestTextLength(log){
  const msgs=log?.request_payload?.messages;if(!Array.isArray(msgs))return null;
@@ -2269,7 +2269,7 @@ function renderSystemLogs(){
     ${state.logLayout==='diagnostics'?(logs.length===0?`<div class="notice">暂无生成日志。当你在「消息」或「面对面小说」中触发模型回复后，这里会记录完整的请求 Payload、生效预设与模型原始响应。</div>`:`<div class="syslog-list">${logs.map((log,idx)=>{
       const isErr=Boolean(log.error);
       const isTrunc=Boolean(log.truncation_warning)||log.finish_reason==='length'||log.finish_reason==='max_tokens';
-      const u=log.usage||{};
+      const u=requestTokenUsage(log);
       const smp=log.sampling||{};
       const actList=Array.isArray(log.active_presets)?log.active_presets:[];
       const disList=Array.isArray(log.disabled_presets)?log.disabled_presets:[];
@@ -2296,7 +2296,7 @@ function renderSystemLogs(){
           <div><small>采样参数</small><b>T=${smp.temperature??'—'} · P=${smp.top_p??'—'} · Max=${smp.max_tokens??'—'}</b></div>
           <div><small>生效预设</small><b>${log.active_preset_count??actList.length} 启用 / ${log.disabled_preset_count??disList.length} 禁用</b></div>
           <div><small>正文字数</small><b>原始 ${log.char_count_raw??0} 字 → 展示 ${log.char_count_parsed??0} 字</b></div>
-          <div><small>Token 消耗</small><b>输入 ${u.prompt_tokens??'—'} · 输出 ${u.completion_tokens??'—'}${u.reasoning_tokens?` (思考 ${u.reasoning_tokens})`:''} · 总计 ${u.total_tokens??'—'}</b></div>
+          <div><small>Token 消耗</small><b>输入 ${u.input??'—'} · 输出 ${u.output??'—'}${u.reasoning?` (其中思考 ${u.reasoning})`:''} · 总计 ${u.total??'—'}${u.hasUsage?'':'（未核实）'}</b></div>
           <div><small>耗时与鉴权</small><b>${log.duration_ms??0} ms · ${esc(log.headers_masked?.Authorization||'Bearer ***')}</b></div>
         </div>
         <details class="syslog-details">
