@@ -37,6 +37,7 @@ const at=min=>new Date(now-min*60000).toISOString();
  rel.meeting_started_at=at(165); // 18:58, with now fixed at 21:43
  rel.meeting_location='诶…'; // legacy false-positive to repair
  rel.meeting_location_history=[];
+ pack.data.messages.push({id:'prior_cafe',profile_id:profile.id,character_id:pair.characterId,sender:'user',mode:'chat',text:'店名就叫Cafe',meeting_id:'',engine:'human',created_at:at(170)});
  pack.data.messages.push({id:'scene_room',profile_id:profile.id,character_id:pair.characterId,sender:'user',mode:'meeting',text:'说着不留宿，还是赖在我床上了…',meeting_id:rel.active_meeting_id,engine:'human',created_at:at(23)});
  e.importData(JSON.stringify(pack));
  const current=await e.request('/thread?profileId='+profile.id+'&characterId='+encodeURIComponent(pair.characterId));
@@ -46,7 +47,7 @@ const at=min=>new Date(now-min*60000).toISOString();
  const steps=surv.unlockedSlots;
  const meeting=steps.filter(x=>x.source==='meeting');
  assert(meeting.length>=2,'meeting should reflect start location and subsequent bedroom transition');
- assert(meeting.some(x=>x.location==='约定的见面地点'&&x.start==='18:58'),'legacy placeholder must not be treated as an actual place');
+ assert(meeting.some(x=>x.location==='Cafe'&&x.start==='18:58'),'legacy phantom place must recover explicitly named pre-meeting café');
  assert(meeting.some(x=>x.location==='Lin 的卧室'&&x.start==='21:20'),'real user-scene movement must be retained');
  assert(!steps.some(x=>x.source==='schedule'&&x.start==='21:00'),'fictional 21:00 schedule must not coexist with ongoing meeting');
  assert(!steps.some(x=>x.location==='诶…'),'invalid place must be repaired throughout live view');
