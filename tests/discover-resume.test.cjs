@@ -43,7 +43,7 @@ function start(){
  assert(match.matched,'first profile should be matched in test fixture');
  let saved=JSON.parse(e.exportData()).data;
  assert.equal(saved.discoverSessions[p1.id].index,4);
- assert.deepEqual(Array.from(saved.discoverSessions[p1.id].ids),ids);
+ assert.equal(Array.from(saved.discoverSessions[p1.id].ids).join('|'),ids.join('|'),'saved ID order must match original deck');
  const exported=e.exportData();
  e=start();
  let resumed=await e.request('/discover',pair);
