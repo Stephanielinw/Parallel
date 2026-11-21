@@ -612,3 +612,29 @@ html,body,#root{width:100%;height:100%;min-height:0;margin:0;overflow:hidden;ove
   .preset-editor .preset-row>.preset-edit-btn{width:36px;height:36px}
   .preset-editor .preset-row>.toggle{height:26px}
 }
+
+
+/* Per-request Token usage: compact on iPhone, isolated from diagnostic payloads. */
+.token-layout-toggle{display:flex;gap:9px;flex-wrap:wrap;margin:12px 0}
+.token-layout-toggle .btn{flex:1;min-width:115px}
+.token-usage-panel{display:grid;gap:12px;min-width:0}
+.token-usage-panel h3{margin:0}
+.token-summary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.token-summary{display:flex;flex-direction:column;gap:5px;min-width:0;padding:12px;background:#FFF8EC;border:1.8px solid #D8C4AC;border-radius:13px}
+.token-summary small{font-size:10px;color:var(--muted);font-weight:700}
+.token-summary strong{font-size:clamp(17px,5vw,23px);color:var(--ink);font-weight:850;overflow-wrap:anywhere}
+.token-summary span{font-size:10px;color:var(--muted)}
+.token-request-list{display:flex;flex-direction:column;gap:10px}
+.token-request-row{min-width:0;padding:12px;background:#FFFCF7;border:1.8px solid #D8C4AC;border-radius:14px;display:flex;flex-direction:column;gap:8px}
+.token-request-error{border-color:#CD8995}
+.token-request-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:7px}
+.token-request-head>div{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap}
+.token-request-head strong{font-size:11px;overflow-wrap:anywhere}
+.token-request-ident{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
+.token-request-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.token-request-values span{display:flex;flex-direction:column;gap:4px;padding:9px 6px;background:#FFF3DF;border-radius:10px;color:#776050;font-size:10px}
+.token-request-values b{font-size:16px;color:var(--ink);font-weight:800;overflow-wrap:anywhere}
+.token-request-footer{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;font-size:10px;line-height:1.6;color:var(--muted)}
+.token-request-footer>span{flex:1;min-width:170px;overflow-wrap:anywhere}
+.token-request-footer .btn{font-size:10px;padding:7px 10px}
+@media(max-width:580px){.token-request-values b{font-size:14px}.token-request-footer .btn{width:100%}}
