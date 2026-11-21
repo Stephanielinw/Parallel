@@ -3084,12 +3084,13 @@
     const reasoningRaw=[msgObj.reasoning_content,msgObj.reasoning,choice.reasoning].find(x=>typeof x==='string'&&x.length)||'';
     const finishReason=choice.finish_reason||data?.finish_reason||null;
     const isTruncated=['length','max_tokens'].includes(String(finishReason||'').toLowerCase());
-    const usageRaw=data?.usage||null;
-    const reasoningTokens=usageRaw?.completion_tokens_details?.reasoning_tokens??usageRaw?.reasoning_tokens??null;
+    const usageRaw=data?.usage||data?.usage_metadata||data?.usageMetadata||null;
+    const usageNumber=(...values)=>{for(const v of values){if(typeof v==='number'&&Number.isFinite(v)&&v>=0)return v;}return null;};
+    const reasoningTokens=usageNumber(usageRaw?.completion_tokens_details?.reasoning_tokens,usageRaw?.reasoning_tokens,usageRaw?.thoughtsTokenCount);
     const usage=usageRaw?{
-      prompt_tokens:usageRaw.prompt_tokens??null,
-      completion_tokens:usageRaw.completion_tokens??null,
-      total_tokens:usageRaw.total_tokens??null,
+      prompt_tokens:usageNumber(usageRaw.prompt_tokens,usageRaw.input_tokens,usageRaw.promptTokenCount),
+      completion_tokens:usageNumber(usageRaw.completion_tokens,usageRaw.output_tokens,usageRaw.candidatesTokenCount),
+      total_tokens:usageNumber(usageRaw.total_tokens,usageRaw.totalTokenCount),
       reasoning_tokens:reasoningTokens
     }:null;
     if(typeof result!=='string'||!result.trim()){

@@ -2155,13 +2155,18 @@ def completion(messages,*,json_mode=False,max_tokens=None,temperature=None,log_m
     msg_obj=choice.get('message') or {}
     finish_reason=str(choice.get('finish_reason') or '')
     is_truncated=finish_reason.lower() in ('length','max_tokens')
-    usage_raw=data.get('usage') or {}
+    usage_raw=data.get('usage') or data.get('usage_metadata') or data.get('usageMetadata') or {}
     comp_details=usage_raw.get('completion_tokens_details') or {}
+    def usage_num(*values):
+        for value in values:
+            if isinstance(value,(int,float)) and not isinstance(value,bool) and value>=0 and float(value).is_integer():
+                return int(value)
+        return None
     usage={
-        'prompt_tokens':usage_raw.get('prompt_tokens'),
-        'completion_tokens':usage_raw.get('completion_tokens'),
-        'total_tokens':usage_raw.get('total_tokens'),
-        'reasoning_tokens':comp_details.get('reasoning_tokens') or usage_raw.get('reasoning_tokens') or 0
+        'prompt_tokens':usage_num(usage_raw.get('prompt_tokens'),usage_raw.get('input_tokens'),usage_raw.get('promptTokenCount')),
+        'completion_tokens':usage_num(usage_raw.get('completion_tokens'),usage_raw.get('output_tokens'),usage_raw.get('candidatesTokenCount')),
+        'total_tokens':usage_num(usage_raw.get('total_tokens'),usage_raw.get('totalTokenCount')),
+        'reasoning_tokens':usage_num(comp_details.get('reasoning_tokens'),usage_raw.get('reasoning_tokens'),usage_raw.get('thoughtsTokenCount'))
     } if usage_raw else None
     content=msg_obj.get('content')
     reasoning_content=str(msg_obj.get('reasoning_content') or msg_obj.get('reasoning') or '')

@@ -2201,6 +2201,46 @@ function renderPresets(){
   </div>
   <div class="terminal-card"><h3>预设与职责边界说明</h3><p class="caption">Parallel 提供原作身份、玩家 Profile、关系记忆、场景与历史；预设控制文风、视角、连续性等。编辑或启停后下次生成生效，编组折叠只影响显示。</p></div>`;
 }
+function tokenCountOrNull(v){if(v===null||v===undefined||v==='')return null;const n=Number(v);return Number.isSafeInteger(n)&&n>=0?n:null}
+function requestTokenUsage(log){
+ const u=log?.usage||{},input=tokenCountOrNull(u.prompt_tokens),output=tokenCountOrNull(u.completion_tokens),reported=tokenCountOrNull(u.total_tokens);
+ const valid=[input,output,reported].some(x=>x!==null&&x>0),verifiedTotal=reported!==null&&reported>0?reported:null,total=valid?(verifiedTotal??(input!==null&&output!==null?input+output:null)):null;
+ return {input:valid?input:null,output:valid?output:null,total,reasoning:valid?tokenCountOrNull(u.reasoning_tokens):null,source:!valid?'missing':verifiedTotal!==null?'provider':total!==null?'sum':'partial',hasUsage:valid};
+}
+function requestTextLength(log){
+ const msgs=log?.request_payload?.messages;if(!Array.isArray(msgs))return null;
+ const size=x=>typeof x==='string'?x.length:Array.isArray(x)?x.reduce((n,a)=>n+size(a),0):x&&typeof x==='object'&&typeof x.text==='string'?x.text.length:0;
+ return msgs.reduce((n,m)=>n+size(m?.content),0);
+}
+function renderTokenUsagePanel(logs){
+ const f=n=>n===null?'—':Number(n).toLocaleString('en-US');
+ const rows=logs.map(log=>({log,u:requestTokenUsage(log),chars:requestTextLength(log)}));
+ const counted=rows.filter(x=>x.u.total!==null),ins=rows.filter(x=>x.u.input!==null),outs=rows.filter(x=>x.u.output!==null);
+ const sum=(arr,k)=>arr.reduce((n,x)=>n+x.u[k],0),missing=rows.filter(x=>!x.u.hasUsage).length;
+ const stat=(label,n,sub)=>`<div class="token-summary"><small>${label}</small><strong>${f(n)}</strong><span>${sub}</span></div>`;
+ const modeName=m=>m==='meeting'?'面对面':m==='chat'?'手机聊天':m==='translation'?'翻译':m==='json'?'结构化任务':m||'其他请求';
+ const list=rows.map(({log,u,chars})=>{
+   const dt=new Date(log.created_at||''),time=!Number.isNaN(dt.getTime())?dt.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):String(log.created_at||'未知时间').slice(0,19);
+   const note=u.source==='provider'?'接口 usage 已报告':u.source==='sum'?'输入和输出相加':u.source==='partial'?'部分统计':'未返回有效 usage（或返回全零占位），无法确认扣费';
+   return `<article class="token-request-row ${log.error?'token-request-error':''}">
+     <div class="token-request-head"><div><span class="preset-badge ${log.mode==='meeting'?'ok':''}">${esc(modeName(log.mode))}</span> <strong>${esc(log.entry_point||'request')}</strong> <span class="caption">${esc(time)}</span></div><span class="preset-badge ${log.error?'danger':'ok'}">${log.error?'请求失败':'已返回'}</span></div>
+     <div class="token-request-ident">${esc(log.character_name||log.profile_name||'—')} · ${esc(log.model||'未知模型')}</div>
+     <div class="token-request-values"><span>输入 <b>${f(u.input)}</b></span><span>输出 <b>${f(u.output)}</b></span><span>总计 <b>${f(u.total)}</b></span>${u.reasoning!==null&&u.reasoning>0?`<span>其中思考 <b>${f(u.reasoning)}</b></span>`:''}</div>
+     <div class="token-request-footer"><span>${esc(note)}${chars===null?'':` · 发送文本 ${f(chars)} 字符（不是 Token）`}</span><button type="button" class="btn soft" data-action="open-token-request-log" data-id="${esc(log.id)}">查看请求详情</button></div>
+   </article>`;
+ }).join('');
+ return `<div class="token-usage-panel"><div class="kicker">TOKEN USAGE · PER REQUEST</div><h3>每次 Request 的 Token 用量</h3>
+ <p class="caption">只统计当前筛选中保存的请求，不是全部历史账单；未报告的用量不会被当作 0。</p>
+ <div class="token-summary-grid">
+   ${stat('已知总 Token',counted.length?sum(counted,'total'):null,counted.length+' / '+rows.length+' 条可汇总')}
+   ${stat('已报告输入',ins.length?sum(ins,'input'):null,ins.length+' 条有效')}
+   ${stat('已报告输出',outs.length?sum(outs,'output'):null,outs.length+' 条有效')}
+   ${stat('无法核实',missing,'缺失 / 全零占位')}
+ </div>
+ ${rows.length?`<div class="token-request-list">${list}</div>`:'<div class="notice">暂无请求记录。请开启调试记录并发送一次请求。</div>'}
+ <p class="caption">失败、超时和重试仍可能计费；没有 usage 不能判断实际扣费。思考 Token 通常已计入输出，不重复相加。日志最多保留 40 条 / 4 MiB；关闭调试记录后不会补录。</p></div>`;
+}
+
 function renderSystemLogs(){
   const filter=state.logFilterMode||'all';
   const allLogs=Array.isArray(state.systemLogs)?state.systemLogs:[];
@@ -2224,10 +2264,12 @@ function renderSystemLogs(){
       <button class="terminal-tab ${filter==='chat'?'active':''}" data-action="filter-system-logs" data-mode="chat">手机聊天 (${allLogs.filter(x=>x.mode==='chat').length})</button>
       <button class="terminal-tab ${filter==='translation'?'active':''}" data-action="filter-system-logs" data-mode="translation">双语翻译 (${allLogs.filter(x=>x.mode==='translation').length})</button>
     </div>
-    ${logs.length===0?`<div class="notice">暂无生成日志。当你在「消息」或「面对面小说」中触发模型回复后，这里会记录完整的请求 Payload、生效预设与模型原始响应。</div>`:`<div class="syslog-list">${logs.map((log,idx)=>{
+    <div class="token-layout-toggle" role="group" aria-label="日志查看方式"><button type="button" class="btn ${state.logLayout!=='diagnostics'?'primary':'soft'}" data-action="log-layout" data-layout="usage">Token 用量</button><button type="button" class="btn ${state.logLayout==='diagnostics'?'primary':'soft'}" data-action="log-layout" data-layout="diagnostics">诊断详情</button></div>
+    ${state.logLayout!=='diagnostics'?renderTokenUsagePanel(logs):''}
+    ${state.logLayout==='diagnostics'?(logs.length===0?`<div class="notice">暂无生成日志。当你在「消息」或「面对面小说」中触发模型回复后，这里会记录完整的请求 Payload、生效预设与模型原始响应。</div>`:`<div class="syslog-list">${logs.map((log,idx)=>{
       const isErr=Boolean(log.error);
       const isTrunc=Boolean(log.truncation_warning)||log.finish_reason==='length'||log.finish_reason==='max_tokens';
-      const u=log.usage||{};
+      const u=requestTokenUsage(log);
       const smp=log.sampling||{};
       const actList=Array.isArray(log.active_presets)?log.active_presets:[];
       const disList=Array.isArray(log.disabled_presets)?log.disabled_presets:[];
@@ -2254,7 +2296,7 @@ function renderSystemLogs(){
           <div><small>采样参数</small><b>T=${smp.temperature??'—'} · P=${smp.top_p??'—'} · Max=${smp.max_tokens??'—'}</b></div>
           <div><small>生效预设</small><b>${log.active_preset_count??actList.length} 启用 / ${log.disabled_preset_count??disList.length} 禁用</b></div>
           <div><small>正文字数</small><b>原始 ${log.char_count_raw??0} 字 → 展示 ${log.char_count_parsed??0} 字</b></div>
-          <div><small>Token 消耗</small><b>输入 ${u.prompt_tokens??'—'} · 输出 ${u.completion_tokens??'—'}${u.reasoning_tokens?` (思考 ${u.reasoning_tokens})`:''} · 总计 ${u.total_tokens??'—'}</b></div>
+          <div><small>Token 消耗</small><b>输入 ${u.input??'—'} · 输出 ${u.output??'—'}${u.reasoning?` (其中思考 ${u.reasoning})`:''} · 总计 ${u.total??'—'}${u.hasUsage?'':'（未核实）'}</b></div>
           <div><small>耗时与鉴权</small><b>${log.duration_ms??0} ms · ${esc(log.headers_masked?.Authorization||'Bearer ***')}</b></div>
         </div>
         <details class="syslog-details">
@@ -2288,7 +2330,7 @@ function renderSystemLogs(){
           <pre class="syslog-pre">${esc(JSON.stringify(log.raw_response||{},null,2))}</pre>
         </details>
       </div>`;
-    }).join('')}</div>`}
+    }).join('')}</div>`):''}
   </div>`;
 }
 async function refreshSystemLogs(){
@@ -2777,6 +2819,8 @@ if(a==='preset-disable-defaults'){await api('/preset',{action:'disable_defaults'
 if(a==='preset-deduplicate'){const r=await api('/preset',{action:'deduplicate',mode:state.presetMode});await refreshPresets();return toast(`已清理 ${r.removed||0} 条重复预设`)}
 if(a==='toggle-system-logs'){await api('/system-logs-settings',{enabled:state.logEnabled===false});await refreshSystemLogs();return toast(state.logEnabled?'调试记录已开启':'调试记录已关闭')}
 if(a==='refresh-system-logs'){await refreshSystemLogs();return toast('生成日志已刷新')}
+if(a==='log-layout'){state.logLayout=el.dataset.layout==='diagnostics'?'diagnostics':'usage';return renderTerminal()}
+if(a==='open-token-request-log'){state.logLayout='diagnostics';renderTerminal();const target=document.getElementById('syslog-'+el.dataset.id);if(target)target.scrollIntoView({block:'start'});return}
 if(a==='filter-system-logs'){state.logFilterMode=el.dataset.mode||'all';return renderTerminal()}
 if(a==='clear-system-logs'){return modal('<h2>清空所有生成日志？</h2><p>这将清空本地保存的模型生成诊断日志（不影响聊天记录、记忆或预设）。</p>','<button class="btn ghost" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-clear-system-logs">确认清空</button>')}
 if(a==='confirm-clear-system-logs'){await api('/system-logs-clear',{});state.systemLogs=[];closeModal();renderTerminal();return toast('生成日志已清空')}
