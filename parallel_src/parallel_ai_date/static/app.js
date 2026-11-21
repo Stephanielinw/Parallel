@@ -814,15 +814,18 @@ function renderChatMessagesHtml(c){
     }
     const locVal=state.meetingLocation||(sessionMsgs.length?findOrBuildMeetingRecord(sessionMsgs,c).location:'约定的街角咖啡馆');
     const finalTurn=sessionMsgs.filter(m=>m.id!=='typing').at(-1);
+    const latestUserTurn=sessionMsgs.filter(m=>m.sender==='user'&&m.id&&m.id!=='pending'&&m.id!=='typing'&&!m.recalled&&m.engine!=='recalled').at(-1);
     const turnsHtml=sessionMsgs.filter(m=>m.id!=='typing').map((m,idx)=>{
       const isUser=m.sender==='user';
       const canRoll=!isUser&&m===finalTurn&&m.id&&m.id!=='pending'&&!m.recalled&&m.engine!=='recalled'&&!charTyping&&!state.chatBusy&&!state.flushBusy&&!isCurrentThreadPaused();
+      const canEditMeeting=isUser&&m===latestUserTurn&&!charTyping&&!state.chatBusy&&!state.flushBusy&&!state.revealingBubbles;
       return `<article class="novel-turn ${isUser?'novel-user':'novel-ai'}" data-message-id="${esc(m.id||'')}">
         <header class="novel-turn-head">
           <span class="novel-speaker">${isUser?`${esc(pName)} · 你的行动与台词`:`${esc(c.name)} · 现场描写`}</span>
           <span class="novel-turn-meta">#${idx+1} · ${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示':''}</span>
         </header>
         <div class="novel-prose">${formatNovelParagraphs(m.text,m.sender)}</div>
+        ${canEditMeeting?`<div class="chat-time"><button type="button" class="msg-action-btn" data-action="edit-message" data-id="${esc(m.id)}" title="编辑你本次见面最新一段发言">编辑我的上一段</button></div>`:''}
         ${canRoll?`<div class="chat-time"><button type="button" class="msg-action-btn" data-action="regenerate-message" data-id="${esc(m.id)}" title="保留原文，重新生成同一幕">${I('refresh')} 重 Roll</button>${m.reroll_count?`<span>已重 Roll ${m.reroll_count} 次</span>`:''}</div>`:''}
       </article>`;
     }).join('');
@@ -1781,30 +1784,64 @@ async function deleteMessage(mid){
   }catch(e){toast(e.message)}
 }
 function openEditMessageModal(mid){
+  if(state.chatBusy||state.flushBusy||state.revealingBubbles)return;
   const msg=(state.messages||[]).find(m=>m.id===mid);
   if(!msg||msg.recalled||msg.engine==='recalled')return;
+  const isMeeting=msg.mode==='meeting';
+  if(isMeeting){
+    const latest=(state.messages||[]).filter(m=>m.mode==='meeting'&&m.meeting_id===state.activeMeetingId&&m.sender==='user'&&!m.recalled&&m.engine!=='recalled').at(-1);
+    if(!latest||latest.id!==mid){toast('仅支持编辑当前见面的最新一条自己的发言');return;}
+  }
   const curTxt=msg.photo_kind==='virtual'?msg.photo_description:cleanBodyText(msg.text,msg.sender);
   modal(
-    `<div class="kicker">EDIT MESSAGE · 编辑消息</div><h2>编辑聊天消息</h2><p class="caption">修改原文后，旧译文将自动失效；若已开启自动中文翻译，系统会按新原文重新翻译。</p><div class="field"><label for="edit-message-input">消息原文</label><textarea id="edit-message-input" rows="4" maxlength="4000">${esc(curTxt)}</textarea></div>`,
-    `<button type="button" class="btn ghost" data-action="close-modal">取消</button><button type="button" class="btn primary" data-action="confirm-edit-message" data-id="${esc(mid)}">保存修改</button>`
+    isMeeting
+      ?`<div class="kicker">EDIT SCENE · 修改现场发言</div><h2>编辑我刚才的内容</h2><p class="caption">只可修改本次见面最新一条自己的发言。保存后，之后的角色回复将撤销并根据修改后的内容重新生成；如模型失败，修改仍会保留。</p><div class="field"><label for="edit-message-input">你的行动与台词</label><textarea id="edit-message-input" rows="6" maxlength="4000">${esc(curTxt)}</textarea></div>`
+      :`<div class="kicker">EDIT MESSAGE · 编辑消息</div><h2>编辑聊天消息</h2><p class="caption">修改原文后，旧译文将自动失效；若已开启自动中文翻译，系统会按新原文重新翻译。</p><div class="field"><label for="edit-message-input">消息原文</label><textarea id="edit-message-input" rows="4" maxlength="4000">${esc(curTxt)}</textarea></div>`,
+    `<button type="button" class="btn ghost" data-action="close-modal">取消</button><button type="button" class="btn primary" data-action="confirm-edit-message" data-id="${esc(mid)}">${isMeeting?'保存并重新生成':'保存修改'}</button>`
   );
   setTimeout(()=>$('edit-message-input')?.focus(),30);
 }
 async function submitEditMessage(mid){
+  if(state.chatBusy||state.flushBusy||state.revealingBubbles)return;
   const input=$('edit-message-input');
   const txt=input?.value?.trim()||'';
   if(!txt){toast('消息内容不能为空');return}
   const id=state.threadId,profileId=state.activeId;
+  const isMeeting=(state.messages||[]).find(m=>m.id===mid)?.mode==='meeting';
+  state.chatBusy=true;
   try{
-    await api('/message-edit',{profileId,characterId:id,messageId:mid,text:txt});
+    const r=await api('/message-edit',{profileId,characterId:id,messageId:mid,text:txt});
     delete state.translations[mid];
     for(const k of [...state.translationAutoAttempted]){
       if(k.startsWith(mid+':'))state.translationAutoAttempted.delete(k);
     }
+    for(const rid of r.removedIds||[]){
+      delete state.translations[rid];
+      state.collapsedTranslations.delete(rid);
+      state.expandedTranslations.delete(rid);
+    }
+    saveCollapsedTranslations();
     closeModal();
-    if(state.activeId===profileId&&state.threadId===id)await loadThreads(id);
-    toast('消息已更新');
-  }catch(e){toast('编辑失败：'+e.message)}
+    if(isCurrentPair(profileId,id)&&state.tab==='messages')await loadThreads(id);
+    if(isMeeting&&r.changed&&r.regenerate){
+      if(isCurrentPair(profileId,id)&&state.tab==='messages'){
+        state.messages.push({id:'typing',sender:'ai',mode:'meeting',text:'…',created_at:new Date().toISOString(),engine:'human'});
+        renderMessages();
+      }
+      const reply=await api('/reply',{profileId,characterId:id,location:state.meetingLocation});
+      if(isCurrentPair(profileId,id)&&state.tab==='messages'){
+        await loadThreads(id);
+        if(reply.apiError)showApiErrorModal(reply.apiError,reply.taskState,{type:'reply',profileId,characterId:id,mode:'meeting'});
+        else toast(reply.warning||'已修改你的发言，并重新生成现场描写');
+      }
+    }else toast(r.changed===false?'内容没有变化':'消息已更新');
+  }catch(e){
+    toast('编辑失败：'+e.message);
+    if(isCurrentPair(profileId,id)&&state.tab==='messages')await loadThreads(id);
+  }finally{
+    state.chatBusy=false;
+    if(isCurrentPair(profileId,id)&&state.tab==='messages')renderMessages();
+  }
 }
 async function regenerateMessage(mid){
   if(!state.threadId||!state.activeId||state.chatBusy||state.flushBusy||state.revealingBubbles)return;
