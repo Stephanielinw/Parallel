@@ -2223,10 +2223,13 @@
   const ensureMeetingRecords=(p,c)=>{
     const allMsgs=messagesOf(p.id,c.id);
     const groups=new Map();
+    const existingMembership=new Map();
+    for(const rec of db.meetings||[])if(rec.profile_id===p.id&&rec.character_id===c.id)
+      for(const msgId of rec.message_ids||[])existingMembership.set(msgId,rec.id);
     let legacyMid='';
     for(const m of allMsgs){
       if(m.mode!=='meeting'){legacyMid='';continue;}
-      const mid=m.meeting_id||legacyMid||('meet_'+m.id);
+      const mid=m.meeting_id||existingMembership.get(m.id)||legacyMid||('meet_'+m.id);
       if(!m.meeting_id)m.meeting_id=mid;
       legacyMid=mid;
       if(!groups.has(mid))groups.set(mid,[]);
@@ -4340,7 +4343,8 @@
             const resumeMid=String(data.resumeMeetingId||'').trim();
             if(resumeMid){
               const prior=(db.meetings||[]).find(x=>x.id===resumeMid&&x.profile_id===p.id&&x.character_id===c.id);
-              const oldTurns=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===resumeMid);
+              const priorMessageIds=new Set(prior?.message_ids||[]);
+              const oldTurns=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&(x.meeting_id===resumeMid||priorMessageIds.has(x.id)));
               if(!prior||!oldTurns.length)bodyErr('旧见面已不存在，无法续接');
               if(!archiveStoredCurrent())bodyErr('存档已在其他页面更新，请刷新后再继续');
               r.mode='meeting';
@@ -4468,7 +4472,8 @@
         if(!archiveStoredCurrent())bodyErr('存档已在其他页面更新，请刷新后再删除');
         const snapshot=JSON.stringify(db);
         try{
-          const rows=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid);
+          const priorIds=new Set(rec.message_ids||[]);
+          const rows=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&(m.meeting_id===mid||priorIds.has(m.id)));
           const photos=rows.map(m=>m.photo_ref).filter(Boolean);
           const result=forgetMessages(p,c,rows.map(m=>m.id),[mid]);
           if(!rows.length){db.meetings=db.meetings.filter(x=>x.id!==mid);db.episodicMemories=db.episodicMemories.filter(x=>x.source_key!=='meeting:'+mid);}
