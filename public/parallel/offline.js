@@ -2164,6 +2164,7 @@
     if(!removed.length)return {removedIds:[],removedMeetingIds:[]};
     const affectedMeetings=new Set([...whole,...removed.filter(m=>m.mode==='meeting').map(m=>m.meeting_id).filter(Boolean)]);
     const affectedDates=new Set(removed.map(m=>localDateStr(Date.parse(m.created_at))));
+    const erasedMeetings=(db.meetings||[]).filter(rec=>rec.profile_id===p.id&&rec.character_id===c.id&&whole.has(rec.id));
     const oldMeetingIds=new Set(affectedMeetings);
     const oldMemIds=new Set();
     for(const mem of db.episodicMemories||[]){
@@ -2181,7 +2182,11 @@
     const oldEventIds=new Set(removed.map(m=>m.id));
     db.events=(db.events||[]).filter(e=>{
       if(e.profile_id!==p.id||e.character_id!==c.id)return true;
-      if(oldEventIds.has(e.message_id))return false;
+      if(oldEventIds.has(e.message_id)||whole.has(e.meeting_id))return false;
+      if((e.type==='meeting'||e.type==='return')&&erasedMeetings.some(rec=>{
+        const marker=e.type==='meeting'?rec.started_at:(rec.finished_at||rec.ended_at);
+        return Number.isFinite(Date.parse(marker))&&Math.abs(Date.parse(e.created_at)-Date.parse(marker))<15000;
+      }))return false;
       if(['user_message','ai_message','message_recalled'].includes(e.type)&&removed.some(m=>Math.abs(Date.parse(e.created_at)-Date.parse(m.created_at))<1200&&String(e.summary||'').includes(String(m.text||'').slice(0,30))))return false;
       return true;
     });
@@ -2216,6 +2221,11 @@
         db.episodicMemories=(db.episodicMemories||[]).filter(x=>!(x.owner_id===c.id&&x.profile_id===p.id&&(x.meeting_id===mid||x.source_key==='meeting:'+mid)));
         removedMeetingIds.push(mid);
       }
+    }
+    const rel=relation(p.id,c.id);
+    if(rel?.mode==='chat'&&erasedMeetings.some(rec=>rec.location===rel.meeting_location)){
+      const latest=(db.meetings||[]).filter(x=>x.profile_id===p.id&&x.character_id===c.id).sort((a,b)=>String(b.ended_at).localeCompare(String(a.ended_at)))[0];
+      rel.meeting_location=latest?.location||'';
     }
     episodeList(p,c);
     return {removedIds:[...ids],removedMeetingIds};
@@ -4371,6 +4381,7 @@
             r.updated_at=stamp();
             syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
             event(p.id,c.id,'meeting','与 '+p.name+' 开始面对面见面');
+            db.events.at(-1).meeting_id=r.active_meeting_id;
             save(); // the real start survives a failed or interrupted opening
             if(data.triggerOpening===true&&pub().mode!=='normal'){
               const res=await produceReply(p,c,'meeting',null,'meeting_opening');
@@ -4412,6 +4423,7 @@
             r.updated_at=finishedAt;
             clearTaskState(p.id,c.id,'meeting');
             event(p.id,c.id,'return','与 '+p.name+' 返回手机聊天',Date.parse(finishedAt));
+            db.events.at(-1).meeting_id=activeMid;
           }
         }else if(m==='meeting'&&r.active_meeting_id){
           if(locInput)syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
