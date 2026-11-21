@@ -2158,40 +2158,27 @@
   };
   const ensureMeetingRecords=(p,c)=>{
     const allMsgs=messagesOf(p.id,c.id);
-    const groups=[];
-    let curGroup=[];
-    let curMid='';
+    const groups=new Map();
+    let legacyMid='';
     for(const m of allMsgs){
-      if(m.mode==='meeting'){
-        const mid=m.meeting_id||'';
-        if(curGroup.length&&mid&&curMid&&mid!==curMid){
-          groups.push({mid:curMid,msgs:curGroup});
-          curGroup=[m];curMid=mid;
-        }else{
-          curGroup.push(m);
-          if(mid&&!curMid)curMid=mid;
-        }
-      }else if(curGroup.length){
-        groups.push({mid:curMid||('meet_'+curGroup[0].id),msgs:curGroup});
-        curGroup=[];curMid='';
-      }
-    }
-    if(curGroup.length){
-      const r=relation(p.id,c.id);
-      const fallbackMid=(r?.mode==='meeting'&&r?.active_meeting_id)?r.active_meeting_id:('meet_'+curGroup[0].id);
-      groups.push({mid:curMid||fallbackMid,msgs:curGroup});
+      if(m.mode!=='meeting'){legacyMid='';continue;}
+      const mid=m.meeting_id||legacyMid||('meet_'+m.id);
+      if(!m.meeting_id)m.meeting_id=mid;
+      legacyMid=mid;
+      if(!groups.has(mid))groups.set(mid,[]);
+      groups.get(mid).push(m);
     }
     const r=relation(p.id,c.id);
-    for(const g of groups){
-      const customLoc=(r?.active_meeting_id===g.mid)?(r?.meeting_location||''):'';
-      upsertMeetingRecord(p,c,g.mid,g.msgs,customLoc);
+    for(const [mid,msgs] of groups){
+      const customLoc=r?.active_meeting_id===mid?(r.meeting_location||''):'';
+      upsertMeetingRecord(p,c,mid,msgs,customLoc);
     }
-    // Remove legacy noisy mechanical milestone / raw per-turn dialogue spam
+    // Reopened sessions can be non-contiguous. Remove orphan cards, never split by chat boundaries.
+    db.meetings=(db.meetings||[]).filter(rec=>rec.profile_id!==p.id||rec.character_id!==c.id||groups.has(rec.id));
     db.episodicMemories=(db.episodicMemories||[]).filter(m=>{
       if(m.owner_id!==c.id||m.profile_id!==p.id)return true;
-      if(m.source_type==='milestone'){
-        return false;
-      }
+      if(m.source_type==='meeting_summary'&&m.meeting_id&&!groups.has(m.meeting_id))return false;
+      if(m.source_type==='milestone')return false;
       if(m.source_type==='dialogue'){
         if(String(m.summary||'').includes('陈述（见面文字）')||String(m.summary||'').includes('（见面发言）'))return false;
         const hasProm=PROMISE_KEYWORDS.some(w=>String(m.summary||'').includes(w));
@@ -4286,6 +4273,27 @@
           clearQueue(p.id,c.id);
           clearTaskStatesForPair(p.id,c.id);
           if(m==='meeting'){
+            const resumeMid=String(data.resumeMeetingId||'').trim();
+            if(resumeMid){
+              const prior=(db.meetings||[]).find(x=>x.id===resumeMid&&x.profile_id===p.id&&x.character_id===c.id);
+              const oldTurns=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===resumeMid);
+              if(!prior||!oldTurns.length)bodyErr('旧见面已不存在，无法续接');
+              if(!archiveStoredCurrent())bodyErr('存档已在其他页面更新，请刷新后再继续');
+              r.mode='meeting';
+              r.active_meeting_id=resumeMid;
+              r.meeting_started_at=prior.started_at||oldTurns[0].created_at;
+              r.meeting_location=locInput||prior.location||inferMeetingLocation(p.id,c.id,'');
+              r.meeting_location_history ||= [];
+              r.meeting_location_history.push({at:stamp(),location:r.meeting_location,source:'resume'});
+              r.updated_at=stamp();
+              // An archived recap is no longer final; refresh a factual recap after the new ending.
+              prior.finished_at='';
+              prior.ai_summary='';
+              const memory=db.episodicMemories.find(x=>x.owner_id===c.id&&x.profile_id===p.id&&x.source_key==='meeting:'+resumeMid);
+              if(memory)memory.archive_stale=true;
+              upsertMeetingRecord(p,c,resumeMid,oldTurns,r.meeting_location);
+              syncSurveillanceOnMeetingStart(p,c,r.meeting_location,resumeMid);
+            }else{
             const inferredLoc=inferMeetingLocation(p.id,c.id,locInput);
             r.mode='meeting';
             r.active_meeting_id='meet_'+uid();
@@ -4304,6 +4312,7 @@
               taskState=res.taskState||null;
               const mMsgs=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===r.active_meeting_id);
               meetingRecord=upsertMeetingRecord(p,c,r.active_meeting_id,mMsgs,r.meeting_location);
+            }
             }
           }else{
             const activeMid=r.active_meeting_id||'',finishedAt=stamp();
