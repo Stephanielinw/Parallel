@@ -2330,7 +2330,7 @@ function renderSystemLogs(){
           <pre class="syslog-pre">${esc(JSON.stringify(log.raw_response||{},null,2))}</pre>
         </details>
       </div>`;
-    }).join('')}</div>`})}
+    }).join('')}</div>`):''}
   </div>`;
 }
 async function refreshSystemLogs(){
