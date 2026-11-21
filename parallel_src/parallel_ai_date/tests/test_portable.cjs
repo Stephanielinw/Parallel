@@ -137,7 +137,7 @@ function start(){const win={};const context={window:win,localStorage,crypto:requ
  assert(!JSON.stringify(meetPreview).includes('冷眼旁观禁用测试'),'disabled style never enters meeting prompt');
  assert(meetPreview[meetPreview.length-3].role==='system' && meetPreview[meetPreview.length-3].content.includes('COT自检：先承接 Stephanie 的动作'),'COT placed post-history');
  assert(meetPreview[meetPreview.length-2].role==='assistant' && meetPreview[meetPreview.length-2].content.includes('我已完全进入 Leon S. Kennedy 并锁定 Stephanie'),'assistant bottom pledge placed second to last');
- assert(meetPreview[meetPreview.length-1].role==='user' && (meetPreview[meetPreview.length-1].content.includes('【场景开启】') || meetPreview[meetPreview.length-1].content.includes('【继续推进】')),'trailing message in meeting mode is always user role');
+ assert(meetPreview[meetPreview.length-1].role==='user' && (meetPreview[meetPreview.length-1].content.includes('【第一幕 · 候场镜头') || meetPreview[meetPreview.length-1].content.includes('【继续推进】')),'trailing message in meeting mode is always user role');
 
  console.log('Portable HTML data tests passed: profile role exclusion, timeline, mode, reply, reunion, persistence, backup, v0.5 4-layer memory, and ROUND-02 preset compilation');
 })().catch(e=>{console.error(e);process.exit(1)});

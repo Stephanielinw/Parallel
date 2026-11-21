@@ -2462,6 +2462,15 @@
     const mapped=norm(aliasMap[nq]||q);
     return Array.from(byId.values()).filter(c=>(!source||c.source===source||c.version===source||sourceMatches(source,c))&&[c.name,...c.aliases].some(a=>a.toLowerCase()===q||a.toLowerCase().split(/\s+/).includes(q)||norm(a)===nq||norm(a)===mapped||(nq.length>=2&&norm(a).includes(nq)))).slice(0,20).map(c=>({id:c.id,name:c.name,source:c.source,version:c.version,age:c.age,canon:c.canon,identity_origin:c.identity_origin||'curated'}));
   };
+  // The opening camera observes the character; clicking Meet never acts for
+  // the player or establishes that the two have spotted one another.
+  const meetingOpeningDirection=(p,c,loc)=>
+    '【第一幕 · 候场镜头（首次接触由玩家决定）】地点：「'+loc+'」。'+
+    '遵守当前已启用的面对面小说预设，描写 '+c.name+' 此刻在哪儿、等待或做什么，以及环境、衣着、神情、手边物件和符合原作个性的细微动作。让玩家拥有可自主进入的具体现场。'+
+    '短信约定、既有关系或“我到了”之类的话语只构成背景，不代表双方已经实际照面、认出、靠近或开始交谈。'+
+    '不要描写 '+p.name+' 的到达、站位、动作、台词、身体感受、心理、选择；不要让 '+c.name+' 主动认出 '+p.name+'、走上前打招呼、触碰、邀请落座或把他们写成已经交谈。'+
+    '角色可以自己看门口、继续手头活动、注意周围人流，但不要确认玩家就在视线中。停在尚未发生首次实际接触的开放状态；由玩家的下一条动作或台词决定怎么接触。'+
+    '这里只限定本次开场，既不修改预设的文风、视角和篇幅，也不限制之后角色的自主行动。';
   function meetingClockContext(rel,history,now=Date.now(),rerollAt=0){
     const first=history[0]?.created_at;
     const startRaw=Date.parse(rel?.meeting_started_at||first||''),start=Number.isFinite(startRaw)?Math.min(startRaw,now):now;
@@ -2478,6 +2487,7 @@
     const excludeSet=options.excludeMessageIds?new Set(options.excludeMessageIds):null;
     const protectedIds=mode==='chat'?(pendingIds.length?pendingIds:(queueInfo(p.id,c.id).pendingIds||[])):(getTaskState(p.id,c.id,'meeting')?.pending_ids||[]);
     const workingHistory=selectWorkingHistory(p.id,c.id,mode,excludeSet,protectedIds);
+    const isMeetingOpening=mode==='meeting'&&workingHistory.length===0;
     const workingIds=new Set(workingHistory.map(m=>m.id));
     ensureMeetingRecords(p,c);
     episodeList(p,c);
@@ -2564,12 +2574,13 @@
         :{
           role:'user',
           content:historyTurns.length===0
-            ?(options.latestText||`【场景开启】${p.name} 与 ${c.name} 现已在「${meetingLoc}」当面相见。请承接上方的角色设定、双方关系记忆、见面前消息脉络，并严格遵循当前已启用预设的文风、叙事与篇幅规则，描写本次见面的开场第一幕，在自然交接点停下，留给 ${p.name} 回应空间。`)
+            ?meetingOpeningDirection(p,c,meetingLoc)
             :(options.latestText||`【继续推进】请紧接上一轮结尾的现场状态、动作与气氛，继续往下描写 ${c.name} 在「${meetingLoc}」中的反应与场景推进，不要重复上一轮已写过的内容，严格遵循当前已启用预设的文风与篇幅规则，在自然交接点收束。`)
         };
       chat.push(...priorHistory);
       const postSystemParts=postPresets.filter(x=>x.role==='system').map(x=>macros(x.content));
       postSystemParts.push(meetingClockContext(relation(p.id,c.id),workingHistory,Date.now(),options.rerollAt||0));
+      if(isMeetingOpening)postSystemParts.push(meetingOpeningDirection(p,c,meetingLoc));
       postSystemParts.push(`【第四层 · 当前状态 (Current State)】当前见面地点：「${meetingLoc}」。请严格按照上方已启用的预设模块规则（含文风、视角、去油腻、连续性及正文篇幅要求）输出面对面小说正文；只决定 ${c.name} 自己与环境中合理的事，不要替 ${p.name} 说话、行动或决定心理，不要在正文开头添加任何时间或模式标签。`);
       chat.push({role:'system',content:postSystemParts.join('\n\n')});
       for(const x of postPresets){
@@ -3282,7 +3293,7 @@
       const loc=inferMeetingLocation(p.id,c.id,r?.meeting_location||'');
       const meetCount=allMsgs.filter(m=>m.mode==='meeting'&&(!r?.active_meeting_id||m.meeting_id===r.active_meeting_id)).length;
       if(meetCount<=1){
-        return `${c.name}正站在${loc}微光映照的一侧。听见你的脚步声，对方抬起头，目光穿过人群定格在你身上。\n\n周围嘈杂的声响仿佛在这一刻退远了些。${c.name}把手机收进衣袋，朝你走近两步，神情里带着一点见到真人时的微怔与放松：\n\n“你到了。比我想象的还要快一点……走吧，我们先找个安静的位置坐下聊。”`;
+        return `${loc}里有人来人往，灯光在桌沿与玻璃上留下一层微光。${c.name}正待在入口附近，手边放着手机，偶尔查看屏幕，又把注意力转回周围。\n\n${c.name}随手调整了身旁的物件，继续做着眼前的事，像是在等一个约好的人，却没有因此停下自己的生活。门口仍有人进出，尚未发生任何招呼或接触。`;
       }
       const scenes=[
         `${c.name}安静地听完你的话，视线在你脸上停留了片刻，指尖轻轻碰了碰桌沿，眼底浮现出一丝温和的笑意。\n\n“原来你是这么想的。在手机里聊的时候我还不太确定，现在当面听你说，感觉完全不一样。”\n\n微风拂过${loc}的一角，${c.name}微微倾身靠近了些，示意你继续往下说。`,
