@@ -840,16 +840,11 @@ function renderChatMessagesHtml(c){
   const visibleMsgs=state.messages.filter(m=>!(state.hiddenReplyIds&&state.hiddenReplyIds.has(m.id))&&!(m.sender==='ai'&&m.mode!=='meeting'&&m.engine!=='recalled'&&!m.recalled&&/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(cleanBodyText(m.text,m.sender))));
   const pName=activeProfile()?.name||'你';
   if(state.chatMode==='meeting'){
-    let sessionMsgs=[];
-    for(let i=visibleMsgs.length-1;i>=0;i--){
-      const m=visibleMsgs[i];
-      if(m.mode==='meeting'){
-        if(state.activeMeetingId&&m.meeting_id&&m.meeting_id!==state.activeMeetingId&&m.id!=='pending'&&m.id!=='typing')break;
-        sessionMsgs.unshift(m);
-      }else{
-        break;
-      }
-    }
+    // Reopened meetings may have newer SMS / another accidental meeting in between.
+    // Keep the original meeting_id as the one source of truth.
+    const sessionMsgs=state.activeMeetingId
+      ?visibleMsgs.filter(m=>m.mode==='meeting'&&(m.meeting_id===state.activeMeetingId||['pending','typing'].includes(m.id)))
+      :visibleMsgs.filter(m=>m.mode==='meeting');
     const locVal=state.meetingLocation||(sessionMsgs.length?findOrBuildMeetingRecord(sessionMsgs,c).location:'约定的街角咖啡馆');
     const finalTurn=sessionMsgs.filter(m=>m.id!=='typing').at(-1);
     const latestUserTurn=sessionMsgs.filter(m=>m.sender==='user'&&m.id&&m.id!=='pending'&&m.id!=='typing'&&!m.recalled&&m.engine!=='recalled').at(-1);
@@ -864,6 +859,7 @@ function renderChatMessagesHtml(c){
         </header>
         <div class="novel-prose">${formatNovelParagraphs(m.text,m.sender)}</div>
         ${canEditMeeting?`<div class="chat-time"><button type="button" class="msg-action-btn" data-action="edit-message" data-id="${esc(m.id)}" title="编辑你本次见面最新一段发言">编辑我的上一段</button></div>`:''}
+        ${m.id&&m.id!=='pending'&&m.id!=='typing'&&!state.chatBusy&&!state.flushBusy?`<div class="chat-time"><button type="button" class="msg-action-btn" data-action="prompt-forget-message" data-id="${esc(m.id)}">永久删除此段</button></div>`:''}
         ${canRoll?`<div class="chat-time"><button type="button" class="msg-action-btn" data-action="regenerate-message" data-id="${esc(m.id)}" title="保留原文，重新生成同一幕">${I('refresh')} 重 Roll</button>${m.reroll_count?`<span>已重 Roll ${m.reroll_count} 次</span>`:''}</div>`:''}
       </article>`;
     }).join('');
@@ -890,29 +886,23 @@ function renderChatMessagesHtml(c){
       </div>
     </div>`;
   }
-  // Chat mode: render SMS bubbles and collapse contiguous meeting sessions into clickable .meeting-card
+  // Reopened meetings can span non-contiguous messages. Render one card per meeting_id.
   const blocks=[];
-  let curMeeting=[];
-  for(const m of visibleMsgs){
-    if(m.id==='typing')continue;
-    const mode=m.mode||'chat';
-    if(mode==='meeting'){
-      const prevMid=curMeeting[0]?.meeting_id||'';
-      if(curMeeting.length&&m.meeting_id&&prevMid&&m.meeting_id!==prevMid){
-        blocks.push({type:'meeting_group',msgs:curMeeting});
-        curMeeting=[m];
-      }else{
-        curMeeting.push(m);
-      }
-    }else{
-      if(curMeeting.length){
-        blocks.push({type:'meeting_group',msgs:curMeeting});
-        curMeeting=[];
-      }
-      blocks.push({type:'chat_msg',msg:m});
-    }
-  }
-  if(curMeeting.length)blocks.push({type:'meeting_group',msgs:curMeeting});
+  const meetingGroups=new Map(),lastSeenMeeting=new Map();
+  visibleMsgs.forEach((m,index)=>{
+    if(m.mode!=='meeting'||m.id==='typing')return;
+    const mid=m.meeting_id||('meet_'+m.id);
+    if(!meetingGroups.has(mid))meetingGroups.set(mid,[]);
+    meetingGroups.get(mid).push(m);
+    lastSeenMeeting.set(mid,index);
+  });
+  visibleMsgs.forEach((m,index)=>{
+    if(m.id==='typing')return;
+    if(m.mode==='meeting'){
+      const mid=m.meeting_id||('meet_'+m.id);
+      if(lastSeenMeeting.get(mid)===index)blocks.push({type:'meeting_group',msgs:meetingGroups.get(mid)});
+    }else blocks.push({type:'chat_msg',msg:m});
+  });
 
   const autoTranslateOn=state.settings?.auto_translate!==false;
   const ignoreNames=[c?.name||'',pName,...(c?.aliases||[])];
@@ -999,7 +989,7 @@ function renderChatMessagesHtml(c){
           :`<span class="msg-receipt is-read" title="对方已读">${I('read','receipt-ic')}<em>已读</em></span>`;
       }
     }
-    const time=`<span>${fmtTime(m.created_at)}${m.edited_at?' · 已编辑':''}${m.engine==='demo'?' · 演示回复':''}</span>${receiptHtml}${translationActionBtn}${editBtn}${regenBtn}${recallBtn}`;
+    const time=`<span>${fmtTime(m.created_at)}${m.edited_at?' · 已编辑':''}${m.engine==='demo'?' · 演示回复':''}</span>${receiptHtml}${translationActionBtn}${editBtn}${regenBtn}${recallBtn}${m.id&&m.id!=='pending'&&m.id!=='typing'?`<button type="button" class="msg-action-btn" data-action="prompt-forget-message" data-id="${esc(m.id)}">永久删除</button>`:''}`;
     return `<div class="bubble-row ${m.sender==='user'?'mine':''}" data-message-id="${esc(m.id||'')}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble ${translationHtml?'is-bilingual':''}"><div class="bubble-orig">${m.photo_kind?renderChatPhoto(m):esc(origText)}</div>${translationHtml}</div><div class="chat-time">${time}</div></div></div>`;
   }).join('');
 
@@ -1450,13 +1440,69 @@ function openMeetingRecordModal(meetingId){
           <span class="novel-turn-meta">#${idx+1} · ${fmtTime(e.created_at)}</span>
         </header>
         <div class="novel-prose">${formatNovelParagraphs(e.text,e.sender)}</div>
+        ${e.id?`<button type="button" class="btn ghost tiny-btn" data-action="prompt-forget-message" data-id="${esc(e.id)}">永久删除此段</button>`:''}
       </article>`).join(''):'<p class="caption">暂无详细段落记录。</p>'}
     </div>`;
   const canRefresh=Boolean(rec.id&&entries.length&&rec.id!==state.activeMeetingId);
-  const buttons=`${canRefresh?`<button class="btn soft" data-action="refresh-meeting-summary" data-id="${esc(rec.id)}">重新整理整场梗概（消耗 Token）</button>`:''}<button class="btn soft" data-action="close-modal">关闭见面记录</button>`;
+  const canResume=Boolean(rec.id&&entries.length&&state.chatMode==='chat'&&!state.chatBusy&&!state.flushBusy);
+  const canForget=Boolean(rec.id&&entries.length&&rec.id!==state.activeMeetingId&&!state.chatBusy);
+  const buttons=`${canResume?`<button class="btn primary" data-action="resume-meeting" data-id="${esc(rec.id)}">继续这次见面</button>`:''}${canRefresh?`<button class="btn soft" data-action="refresh-meeting-summary" data-id="${esc(rec.id)}">重新整理整场梗概（消耗 Token）</button>`:''}${canForget?`<button class="btn danger" data-action="prompt-forget-meeting" data-id="${esc(rec.id)}">删除整场见面与关联记忆</button>`:''}<button class="btn soft" data-action="close-modal">关闭</button>`;
   modal(html,buttons);
   const mEl=document.querySelector('#modal-root .modal');
   if(mEl)mEl.classList.add('modal-wide');
+}
+async function resumeArchivedMeeting(meetingId){
+  if(!meetingId||state.chatMode!=='chat'||state.chatBusy||state.flushBusy)return;
+  const pid=state.activeId,cid=state.threadId;
+  state.chatBusy=true;
+  try{
+    await api('/mode',{profileId:pid,characterId:cid,mode:'meeting',resumeMeetingId:meetingId,triggerOpening:false});
+    closeModal();
+    if(isCurrentPair(pid,cid)&&state.tab==='messages')await loadThreads(cid);
+    else refreshInboxQuietly(pid);
+    toast('已接回原来的见面剧情，开始时间与旧记录保留');
+  }catch(e){toast('无法恢复见面：'+String(e.message||e));}
+  finally{state.chatBusy=false;if(isCurrentPair(pid,cid)&&state.tab==='messages')renderMessages();}
+}
+function confirmForgetMessage(messageId){
+  const m=state.messages.find(x=>x.id===messageId)||(state.meetings||[]).flatMap(x=>x.entries||[]).find(x=>x.id===messageId);
+  if(!m)return toast('找不到这条消息');
+  modal('<h2>永久删除这条消息？</h2><p>这会从聊天和见面原文中移除该段，并清理或重建引用它的关联记忆及归档。已生成的其他消息仍会保留，其中可能提到被删内容；此操作不能撤销，建议先导出存档。</p>',
+    '<button class="btn soft" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-forget-message" data-id="'+esc(messageId)+'">确认永久删除</button>');
+}
+async function permanentlyForgetMessage(messageId){
+  if(state.chatBusy||state.flushBusy)return;
+  const pid=state.activeId,cid=state.threadId;
+  state.chatBusy=true;
+  try{
+    const r=await api('/message-forget',{profileId:pid,characterId:cid,messageId});
+    delete state.translations[messageId];
+    state.collapsedTranslations.delete(messageId);
+    state.expandedTranslations.delete(messageId);
+    saveCollapsedTranslations();
+    closeModal();
+    if(isCurrentPair(pid,cid)&&state.tab==='messages')await loadThreads(cid);
+    toast('消息已永久移除，引用它的记忆已清理');
+  }catch(e){toast('删除失败：'+String(e.message||e));}
+  finally{state.chatBusy=false;if(isCurrentPair(pid,cid)&&state.tab==='messages')renderMessages();}
+}
+function confirmForgetMeeting(meetingId){
+  const rec=(state.meetings||[]).find(x=>x.id===meetingId);
+  if(!rec)return toast('找不到这次见面');
+  modal('<h2>删除整场见面？</h2><p>将永久删除这场见面的 '+Number(rec.entries?.length||rec.message_ids?.length||0)+' 段原文、回忆卡片及关联记忆。不会删除其他见面或短信；无法撤销，建议先导出备份。</p>',
+    '<button class="btn soft" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-forget-meeting" data-id="'+esc(meetingId)+'">删除整场</button>');
+}
+async function permanentlyForgetMeeting(meetingId){
+  if(state.chatBusy||state.flushBusy)return;
+  const pid=state.activeId,cid=state.threadId;
+  state.chatBusy=true;
+  try{
+    await api('/meeting-forget',{profileId:pid,characterId:cid,meetingId});
+    closeModal();
+    if(isCurrentPair(pid,cid)&&state.tab==='messages')await loadThreads(cid);
+    toast('已删除选中的见面及关联记忆，其他剧情保留');
+  }catch(e){toast('删除失败：'+String(e.message||e));}
+  finally{state.chatBusy=false;if(isCurrentPair(pid,cid)&&state.tab==='messages')renderMessages();}
 }
 async function refreshMeetingSummary(meetingId){
   const pid=state.activeId,cid=state.threadId;
@@ -2793,6 +2839,11 @@ if(a==='surv-enter-meeting'){
   return changeMode();
 }
 if(a==='open-meeting-record')return openMeetingRecordModal(el.dataset.id);
+if(a==='resume-meeting')return await resumeArchivedMeeting(el.dataset.id);
+if(a==='prompt-forget-message')return confirmForgetMessage(el.dataset.id);
+if(a==='confirm-forget-message')return await permanentlyForgetMessage(el.dataset.id);
+if(a==='prompt-forget-meeting')return confirmForgetMeeting(el.dataset.id);
+if(a==='confirm-forget-meeting')return await permanentlyForgetMeeting(el.dataset.id);
 if(a==='refresh-meeting-summary')return await refreshMeetingSummary(el.dataset.id);
 if(a==='open-daily-messages')return openDailyMessagesModal(el.dataset.id);
 if(a==='open-memories')return openMemoriesModal('',state.memoryCategory||'all');
