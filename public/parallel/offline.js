@@ -1592,13 +1592,24 @@
     if(!Number.isFinite(d.getTime()))return '时间未知';
     return localDateStr(d.getTime())+' '+fmtHHMM(d.getTime());
   }
+  // This is a time-anchor for content, not a time-of-day keyword ban.
+  // In particular, future-night talk must not automatically become a "go to bed now" reply.
+  function chatTemporalTopicHint(history,now=Date.now()){
+    const hour=new Date(now).getHours();
+    if(hour<5||hour>=19)return '';
+    const recent=(history||[]).slice(-12).filter(m=>m.engine!=='recalled'&&!m.recalled).map(m=>String(m.text??'')).join(' ');
+    if(!/(?:今晚|今夜|晚上|夜里|晚安|梦里|做梦|梦见|梦到|睡觉|洗漱|钻被窝|上床|休息)/.test(recent))return '';
+    const lastUsers=(history||[]).slice(-5).filter(m=>m.sender==='user'&&m.engine!=='recalled').map(m=>String(m.text??'')).join(' ');
+    const explicitlyRestingNow=/(?:我现在|现在就|这会儿|我先|我要|我准备|马上|立刻|刚好).{0,10}(?:睡觉|睡了|睡一觉|午睡|睡午觉|休息|眯一会)|(?:我去睡了|我去睡觉|困得不行|要睡了)/.test(lastUsers);
+    return '\n【白天讨论夜晚·情境校准】最近的短信涉及晚上、梦境或睡眠话题，但现在仍是'+(hour<12?'上午':'下午')+'。这些是谈论中的时间，不表示对方已经准备立刻睡觉或当前已经入夜。'+(explicitlyRestingNow?'对方最近可能明确提到当前要休息；可以尊重并自然回应，但不要把下午误写成夜晚。':'对方没有明确表示此刻要睡：不要把话题当作睡前告别，不要直接催其现在洗漱、钻被窝或以“晚安”结束当前聊天。可以自然说“今晚再说”“晚上做个好梦”，但必须保持时间指向正确。');
+  }
   function chatClockContext(history,now=Date.now()){
     const d=new Date(now),offset=-d.getTimezoneOffset(),sign=offset>=0?'+':'-',abs=Math.abs(offset);
     const zone='UTC'+sign+String(Math.floor(abs/60)).padStart(2,'0')+':'+String(abs%60).padStart(2,'0');
     const hours=d.getHours(),period=hours<5?'凌晨':hours<12?'上午':hours<18?'下午':'晚上';
     const last=[...history].reverse().find(m=>m.sender==='user'&&Number.isFinite(Date.parse(m.created_at)));
     const previous=last?'最近一条用户消息实际发送于 '+chatClockLabel(last.created_at)+'，距现在约 '+Math.max(0,Math.floor((now-Date.parse(last.created_at))/60000))+' 分钟。':'';
-    return '\n【本次手机回复的当前时间】'+chatClockLabel(now)+'（'+period+'，'+zone+'，应用本地时钟）。'+previous+'较早的消息是历史，不代表现在仍处在当时的时段。请按此刻的时间自然回应，尤其注意跨日、早晚问候及作息；不要机械复述时间，也不要把现实日期改变为原作年份或输出时间前缀。';
+    return '\n【本次手机回复的当前时间 · 事实优先级最高】'+chatClockLabel(now)+'（'+period+'，'+zone+'，应用本地时钟）。'+previous+'现实时钟与用户最新的明确行动决定当前状态；历史聊天中的“今晚、晚安、睡觉、做梦”仅表示说话时的内容，不是现在已经入夜或正在睡觉的证据。绝不因为当前话题在谈将来的晚上，就把现在改写成夜晚、催对方立即入睡或提前结束对话。只有对方当前明确表示现在要睡/休息、或角色明说是提前祝福时，才在白天自然使用睡前告别。发送前默默检查时间指向：讨论未来的夜晚与此刻的白天必须区分；不要机械报时，不要输出时间元数据，也不要把现实日期改变为原作年份。'+chatTemporalTopicHint(history,now);
   }
   const syncSurveillanceFromChat=(p,c,userRows,aiText,at=Date.now())=>{
     const txt=String(aiText||'').trim();
@@ -2827,8 +2838,10 @@
     }
     const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「${curSurv.location}」·「${curSurv.activity}」。${isSleepingSlot(curSurv)?'原日程为睡眠，但你正在阅读并准备发送手机消息，应视作已暂时醒来；不要声称自己仍在熟睡。':''}实际互动优先于预设日程，不必主动汇报行踪或生硬解释日程。`:'';
     const langHint='\n'+buildCharacterLanguageDirective(db.connection?.character_language_pref||'natural',db.connection?.character_language_custom||'');
-    sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+chatClockContext(workingHistory,options.simulatedAt||Date.now())+survHint+batchHint+langHint;
+    sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint+langHint;
     sys+='\n【照片消息】可以在自然合适的时候自主发送虚拟照片，也可以回应对方索要照片。每张照片必须单独占一个气泡，格式严格为 [[PHOTO: 一段镜头内可见的照片描写]]，其中不能包含换行或 |||；普通短信仍按原有格式回复，最多四个气泡。不要把文字说明或分析当成照片，不需要每轮发图。对方照片描写或视觉输入仅作为对方实际发送的照片内容。';
+    // Keep the real time anchor at the very end of the system message, nearest to the conversation.
+    sys+='\n'+chatClockContext(workingHistory,options.simulatedAt||Date.now());
     const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)})),...historyTurns];
     return chat;
   };
