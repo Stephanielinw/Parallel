@@ -173,6 +173,8 @@ def init_db():
         cols={r['name'] for r in db.execute('PRAGMA table_info(chat_queue)')}
         for name,typ in [('scheduled_due_at','INTEGER NOT NULL DEFAULT 0'),('recovery_kind',"TEXT NOT NULL DEFAULT ''"),('simulated_at','INTEGER NOT NULL DEFAULT 0')]:
             if name not in cols:db.execute('ALTER TABLE chat_queue ADD COLUMN '+name+' '+typ)
+        message_cols={r['name'] for r in db.execute('PRAGMA table_info(messages)')}
+        if 'meeting_id' not in message_cols:db.execute("ALTER TABLE messages ADD COLUMN meeting_id TEXT NOT NULL DEFAULT ''")
         # A server restart cannot leave a real request in flight.
         for row in db.execute("SELECT * FROM chat_queue WHERE status='inflight'").fetchall():
             sources=parse_json(row['inflight_sources'],[]);pending=parse_json(row['pending'],[])
@@ -1667,10 +1669,10 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
     if not m_msgs:return None
     existed=db.execute('SELECT * FROM meetings WHERE id=?',(meeting_id,)).fetchone()
     loc=infer_meeting_location(db,p['id'],c['id'],custom_loc or (existed['location'] if existed else ''))
-    started_at=m_msgs[0]['created_at'] or utc()
+    started_at=(existed['started_at'] if existed else '') or m_msgs[0]['created_at'] or utc()
     ended_at=m_msgs[-1]['created_at'] or utc()
     time_str=str(started_at)[:16].replace('T',' ')
-    ai_sum=ai_summary or (existed['ai_summary'] if existed else '')
+    ai_sum=ai_summary or (existed['ai_summary'] if existed and len(parse_json(existed['message_ids'],[]))==len(m_msgs) else '')
     summary=build_meeting_summary_text(p,c,loc,m_msgs,ai_sum)
     entries=[{'id':m['id'],'sender':m['sender'],'speaker':p['name'] if m['sender']=='user' else c['name'],'text':str(m.get('text','')) if m['sender']=='user' else clean_meeting_novel_text(m['text']),'created_at':m['created_at']} for m in m_msgs]
     msg_ids=[m['id'] for m in m_msgs]
@@ -1707,28 +1709,94 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
     return rec
 
 def ensure_meeting_records(db,p,c):
-    all_rows=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? ORDER BY julianday(created_at),rowid',(p['id'],c['id'])).fetchall()
+    all_rows=db.execute('SELECT rowid,* FROM messages WHERE profile_id=? AND character_id=? ORDER BY julianday(created_at),rowid',(p['id'],c['id'])).fetchall()
     all_msgs=[dict(r) for r in all_rows if not _is_chat_artifact(dict(r))]
-    groups=[]
-    cur=[]
+    # Migrate legacy messages into their original card IDs, avoiding accidental splits.
+    known={}
+    for rec in db.execute('SELECT id,message_ids FROM meetings WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchall():
+        for msg_id in parse_json(rec['message_ids'],[]):known[msg_id]=rec['id']
+    groups={}
+    legacy_mid=''
+    active=MEETING_STATE.get((p['id'],c['id']),{}).get('active_meeting_id','')
     for m in all_msgs:
-        if m['mode']=='meeting':
-            cur.append(m)
-        elif cur:
-            groups.append(cur)
-            cur=[]
-    if cur:groups.append(cur)
-    m_state=MEETING_STATE.get((p['id'],c['id']),{})
-    for idx,g in enumerate(groups):
-        is_last=(idx==len(groups)-1)
-        mid=(m_state.get('active_meeting_id') if (is_last and m_state.get('active_meeting_id')) else ('meet_'+g[0]['id']))
-        for m in g:m['meeting_id']=mid
-        custom_loc=m_state.get('meeting_location','') if is_last else ''
-        upsert_meeting_record(db,p,c,mid,g,custom_loc)
+        if m['mode']!='meeting':
+            legacy_mid=''
+            continue
+        mid=m.get('meeting_id') or known.get(m['id']) or legacy_mid or ('meet_'+m['id'])
+        if not m.get('meeting_id'):
+            db.execute('UPDATE messages SET meeting_id=? WHERE id=?',(mid,m['id']))
+            m['meeting_id']=mid
+        legacy_mid=mid
+        groups.setdefault(mid,[]).append(m)
+    for mid,group in groups.items():
+        location=MEETING_STATE.get((p['id'],c['id']),{}).get('meeting_location','') if active==mid else ''
+        upsert_meeting_record(db,p,c,mid,group,location)
+    for rec in db.execute('SELECT id FROM meetings WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchall():
+        if rec['id'] not in groups:
+            db.execute('DELETE FROM meetings WHERE id=?',(rec['id'],))
+            db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(c['id'],p['id'],'meeting:'+rec['id']))
     db.execute("DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_type='milestone'",(c['id'],p['id']))
     rows=db.execute('SELECT * FROM meetings WHERE profile_id=? AND character_id=? ORDER BY started_at',(p['id'],c['id'])).fetchall()
     meetings=[dict(r)|{'message_ids':parse_json(r['message_ids'],[]),'entries':parse_json(r['entries'],[])} for r in rows]
-    return all_msgs, meetings
+    return all_msgs,meetings
+
+
+def forget_thread_messages(db,p,c,message_ids,whole_meeting_ids=None):
+    ids=set(str(x) for x in message_ids)
+    whole=set(str(x) for x in (whole_meeting_ids or []))
+    if not ids:return {'removedIds':[],'removedMeetingIds':[]}
+    all_rows=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid',(p['id'],c['id'])).fetchall()
+    removed=[dict(row) for row in all_rows if row['id'] in ids]
+    if not removed:return {'removedIds':[],'removedMeetingIds':[]}
+    affected=set(whole)|{m['meeting_id'] for m in removed if m['mode']=='meeting' and m['meeting_id']}
+    erased_meetings=[db.execute('SELECT started_at,ended_at,location FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone() for mid in whole]
+    erased_meetings=[r for r in erased_meetings if r]
+    dates={str(m['created_at'])[:10] for m in removed}
+    oldmem=db.execute('SELECT id,source_key,source_type,clarifies_id,raw_msg_ids FROM episodic_memories WHERE owner_id=? AND profile_id=?',(c['id'],p['id'])).fetchall()
+    removed_mem=set()
+    for row in oldmem:
+        evidence=set(parse_json(row['raw_msg_ids'],[]))
+        if ids&evidence or any(row['source_key']=='meeting:'+mid for mid in affected) or (row['source_type']=='daily-summary' and row['source_key'].replace('day:','') in dates):
+            removed_mem.add(row['id'])
+    for mem in oldmem:
+        if mem['id'] in removed_mem or mem['clarifies_id'] in removed_mem:
+            db.execute('DELETE FROM episodic_memories WHERE id=?',(mem['id'],))
+    for mid in ids:
+        db.execute('DELETE FROM messages WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id']))
+        invalidate_translation(db,mid)
+    # Event notes are secondary summaries, not authority. Remove directly matching source events.
+    for row in db.execute("SELECT id,type,summary,created_at FROM events WHERE profile_id=? AND character_id=?",(p['id'],c['id'])).fetchall():
+        if row['type'] in ('meeting','return') and erased_meetings:
+            # Legacy events carry no meeting_id. Use an intentionally tight time match.
+            if any(abs((datetime.fromisoformat(row['created_at'])-datetime.fromisoformat(rec['started_at'] if row['type']=='meeting' else rec['ended_at'])).total_seconds())<15 for rec in erased_meetings):
+                db.execute('DELETE FROM events WHERE id=?',(row['id'],))
+                continue
+        if row['type'] not in ('user_message','ai_message'):continue
+        if any(str(m['text'])[:40] and str(m['text'])[:40] in str(row['summary']) and abs((datetime.fromisoformat(row['created_at'])-datetime.fromisoformat(m['created_at'])).total_seconds())<2 for m in removed):
+            db.execute('DELETE FROM events WHERE id=?',(row['id'],))
+    for mid in affected:
+        remains=[dict(x) for x in db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' AND meeting_id=? ORDER BY julianday(created_at),rowid",(p['id'],c['id'],mid)).fetchall()]
+        if remains:
+            before=db.execute('SELECT location FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone()
+            db.execute('UPDATE meetings SET ai_summary=? WHERE id=?',('',mid))
+            upsert_meeting_record(db,p,c,mid,remains,before['location'] if before else '')
+        else:
+            db.execute('DELETE FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id']))
+            db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(c['id'],p['id'],'meeting:'+mid))
+    q=db.execute('SELECT pending FROM chat_queue WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
+    if q:
+        pending=[x for x in parse_json(q['pending'],[]) if x not in ids]
+        db.execute('UPDATE chat_queue SET pending=?,due_at=CASE WHEN ?=0 THEN 0 ELSE due_at END WHERE profile_id=? AND character_id=?',(js(pending),len(pending),p['id'],c['id']))
+    diary=DIARY_STATE.get((p['id'],c['id']),{}).get('by_date',{})
+    for date in dates:diary.pop(date,None)
+    store=SURVEILLANCE_STATE.get((p['id'],c['id']),{}).get('by_date',{})
+    for daily in store.values():
+        if isinstance(daily.get('slots'),list):daily['slots']=[slot for slot in daily['slots'] if slot.get('meeting_id') not in affected]
+    m_state=MEETING_STATE.get((p['id'],c['id']),{})
+    if erased_meetings and m_state.get('meeting_location') in [r['location'] for r in erased_meetings]:
+        newer=db.execute('SELECT location FROM meetings WHERE profile_id=? AND character_id=? ORDER BY started_at DESC LIMIT 1',(p['id'],c['id'])).fetchone()
+        m_state['meeting_location']=newer['location'] if newer else ''
+    return {'removedIds':list(ids),'removedMeetingIds':[mid for mid in affected if not db.execute('SELECT 1 FROM meetings WHERE id=?',(mid,)).fetchone()]}
 
 CORRECTION_PATTERNS=('不，我们没有','我们没有过','没有过','你记错了','记错了','记岔了','搞错了','不是在','没去过','从来没','并没有','没有这回事','那是别人','你认错人了')
 
@@ -1927,11 +1995,14 @@ def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids
         if cutoff:
             # A recovered reply can have a later insertion rowid but an earlier conversation timestamp.
             where+=' AND (julianday(created_at)<julianday(?) OR (julianday(created_at)=julianday(?) AND rowid<=?))';args.extend([cutoff['created_at'],cutoff['created_at'],through_rowid])
-    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
+    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at,meeting_id FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
     excl=set(exclude_ids or [])
     chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m) and m['id'] not in excl]
     if mode=='meeting':
         m_state=MEETING_STATE.get((pid,cid),{})
+        active_mid=m_state.get('active_meeting_id','')
+        if active_mid:
+            return select_turn_window([m for m in chron if m['mode']=='meeting' and m.get('meeting_id')==active_mid],mode,protected_ids)
         started_after=m_state.get('started_after_rowid')
         if started_after is not None:
             return select_turn_window([m for m in chron if m['mode']=='meeting' and int(m.get('rowid',0))>int(started_after)],mode,protected_ids)
@@ -1954,8 +2025,9 @@ def select_pre_meeting_chat_context(db,pid,cid,limit=6):
 
 def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0):
     clean_txt = (clean_meeting_novel_text(txt) if mode=='meeting' else (clean_chat_bubble_text(txt) or '…')) if (sender=='ai' and engine not in ('error','recalled')) else str(txt or '')
-    item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc())
-    db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)',tuple(item.values()))
+    meeting_id=MEETING_STATE.get((pid,cid),{}).get('active_meeting_id','') if mode=='meeting' else ''
+    item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc(),meeting_id=meeting_id)
+    db.execute('INSERT INTO messages (id,profile_id,character_id,sender,mode,text,engine,created_at,meeting_id) VALUES (?,?,?,?,?,?,?,?,?)',tuple(item.values()))
     if sender=='ai' and mode=='chat' and engine in ('live','demo') and not _is_chat_artifact(item):reconcile_phone_activity(db,pid,cid,at)
     if at:
         date=datetime.fromtimestamp(at/1000).astimezone().strftime('%Y-%m-%d')
@@ -2555,7 +2627,7 @@ class Handler(BaseHTTPRequestHandler):
                     cv=char_view(db,c)|{'nickname':nick,'display_name':nick or c['name']}
                     diary_p=build_diary_payload(db,p,c)
                     translations=get_matched_translations_for_thread(db,p['id'],cid,msgs)
-                    rel_dict=dict(rel)|{'active_meeting_id':m_state.get('active_meeting_id',''),'meeting_location':m_state.get('meeting_location',''),'hot_chat':bool(m_state.get('hot_chat',False)),'nickname':nick}
+                    rel_dict=dict(rel)|{'active_meeting_id':m_state.get('active_meeting_id',''),'meeting_started_at':m_state.get('meeting_started_at',''),'meeting_location':m_state.get('meeting_location',''),'hot_chat':bool(m_state.get('hot_chat',False)),'nickname':nick}
                     return self.respond({'character':cv,'profile':p,'relation':rel_dict,'messages':msgs,'translations':translations,'meetings':meetings,'surveillance':build_surveillance_payload(db,p,c),'diarySummary':{'latestDate':diary_p['latestDate'],'availableDates':diary_p['availableDates'],'latestTitle':diary_p['diary'].get('title','')},'queue':queue_view(db,p['id'],cid),'taskState':get_task_state(p['id'],cid,rel['mode'])})
                 if route=='/api/surveillance':
                     p=profile_get(db,arg('profileId'));cid=arg('characterId');c=BY_ID.get(cid);req_date=arg('date').strip()
@@ -2866,14 +2938,27 @@ class Handler(BaseHTTPRequestHandler):
                         if mode=='meeting':
                             inferred_location=infer_meeting_location(db,p['id'],cid,loc_input)
                             db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
+                            resume_mid=str(data.get('resumeMeetingId') or '').strip()
+                            prior=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(resume_mid,p['id'],cid)).fetchone() if resume_mid else None
+                            if resume_mid and not prior:raise ValueError('未找到原来的见面记录')
+                            if resume_mid:
+                                found=db.execute('SELECT COUNT(*) FROM messages WHERE profile_id=? AND character_id=? AND mode=? AND meeting_id=?',(p['id'],cid,'meeting',resume_mid)).fetchone()[0]
+                                if not found:
+                                    ensure_meeting_records(db,p,c)
+                                    found=db.execute('SELECT COUNT(*) FROM messages WHERE profile_id=? AND character_id=? AND mode=? AND meeting_id=?',(p['id'],cid,'meeting',resume_mid)).fetchone()[0]
+                                if not found:raise ValueError('旧见面原文已不存在')
                             max_row=db.execute('SELECT COALESCE(MAX(rowid),0) FROM messages WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()[0]
                             m_state['started_after_rowid']=int(max_row or 0)
-                            m_state['active_meeting_id']='meet_'+uid()
-                            m_state['meeting_location']=inferred_location
+                            m_state['active_meeting_id']=resume_mid or ('meet_'+uid())
+                            m_state['meeting_started_at']=(prior['started_at'] if prior else utc())
+                            m_state['meeting_location']=loc_input or (prior['location'] if prior else inferred_location)
+                            if prior:
+                                db.execute('UPDATE meetings SET ai_summary=? WHERE id=?',('',resume_mid))
+                                db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(cid,p['id'],'meeting:'+resume_mid))
                             sync_surveillance_on_meeting_start(db,p,c,m_state['meeting_location'],m_state['active_meeting_id'])
-                            log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 在线下见面')
+                            if not resume_mid:log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 在线下见面')
                             api_error=None
-                            if data.get('triggerOpening') is True and public_connection()['mode']!='normal':
+                            if not resume_mid and data.get('triggerOpening') is True and public_connection()['mode']!='normal':
                                 engine='demo';settings=load_connection();reply_txt=''
                                 if all(settings.get(k) for k in ('base_url','api_key','model')):
                                     try:
@@ -2884,14 +2969,16 @@ class Handler(BaseHTTPRequestHandler):
                                 else:reply_txt=clean_meeting_novel_text(demo_text(db,p,c,'meeting'))
                                 if engine!='error' and reply_txt:
                                     opening_reply=write_message(db,p['id'],cid,'ai','meeting',reply_txt,engine)
-                                    m_state['active_meeting_id']='meet_'+opening_reply['id']
                                     log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply_txt[:180])
                                     meeting_record=upsert_meeting_record(db,p,c,m_state['active_meeting_id'],[opening_reply],m_state['meeting_location'])
                         else:
                             started_after=m_state.get('started_after_rowid')
                             all_rows=db.execute('SELECT rowid,* FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid',(p['id'],cid)).fetchall()
                             m_msgs=[]
-                            if started_after is not None:
+                            active_id=m_state.get('active_meeting_id','')
+                            if active_id:
+                                m_msgs=[dict(row) for row in all_rows if row['mode']=='meeting' and row['meeting_id']==active_id]
+                            elif started_after is not None:
                                 m_msgs=[dict(row) for row in all_rows if row['mode']=='meeting' and int(row['rowid'])>int(started_after)]
                             else:
                                 for row in reversed(all_rows):
@@ -2910,6 +2997,7 @@ class Handler(BaseHTTPRequestHandler):
                                     sync_surveillance_on_meeting_end(db,p,c,meeting_record)
                             db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
                             m_state['active_meeting_id']=''
+                            m_state.pop('meeting_started_at',None)
                             m_state.pop('started_after_rowid',None)
                             log_event(db,p['id'],cid,'return','与 '+p['name']+' 返回手机消息')
                     elif mode=='meeting':
@@ -2970,6 +3058,30 @@ class Handler(BaseHTTPRequestHandler):
                 if route=='/api/chat-flush-due':
                     p=profile_get(db,data.get('profileId'))
                     return self.respond(queue_flush_due(db,p))
+                if route=='/api/message-forget':
+                    p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId') or '');c=BY_ID.get(cid)
+                    if not c:raise ValueError('角色不存在')
+                    msg_id=str(data.get('messageId') or '')
+                    row=db.execute('SELECT * FROM messages WHERE id=? AND profile_id=? AND character_id=?',(msg_id,p['id'],cid)).fetchone()
+                    if not row:raise ValueError('消息不存在')
+                    if get_task_state(p['id'],cid,'meeting').get('status')=='inflight' or get_task_state(p['id'],cid,'chat').get('status')=='inflight':raise ValueError('请等待当前回复完成后再删除')
+                    result=forget_thread_messages(db,p,c,[msg_id])
+                    db.commit()
+                    return self.respond({'ok':True}|result)
+                if route=='/api/meeting-forget':
+                    p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId') or '');c=BY_ID.get(cid)
+                    if not c:raise ValueError('角色不存在')
+                    mid=str(data.get('meetingId') or '')
+                    record=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],cid)).fetchone()
+                    if not record:raise ValueError('见面不存在')
+                    rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()
+                    if rel and rel['mode']=='meeting' and MEETING_STATE.get((p['id'],cid),{}).get('active_meeting_id')==mid:raise ValueError('不能删除正在进行的整场见面')
+                    ids=parse_json(record['message_ids'],[])
+                    result=forget_thread_messages(db,p,c,ids,[mid])
+                    db.execute('DELETE FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],cid))
+                    db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(cid,p['id'],'meeting:'+mid))
+                    db.commit()
+                    return self.respond({'ok':True}|result)
                 if route=='/api/message-delete':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId');mid=str(data.get('messageId',''))
                     if not mid:raise ValueError('缺少消息 ID')

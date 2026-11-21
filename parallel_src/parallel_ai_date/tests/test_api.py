@@ -620,7 +620,7 @@ class ParallelAPITest(unittest.TestCase):
             for pid,cid,label,kind,t in fixtures:
                 db.execute("INSERT INTO relations(profile_id,character_id,status,mode,attempts,updated_at) VALUES (?,?,'matched','chat',1,?)",(pid,cid,stamp(before-1000)))
                 mid=server.uid()
-                db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?,?)',(mid,pid,cid,'user','chat','Backlog '+label,'human',stamp(before)))
+                db.execute('INSERT INTO messages (id,profile_id,character_id,sender,mode,text,engine,created_at) VALUES (?,?,?,?,?,?,?,?)',(mid,pid,cid,'user','chat','Backlog '+label,'human',stamp(before)))
                 db.execute('INSERT INTO chat_queue(profile_id,character_id,pending,due_at,blocked,recovery_kind,scheduled_due_at) VALUES (?,?,?,?,?,?,?)',(pid,cid,server.js([mid]),0 if kind else t,1 if kind else 0,kind,t if kind else 0))
             db.commit()
         args={'openedAt':server.now_ms(),'offlineSince':before-1000,'session':'test-backlog','profileId':a['id']}
