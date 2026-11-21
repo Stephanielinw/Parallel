@@ -1749,6 +1749,8 @@ def forget_thread_messages(db,p,c,message_ids,whole_meeting_ids=None):
     removed=[dict(row) for row in all_rows if row['id'] in ids]
     if not removed:return {'removedIds':[],'removedMeetingIds':[]}
     affected=set(whole)|{m['meeting_id'] for m in removed if m['mode']=='meeting' and m['meeting_id']}
+    erased_meetings=[db.execute('SELECT started_at,ended_at,location FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone() for mid in whole]
+    erased_meetings=[r for r in erased_meetings if r]
     dates={str(m['created_at'])[:10] for m in removed}
     oldmem=db.execute('SELECT id,source_key,source_type,clarifies_id,raw_msg_ids FROM episodic_memories WHERE owner_id=? AND profile_id=?',(c['id'],p['id'])).fetchall()
     removed_mem=set()
@@ -1764,6 +1766,11 @@ def forget_thread_messages(db,p,c,message_ids,whole_meeting_ids=None):
         invalidate_translation(db,mid)
     # Event notes are secondary summaries, not authority. Remove directly matching source events.
     for row in db.execute("SELECT id,type,summary,created_at FROM events WHERE profile_id=? AND character_id=?",(p['id'],c['id'])).fetchall():
+        if row['type'] in ('meeting','return') and erased_meetings:
+            # Legacy events carry no meeting_id. Use an intentionally tight time match.
+            if any(abs((datetime.fromisoformat(row['created_at'])-datetime.fromisoformat(rec['started_at'] if row['type']=='meeting' else rec['ended_at'])).total_seconds())<15 for rec in erased_meetings):
+                db.execute('DELETE FROM events WHERE id=?',(row['id'],))
+                continue
         if row['type'] not in ('user_message','ai_message'):continue
         if any(str(m['text'])[:40] and str(m['text'])[:40] in str(row['summary']) and abs((datetime.fromisoformat(row['created_at'])-datetime.fromisoformat(m['created_at'])).total_seconds())<2 for m in removed):
             db.execute('DELETE FROM events WHERE id=?',(row['id'],))
@@ -1785,6 +1792,10 @@ def forget_thread_messages(db,p,c,message_ids,whole_meeting_ids=None):
     store=SURVEILLANCE_STATE.get((p['id'],c['id']),{}).get('by_date',{})
     for daily in store.values():
         if isinstance(daily.get('slots'),list):daily['slots']=[slot for slot in daily['slots'] if slot.get('meeting_id') not in affected]
+    m_state=MEETING_STATE.get((p['id'],c['id']),{})
+    if erased_meetings and m_state.get('meeting_location') in [r['location'] for r in erased_meetings]:
+        newer=db.execute('SELECT location FROM meetings WHERE profile_id=? AND character_id=? ORDER BY started_at DESC LIMIT 1',(p['id'],c['id'])).fetchone()
+        m_state['meeting_location']=newer['location'] if newer else ''
     return {'removedIds':list(ids),'removedMeetingIds':[mid for mid in affected if not db.execute('SELECT 1 FROM meetings WHERE id=?',(mid,)).fetchone()]}
 
 CORRECTION_PATTERNS=('不，我们没有','我们没有过','没有过','你记错了','记错了','记岔了','搞错了','不是在','没去过','从来没','并没有','没有这回事','那是别人','你认错人了')
