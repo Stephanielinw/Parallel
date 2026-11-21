@@ -2820,6 +2820,21 @@
     const upstreamMsg=String(errJson?.error?.message||errJson?.message||errBodyStr||'').trim().slice(0,360);
     const proxyCheck=detectProxyWrappedError(upstreamMsg||errBodyStr);
     const retryAfter=extractRetryAfter(res,errBodyStr,errJson);
+    // OpenAI-style proxies sometimes wrap an upstream Google 401 as HTTP 500.
+    // This requires fixing the provider's authentication route, not retrying.
+    if(/API keys? are not supported by this API/i.test(errBodyStr)&&
+       /(?:OAuth2? access token|UNAUTHENTICATED|401)/i.test(errBodyStr)){
+      return {
+        error_code:'UPSTREAM_OAUTH_REQUIRED',
+        http_status:Number(status)||0,
+        title:'上游模型认证方式不匹配（真实原因：401）',
+        message:'当前模型渠道用 API Key 调用了要求 OAuth 2.0 身份凭证的 Google 接口。请检查终端所选模型和服务商的渠道配置；修正前不要反复重试。',
+        detail:upstreamMsg,
+        retry_after:0,
+        suggest_terminal:true,
+        may_consume_tokens:false
+      };
+    }
     if(proxyCheck&&proxyCheck.code==='PROXY_ALL_KEYS_FAILED'){
       return {
         error_code:'PROXY_ALL_KEYS_FAILED',
