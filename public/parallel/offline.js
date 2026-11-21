@@ -1976,7 +1976,7 @@
     const history=activeMeetingLocationHistory(p,c);
     if(history.at(-1)?.location!==loc)
       r.meeting_location_history.push({at:stamp(),location:loc,source:'manual'});
-    else if(history.length)r.meeting_location_history[history.length-1].source='manual';
+    // A manual confirmation of the same place must not erase the original start event.
     r.meeting_location=loc;
   }
   function meetingSurveillanceSegments(p,c,date,untilMs=Date.now(),summary=''){
