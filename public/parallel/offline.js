@@ -4201,7 +4201,8 @@
         if(!['chat','meeting'].includes(m))bodyErr('无效模式');
         // Reject old automatic-transition requests from cached frontends.
         if(Object.prototype.hasOwnProperty.call(data,'autoArrivalId'))return {mode:r.mode,autoRejected:true};
-        const locInput=String(data.location||data.meetingLocation||'').trim().slice(0,40);
+        const proposedLoc=String(data.location||data.meetingLocation||'').trim().slice(0,40);
+        const locInput=isNonPlaceText(proposedLoc)?'':proposedLoc;
         if(locInput){
           if(r.mode==='meeting')confirmActiveMeetingLocation(p,c,locInput);
           else r.meeting_location=locInput;
