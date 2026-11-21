@@ -1433,6 +1433,11 @@ function openMeetingRecordModal(meetingId){
       <div class="inline-ic-text">${I('clock','inline-doodle-ic')}<b>见面时间：</b><span>${esc(rec.time||'近期')}</span></div>
       <div class="inline-ic-text">${I('book','inline-doodle-ic')}<b>见面梗概：</b><span>${esc(rec.summary||'')}</span></div>
     </div>
+    ${state.chatMode==='chat'?`<div class="meeting-resume-location">
+      <label for="resume-meeting-place">续接时的实际地点（可选）</label>
+      <input id="resume-meeting-place" class="form-input" maxlength="40" autocomplete="off" placeholder="留空按剧情判断；例如：Lin 的卧室">
+      <p class="caption">旧卡片地点可能过时。可在继续见面前手动校准，之后仍可在小说顶部修改。</p>
+    </div>`:''}
     <div class="meeting-modal-transcript">
       ${entries.length?entries.map((e,idx)=>`<article class="novel-turn ${e.sender==='user'?'novel-user':'novel-ai'}">
         <header class="novel-turn-head">
@@ -1456,7 +1461,8 @@ async function resumeArchivedMeeting(meetingId){
   const pid=state.activeId,cid=state.threadId;
   state.chatBusy=true;
   try{
-    await api('/mode',{profileId:pid,characterId:cid,mode:'meeting',resumeMeetingId:meetingId,triggerOpening:false});
+    const actualLocation=String(document.querySelector('#resume-meeting-place')?.value||'').trim();
+    await api('/mode',{profileId:pid,characterId:cid,mode:'meeting',resumeMeetingId:meetingId,triggerOpening:false,...(actualLocation?{location:actualLocation}:{})});
     closeModal();
     if(isCurrentPair(pid,cid)&&state.tab==='messages')await loadThreads(cid);
     else refreshInboxQuietly(pid);
