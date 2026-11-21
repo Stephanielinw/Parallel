@@ -550,3 +550,65 @@ html,body,#root{width:100%;height:100%;min-height:0;margin:0;overflow:hidden;ove
 
 /* Smooth mobile drag, including the large text-photo tap target. */
 .deck-card .card-portrait{touch-action:pan-y}.deck-card.dragging{will-change:transform;transition:none}.deck-card.dragging .photo-blank{transition:none;transform:none}
+
+
+/* Grouped preset editor: imported Elsewhere sections, bounded iPhone layout. */
+.terminal-screen{width:100%;min-width:0}
+.terminal-screen .terminal-card{width:100%;min-width:0;max-width:100%}
+.preset-editor{min-width:0;overflow-wrap:anywhere}
+.preset-editor .preset-toolbar{min-width:0}
+.preset-editor .preset-import-actions{margin:14px 0 8px;max-width:100%}
+.preset-editor .preset-import-actions .btn{max-width:100%}
+.preset-editor .preset-group-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:20px}
+.preset-editor .preset-group-tools .caption{margin:0}
+.preset-group-tool-actions{display:flex;gap:4px;flex-wrap:wrap}
+.preset-group-tool-actions .btn{padding:5px 9px;font-size:11px;min-height:30px}
+.preset-editor .preset-group-list{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px;margin:10px 0 4px}
+.preset-group-section{min-width:0;max-width:100%;border:1.8px solid #D9C4AA;border-radius:16px;background:#FFF9EF;overflow:hidden}
+.preset-group-header{appearance:none;display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-width:0;padding:12px 14px;border:0;background:#FFF3DD;color:var(--ink);text-align:left;cursor:pointer}
+.preset-group-header:hover{background:#FCE9C8}
+.preset-group-header:focus-visible{outline:2px solid var(--pink);outline-offset:-4px}
+.preset-group-head-main{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.preset-group-name{font-size:13px;font-weight:850;line-height:1.4;overflow-wrap:anywhere}
+.preset-group-subtitle{font-size:10.5px;line-height:1.35;font-weight:700;color:var(--muted)}
+.preset-group-chevron{display:grid;place-items:center;flex-shrink:0;width:28px;height:28px;border:1.3px solid #D5BE9E;border-radius:9px;background:#FFFDF9;transition:transform .15s ease}
+.preset-group-chevron svg{width:15px;height:15px}
+.preset-group-section.is-collapsed .preset-group-chevron{transform:rotate(-90deg)}
+.preset-group-body{min-width:0;display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:10px}
+.preset-group-body[hidden]{display:none!important}
+.preset-editor .preset-row{display:grid;grid-template-columns:30px minmax(0,1fr) 32px 38px;column-gap:9px;align-items:center;min-width:0;width:100%;max-width:100%;padding:11px 10px}
+.preset-editor .preset-row .preset-order{grid-column:1;display:flex;flex-direction:column;gap:4px;min-width:0}
+.preset-editor .preset-row .preset-text{grid-column:2;min-width:0;max-width:100%;overflow:hidden}
+.preset-editor .preset-row>.preset-edit-btn{grid-column:3;justify-self:end;width:30px;height:30px}
+.preset-editor .preset-row>.toggle{grid-column:4;justify-self:end}
+.preset-editor .preset-row .preset-title-line{min-width:0;display:block;margin-bottom:5px}
+.preset-editor .preset-row .preset-title-line strong{display:block;max-width:100%;font-size:12.5px;line-height:1.4;overflow-wrap:anywhere;word-break:break-word}
+.preset-seq{color:#B36D5E;font-variant-numeric:tabular-nums}
+.preset-row-tags{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px;min-width:0}
+.preset-editor .preset-row .preset-text small{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;min-width:0;max-width:100%;overflow:hidden;white-space:normal;overflow-wrap:anywhere;line-height:1.5}
+@media(max-width:580px){
+  .terminal-card.preset-editor{padding:14px}
+  .preset-editor .preset-import-actions .btn{flex:1 1 130px;min-width:0;white-space:normal;text-align:center;padding:9px 10px}
+  .preset-editor .preset-import-actions .btn svg{flex-shrink:0}
+  .preset-group-header{padding:11px 12px}
+  .preset-group-body{padding:8px}
+  .preset-editor .preset-row{grid-template-columns:28px minmax(0,1fr) 38px;grid-template-rows:auto auto;column-gap:7px;row-gap:7px;padding:10px 8px;align-items:start}
+  .preset-editor .preset-row .preset-order{grid-column:1;grid-row:1/span 2}
+  .preset-editor .preset-row .preset-text{grid-column:2;grid-row:1/span 2}
+  .preset-editor .preset-row>.preset-edit-btn{grid-column:3;grid-row:1}
+  .preset-editor .preset-row>.toggle{grid-column:3;grid-row:2}
+  .preset-editor .preset-row .preset-title-line strong{font-size:12px}
+  .preset-editor .preset-row .preset-text small{font-size:10px}
+  .preset-editor .preset-row .preset-role-tag,.preset-editor .preset-row .preset-state-tag{font-size:9.5px;padding:2px 6px}
+}
+
+
+/* Keep the final preset section clear of the fixed mobile navigation bar. */
+@media(max-width:870px){
+  #app #view.main-view:has(.terminal-screen){padding-bottom:calc(110px + env(safe-area-inset-bottom,0px))}
+}
+@media(max-width:580px){
+  .preset-editor .preset-row .preset-order .icon-btn{height:30px}
+  .preset-editor .preset-row>.preset-edit-btn{width:36px;height:36px}
+  .preset-editor .preset-row>.toggle{height:26px}
+}

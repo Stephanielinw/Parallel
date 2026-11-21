@@ -40,6 +40,7 @@ jobs:
           node tests/auto-episode-archive.test.cjs
           node tests/meeting-reroll.test.cjs
           node tests/meeting-edit-refusal.test.cjs
+          node tests/preset-mobile-groups.test.cjs
           node tests/meeting-opening-agency.test.cjs
           python3 parallel_src/parallel_ai_date/tests/test_phone_clock_sleep.py
           python3 -m py_compile parallel_src/parallel_ai_date/server.py

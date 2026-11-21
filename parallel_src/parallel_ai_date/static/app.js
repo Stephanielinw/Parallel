@@ -122,7 +122,11 @@ const needsChineseTranslationClient=(rawText,ignoreNames=[])=>{
 };
 const loadCollapsedTranslations=()=>{try{const raw=localStorage.getItem('parallel-collapsed-translations');const arr=raw?JSON.parse(raw):[];return new Set(Array.isArray(arr)?arr.map(String):[]);}catch{return new Set()}};
 const saveCollapsedTranslations=()=>{try{localStorage.setItem('parallel-collapsed-translations',JSON.stringify([...state.collapsedTranslations].slice(-300)));}catch{}};
-const state={tab:'discover',profiles:[],sources:[],settings:{},activeId:(()=>{try{return localStorage.getItem('parallel-active-profile')||''}catch{return ''}})(),candidates:[],deckIndex:0,threads:[],threadId:'',messages:[],translations:{},translatingIds:new Set(),translationAutoAttempted:new Set(),collapsedTranslations:loadCollapsedTranslations(),expandedTranslations:new Set(),meetings:[],surveillanceMap:{},diaryMap:{},diarySummaryMap:{},lastKnownDate:localDateStr(),activeMeetingId:'',meetingLocation:'',hotChat:false,chatPlusOpen:false,profileMenuOpen:false,memoryCategory:'all',lastMemoriesData:null,chatMode:'chat',chatBusy:false,queue:{count:0,pendingIds:[],dueAt:0,remainingMs:0,status:'idle',blocked:false,paused:false,paceMode:'daily',hotChat:false,delayMinutes:0,targetTimeLabel:'',scheduleReason:''},taskState:null,bgErrors:null,activeErrorContext:null,retryInflight:false,flushBusy:false,revealingBubbles:false,hiddenReplyIds:new Set(),lastSendAt:0,lastUserActiveAt:Date.now(),proactiveBusy:false,idleTickCount:0,terminalTab:'api',presetMode:'chat',presets:[],presetDiagnostics:{},systemLogs:[],logFilterMode:'all',profileDraft:null,identResults:[],editPresetId:null,presetImportDraft:null,loading:false,draftInputs:{},renderedThreadId:'',bgTickCount:0,apiCheckPrompted:false};
+const PRESET_GROUP_COLLAPSE_KEY='parallel-collapsed-preset-groups';
+const loadCollapsedPresetGroups=()=>{try{const raw=JSON.parse(localStorage.getItem(PRESET_GROUP_COLLAPSE_KEY)||'[]');return new Set(Array.isArray(raw)?raw.filter(x=>typeof x==='string').slice(-100):[]);}catch{return new Set();}};
+const saveCollapsedPresetGroups=()=>{try{localStorage.setItem(PRESET_GROUP_COLLAPSE_KEY,JSON.stringify([...state.collapsedPresetGroups].slice(-100)));}catch{}};
+
+const state={tab:'discover',profiles:[],sources:[],settings:{},activeId:(()=>{try{return localStorage.getItem('parallel-active-profile')||''}catch{return ''}})(),candidates:[],deckIndex:0,threads:[],threadId:'',messages:[],translations:{},translatingIds:new Set(),translationAutoAttempted:new Set(),collapsedTranslations:loadCollapsedTranslations(),expandedTranslations:new Set(),meetings:[],surveillanceMap:{},diaryMap:{},diarySummaryMap:{},lastKnownDate:localDateStr(),activeMeetingId:'',meetingLocation:'',hotChat:false,chatPlusOpen:false,profileMenuOpen:false,memoryCategory:'all',lastMemoriesData:null,chatMode:'chat',chatBusy:false,queue:{count:0,pendingIds:[],dueAt:0,remainingMs:0,status:'idle',blocked:false,paused:false,paceMode:'daily',hotChat:false,delayMinutes:0,targetTimeLabel:'',scheduleReason:''},taskState:null,bgErrors:null,activeErrorContext:null,retryInflight:false,flushBusy:false,revealingBubbles:false,hiddenReplyIds:new Set(),lastSendAt:0,lastUserActiveAt:Date.now(),proactiveBusy:false,idleTickCount:0,terminalTab:'api',presetMode:'chat',collapsedPresetGroups:loadCollapsedPresetGroups(),presets:[],presetDiagnostics:{},systemLogs:[],logFilterMode:'all',profileDraft:null,identResults:[],editPresetId:null,presetImportDraft:null,loading:false,draftInputs:{},renderedThreadId:'',bgTickCount:0,apiCheckPrompted:false};
 const tabs=[{id:'profile',label:'我的',detail:'我的 Profile',icon:'user'},{id:'discover',label:'发现',detail:'发现心动',icon:'sparkleheart'},{id:'messages',label:'消息',detail:'你的消息',icon:'message'},{id:'terminal',label:'终端',detail:'终端设置',icon:'terminal'}];
 let toastTimer;
 function toast(text){const node=$('toast');node.textContent=text;node.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>node.classList.remove('show'),4000)}
@@ -2064,9 +2068,101 @@ function renderPresetDiagnosticsBox(mode,items){
     </div>`:`<p class="caption" style="margin-top:6px">当前模式预设结构正常，未检测到默认条目冲突、重复导入或文风单选冲突。</p>`}
   </div>`;
 }
+
+function getPresetGroupName(p){
+  const stored=String(p?.group||'').trim();
+  if(stored)return stored;
+  const name=String(p?.name||'');
+  const separator=name.indexOf(' / ');
+  return separator>0?name.slice(0,separator).trim()||'未分组':'未分组';
+}
+function getPresetDisplayName(p,group){
+  const raw=String(p?.name||'');
+  for(const separator of [' / ',' ／ ']){
+    const prefix=group+separator;
+    if(group!=='未分组'&&raw.startsWith(prefix))return raw.slice(prefix.length).trim()||raw;
+  }
+  return raw;
+}
+function getPresetGroupRuns(items){
+  // Contiguous groups keep the exact original global injection order (including
+  // unusual imported configurations that interleave the same group).
+  const runs=[];
+  items.forEach((p,i)=>{
+    const group=getPresetGroupName(p);
+    const last=runs.at(-1);
+    if(last&&last.name===group)last.rows.push({preset:p,index:i});
+    else runs.push({name:group,rows:[{preset:p,index:i}]});
+  });
+  return runs;
+}
+const presetGroupStateKey=(mode,group)=>JSON.stringify([mode,group]);
+function renderPresetRow(p,index,total,group){
+  const content=String(p.content||'');
+  return `<div class="preset-row ${p.enabled?'is-enabled':'is-disabled'}">
+    <div class="preset-order">
+      <button type="button" class="icon-btn" title="上移" aria-label="上移 ${esc(p.name)}" data-action="move-preset" data-id="${esc(p.id)}" data-dir="-1" ${index===0?'disabled':''}>${I('up')}</button>
+      <button type="button" class="icon-btn" title="下移" aria-label="下移 ${esc(p.name)}" data-action="move-preset" data-id="${esc(p.id)}" data-dir="1" ${index===total-1?'disabled':''}>${I('down')}</button>
+    </div>
+    <div class="preset-text">
+      <div class="preset-title-line"><strong><span class="preset-seq">#${index+1}</span> ${esc(getPresetDisplayName(p,group))}</strong></div>
+      <div class="preset-row-tags"><span class="preset-role-tag role-${esc(p.role)}">${esc(p.role)}</span><span class="preset-state-tag ${p.enabled?'on':'off'}">${p.enabled?'启用中':'已禁用'}</span></div>
+      <small>${content.length} 字符 · ${esc(content.replace(/\s+/g,' ').slice(0,75))}${content.length>75?'…':''}</small>
+    </div>
+    <button type="button" class="icon-btn preset-edit-btn" title="编辑" aria-label="编辑 ${esc(p.name)}" data-action="edit-preset" data-id="${esc(p.id)}">${I('edit')}</button>
+    <button type="button" class="toggle ${p.enabled?'on':''}" title="${p.enabled?'禁用':'启用'}" aria-label="${p.enabled?'禁用':'启用'} ${esc(p.name)}" aria-pressed="${p.enabled?'true':'false'}" data-action="toggle-preset" data-id="${esc(p.id)}"></button>
+  </div>`;
+}
+function renderPresetGroup(run,mode,total){
+  const active=run.rows.filter(row=>row.preset.enabled).length;
+  const collapsed=state.collapsedPresetGroups.has(presetGroupStateKey(mode,run.name));
+  const panelId='preset-group-'+mode+'-'+run.rows[0].index;
+  return `<section class="preset-group-section ${collapsed?'is-collapsed':''}">
+    <button type="button" class="preset-group-header" data-action="preset-group-toggle" data-group="${esc(run.name)}" aria-expanded="${!collapsed}" aria-controls="${esc(panelId)}">
+      <span class="preset-group-head-main"><span class="preset-group-name">${esc(run.name)}</span><span class="preset-group-subtitle">${run.rows.length} 个条目 · ${active} 个启用</span></span>
+      <span class="preset-group-chevron" aria-hidden="true">${I('down')}</span>
+    </button>
+    <div class="preset-group-body" id="${esc(panelId)}" ${collapsed?'hidden':''}>${run.rows.map(row=>renderPresetRow(row.preset,row.index,total,run.name)).join('')}</div>
+  </section>`;
+}
+function setPresetGroupCollapsed(group,collapsed,persist=true){
+  const key=presetGroupStateKey(state.presetMode,group);
+  if(collapsed)state.collapsedPresetGroups.add(key);else state.collapsedPresetGroups.delete(key);
+  document.querySelectorAll('.preset-group-header').forEach(button=>{
+    if(button.dataset.group!==group)return;
+    const section=button.closest('.preset-group-section');
+    if(!section)return;
+    section.classList.toggle('is-collapsed',collapsed);
+    button.setAttribute('aria-expanded',String(!collapsed));
+    const body=section.querySelector('.preset-group-body');
+    if(body)body.hidden=collapsed;
+  });
+  if(persist)saveCollapsedPresetGroups();
+}
+function setAllPresetGroupsCollapsed(collapsed){
+  const groups=new Set([...document.querySelectorAll('.preset-group-header')].map(x=>x.dataset.group));
+  for(const group of groups)setPresetGroupCollapsed(group,collapsed,false);
+  saveCollapsedPresetGroups();
+}
 function renderPresets(){
   const items=state.presets.filter(x=>x.mode===state.presetMode).sort((a,b)=>a.sort_order-b.sort_order);
-  return `<div class="terminal-card"><div class="kicker">TEXT PRESETS</div><h3>Prompt 条目管理</h3><p class="caption">聊天气泡和线下小说使用独立的条目与顺序。这里的编辑会直接影响每次真实模型请求。</p><div class="terminal-tabs"><button class="terminal-tab ${state.presetMode==='chat'?'active':''}" data-action="preset-mode" data-mode="chat">手机聊天</button><button class="terminal-tab ${state.presetMode==='meeting'?'active':''}" data-action="preset-mode" data-mode="meeting">面对面小说</button></div>${renderPresetDiagnosticsBox(state.presetMode,items)}<div class="preset-toolbar"><span class="caption">${items.length} 个 Prompt 条目 · ${items.filter(x=>x.enabled).length} 个启用 · ${items.filter(x=>!x.enabled).length} 个禁用</span><button class="btn soft" data-action="add-preset">${I('plus')} 添加条目</button></div><div class="inline-row" style="margin:14px 0 8px"><button class="btn soft" data-action="export-preset" data-scope="current">${I('book')} 导出当前模式</button><button class="btn soft" data-action="export-preset" data-scope="all">${I('book')} 导出全部</button><label class="btn soft file-upload">${I('plus')} 导入 JSON<input id="preset-import-file" type="file" accept=".json,application/json"></label></div><p class="caption">支持 Parallel 自有 JSON 与 Elsewhere 自有预设 JSON（后者导入面对面小说模式，完整保留原条目分组、角色、启停状态及排序）。</p><div class="preset-list">${items.map((p,i)=>`<div class="preset-row ${p.enabled?'is-enabled':'is-disabled'}"><div class="preset-order"><button class="icon-btn" data-action="move-preset" data-id="${esc(p.id)}" data-dir="-1" ${i===0?'disabled':''}>${I('up')}</button><button class="icon-btn" data-action="move-preset" data-id="${esc(p.id)}" data-dir="1" ${i===items.length-1?'disabled':''}>${I('down')}</button></div><div class="preset-text"><div class="preset-title-line"><strong>#${i+1} ${esc(p.name)}</strong><span class="preset-role-tag role-${esc(p.role)}">${esc(p.role)}</span>${p.group?`<span class="preset-group-tag">${esc(p.group)}</span>`:''}<span class="preset-state-tag ${p.enabled?'on':'off'}">${p.enabled?'启用中':'已禁用'}</span></div><small>${p.content.length} 字符 · ${esc(p.content.replace(/\s+/g,' ').slice(0,72))}${p.content.length>72?'…':''}</small></div><button class="icon-btn" title="编辑" data-action="edit-preset" data-id="${esc(p.id)}">${I('edit')}</button><button class="toggle ${p.enabled?'on':''}" title="启停" data-action="toggle-preset" data-id="${esc(p.id)}"></button></div>`).join('')}</div></div><div class="terminal-card"><h3>预设与职责边界说明</h3><p class="caption">Parallel 负责提供角色原作身份、玩家 Profile、关系记忆、实时地点与历史上下文；文字预设负责控制小说文风、叙事视角、篇幅区间、去油腻规范、COT 连续性自检与底部誓约确认。更换或启停预设条目后将在下一次生成立即生效。</p></div>`;
+  const groups=getPresetGroupRuns(items);
+  return `<div class="terminal-card preset-editor">
+    <div class="kicker">TEXT PRESETS</div>
+    <h3>Prompt 条目管理</h3>
+    <p class="caption">手机聊天与面对面小说使用独立预设。按原始编组折叠查看，条目编号及顺序仍与实际请求一致。</p>
+    <div class="terminal-tabs">
+      <button class="terminal-tab ${state.presetMode==='chat'?'active':''}" data-action="preset-mode" data-mode="chat">手机聊天</button>
+      <button class="terminal-tab ${state.presetMode==='meeting'?'active':''}" data-action="preset-mode" data-mode="meeting">面对面小说</button>
+    </div>
+    ${renderPresetDiagnosticsBox(state.presetMode,items)}
+    <div class="preset-toolbar"><span class="caption">${items.length} 个 Prompt 条目 · ${items.filter(x=>x.enabled).length} 个启用 · ${items.filter(x=>!x.enabled).length} 个禁用</span><button type="button" class="btn soft" data-action="add-preset">${I('plus')} 添加条目</button></div>
+    <div class="inline-row preset-import-actions"><button type="button" class="btn soft" data-action="export-preset" data-scope="current">${I('book')} 导出当前模式</button><button type="button" class="btn soft" data-action="export-preset" data-scope="all">${I('book')} 导出全部</button><label class="btn soft file-upload">${I('plus')} 导入 JSON<input id="preset-import-file" type="file" accept=".json,application/json"></label></div>
+    <p class="caption">支持 Parallel 与 Elsewhere 自有预设 JSON，完整保留条目分组、角色、启停状态及实际顺序。</p>
+    ${groups.length?`<div class="preset-group-tools"><span class="caption">${groups.length} 个编组 · 点击标题展开或收起</span><div class="preset-group-tool-actions"><button type="button" class="btn ghost" data-action="preset-groups-expand">全部展开</button><button type="button" class="btn ghost" data-action="preset-groups-collapse">全部收起</button></div></div>`:''}
+    <div class="preset-list preset-group-list">${groups.map(group=>renderPresetGroup(group,state.presetMode,items.length)).join('')}</div>
+  </div>
+  <div class="terminal-card"><h3>预设与职责边界说明</h3><p class="caption">Parallel 提供原作身份、玩家 Profile、关系记忆、场景与历史；预设控制文风、视角、连续性等。编辑或启停后下次生成生效，编组折叠只影响显示。</p></div>`;
 }
 function renderSystemLogs(){
   const filter=state.logFilterMode||'all';
@@ -2192,9 +2288,28 @@ async function applyPresetImport(how){
   const isElsewhere=pack.format==='elsewhere-preset';
   const result=await api('/preset-import',{import_mode:how,preset:pack});state.presetImportDraft=null;if(isElsewhere)state.presetMode='meeting';closeModal();await refreshPresets();toast(`成功导入 ${result.imported} 个 Prompt 条目（${how==='replace'?'已替换目标模式':'已追加'}）`);
 }
-async function refreshPresets(){const d=await api('/presets');state.presets=d.entries||[];state.presetDiagnostics=d.diagnostics||{};renderTerminal()}
-function editPresetModal(p){const item=p||{id:'',name:'新 Prompt 条目',role:'system',enabled:true,content:'',mode:state.presetMode};const html=`<h2>${p?'编辑 Prompt':'新增 Prompt'}</h2><p>仅适用于「${item.mode==='chat'?'手机聊天':'面对面小说'}」模式。</p><form id="preset-edit-form"><div class="field"><label>条目名称</label><input id="pe-name" maxlength="100" value="${esc(item.name)}" required></div><div class="field"><label>Role</label><select id="pe-role">${['system','user','assistant'].map(r=>`<option ${item.role===r?'selected':''}>${r}</option>`).join('')}</select></div><div class="field"><label>Prompt 内容</label><textarea id="pe-content" rows="9" style="min-height:170px">${esc(item.content)}</textarea></div><label class="inline-row" style="font-size:12px;margin-top:12px"><input id="pe-enabled" type="checkbox" ${item.enabled?'checked':''}> 启用此条目</label></form>`;modal(html,`${p?'<button class="btn danger" data-action="delete-preset" data-id="'+esc(p.id)+'">删除</button>':''}<button class="btn ghost" data-action="close-modal">取消</button><button class="btn primary" data-action="save-preset" data-id="${esc(item.id)}">保存条目</button>`)}
-async function savePreset(id){try{await api('/preset',{id:id||undefined,mode:state.presetMode,name:$('pe-name').value,role:$('pe-role').value,content:$('pe-content').value,enabled:$('pe-enabled').checked});closeModal();await refreshPresets();toast('Prompt 已保存')}catch(e){toast(e.message)}}
+async function refreshPresets(){const view=$('view');const previousScroll=state.tab==='terminal'&&state.terminalTab==='presets'?(view?.scrollTop??null):null;const d=await api('/presets');state.presets=d.entries||[];state.presetDiagnostics=d.diagnostics||{};renderTerminal();if(previousScroll!==null&&$('view'))$('view').scrollTop=previousScroll;}
+
+function editPresetModal(p){
+  const item=p||{id:'',name:'新 Prompt 条目',group:'',role:'system',enabled:true,content:'',mode:state.presetMode};
+  const groups=[...new Set(state.presets.filter(x=>x.mode===state.presetMode).map(getPresetGroupName).filter(g=>g!=='未分组'))];
+  const html=`<h2>${p?'编辑 Prompt':'新增 Prompt'}</h2>
+    <p>仅适用于「${item.mode==='chat'?'手机聊天':'面对面小说'}」模式。编组仅用于整理，实际调用仍依条目顺序。</p>
+    <form id="preset-edit-form">
+      <div class="field"><label for="pe-name">条目名称</label><input id="pe-name" maxlength="100" value="${esc(item.name)}" required></div>
+      <div class="field"><label for="pe-group">所属编组（可选）</label><input id="pe-group" maxlength="70" list="pe-group-list" value="${esc(item.group||(getPresetGroupName(item)==='未分组'?'':getPresetGroupName(item)))}" placeholder="例如：入园仪式"><datalist id="pe-group-list">${groups.map(g=>`<option value="${esc(g)}"></option>`).join('')}</datalist><small class="field-hint">使用已有编组名可放进同一组；留空显示为「未分组」。</small></div>
+      <div class="field"><label for="pe-role">Role</label><select id="pe-role">${['system','user','assistant'].map(r=>`<option ${item.role===r?'selected':''}>${r}</option>`).join('')}</select></div>
+      <div class="field"><label for="pe-content">Prompt 内容</label><textarea id="pe-content" rows="9" style="min-height:170px">${esc(item.content)}</textarea></div>
+      <label class="inline-row" style="font-size:12px;margin-top:12px"><input id="pe-enabled" type="checkbox" ${item.enabled?'checked':''}> 启用此条目</label>
+    </form>`;
+  modal(html,`${p?'<button class="btn danger" data-action="delete-preset" data-id="'+esc(p.id)+'">删除</button>':''}<button class="btn ghost" data-action="close-modal">取消</button><button class="btn primary" data-action="save-preset" data-id="${esc(item.id)}">保存条目</button>`);
+}
+async function savePreset(id){
+  try{
+    await api('/preset',{id:id||undefined,mode:state.presetMode,name:$('pe-name').value,group:$('pe-group').value.trim(),role:$('pe-role').value,content:$('pe-content').value,enabled:$('pe-enabled').checked});
+    closeModal();await refreshPresets();toast('Prompt 已保存');
+  }catch(e){toast(e.message)}
+}
 async function togglePreset(id){const p=state.presets.find(x=>x.id===id);if(!p)return;await api('/preset', {...p,enabled:!p.enabled});await refreshPresets()}
 async function movePreset(id,dir){const list=state.presets.filter(x=>x.mode===state.presetMode).sort((a,b)=>a.sort_order-b.sort_order),idx=list.findIndex(x=>x.id===id);if(idx<0||idx+dir<0||idx+dir>=list.length)return;[list[idx],list[idx+dir]]=[list[idx+dir],list[idx]];await api('/preset',{action:'order',ids:list.map(x=>x.id)});await refreshPresets()}
 function modal(html,buttons){$('modal-root').innerHTML=`<div class="modal-overlay" id="modal-overlay"><div class="modal" role="dialog" aria-modal="true"><button class="icon-btn modal-close" data-action="close-modal">${I('x')}</button>${html}<div class="modal-actions">${buttons||`<button class="btn soft" data-action="close-modal">好的</button>`}</div></div></div>`}
@@ -2616,6 +2731,9 @@ if(a==='unmatch')return confirmUnmatch();
 if(a==='confirm-unmatch'){await api('/unmatch',{profileId:state.activeId,characterId:state.threadId});closeModal();state.threadId='';state.renderedThreadId='';await loadThreads();return toast('已解除匹配，记忆和聊天保留')}
 if(a==='term-tab'){state.terminalTab=el.dataset.tab;if(state.terminalTab==='logs')refreshSystemLogs();return renderTerminal()}
 if(a==='preset-mode'){state.presetMode=el.dataset.mode;return renderTerminal()}
+if(a==='preset-group-toggle'){const group=el.dataset.group;const key=presetGroupStateKey(state.presetMode,group);return setPresetGroupCollapsed(group,!state.collapsedPresetGroups.has(key));}
+if(a==='preset-groups-expand')return setAllPresetGroupsCollapsed(false);
+if(a==='preset-groups-collapse')return setAllPresetGroupsCollapsed(true);
 if(a==='preset-disable-defaults'){await api('/preset',{action:'disable_defaults',mode:state.presetMode});await refreshPresets();return toast('已停用默认保底条目，仅保留自定义预设')}
 if(a==='preset-deduplicate'){const r=await api('/preset',{action:'deduplicate',mode:state.presetMode});await refreshPresets();return toast(`已清理 ${r.removed||0} 条重复预设`)}
 if(a==='toggle-system-logs'){await api('/system-logs-settings',{enabled:state.logEnabled===false});await refreshSystemLogs();return toast(state.logEnabled?'调试记录已开启':'调试记录已关闭')}
