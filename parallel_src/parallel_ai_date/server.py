@@ -1740,6 +1740,53 @@ def ensure_meeting_records(db,p,c):
     meetings=[dict(r)|{'message_ids':parse_json(r['message_ids'],[]),'entries':parse_json(r['entries'],[])} for r in rows]
     return all_msgs,meetings
 
+
+def forget_thread_messages(db,p,c,message_ids,whole_meeting_ids=None):
+    ids=set(str(x) for x in message_ids)
+    whole=set(str(x) for x in (whole_meeting_ids or []))
+    if not ids:return {'removedIds':[],'removedMeetingIds':[]}
+    all_rows=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid',(p['id'],c['id'])).fetchall()
+    removed=[dict(row) for row in all_rows if row['id'] in ids]
+    if not removed:return {'removedIds':[],'removedMeetingIds':[]}
+    affected=set(whole)|{m['meeting_id'] for m in removed if m['mode']=='meeting' and m['meeting_id']}
+    dates={str(m['created_at'])[:10] for m in removed}
+    oldmem=db.execute('SELECT id,source_key,source_type,clarifies_id,raw_msg_ids FROM episodic_memories WHERE owner_id=? AND profile_id=?',(c['id'],p['id'])).fetchall()
+    removed_mem=set()
+    for row in oldmem:
+        evidence=set(parse_json(row['raw_msg_ids'],[]))
+        if ids&evidence or any(row['source_key']=='meeting:'+mid for mid in affected) or (row['source_type']=='daily-summary' and row['source_key'].replace('day:','') in dates):
+            removed_mem.add(row['id'])
+    for mem in oldmem:
+        if mem['id'] in removed_mem or mem['clarifies_id'] in removed_mem:
+            db.execute('DELETE FROM episodic_memories WHERE id=?',(mem['id'],))
+    for mid in ids:
+        db.execute('DELETE FROM messages WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id']))
+        invalidate_translation(db,mid)
+    # Event notes are secondary summaries, not authority. Remove directly matching source events.
+    for row in db.execute("SELECT id,type,summary,created_at FROM events WHERE profile_id=? AND character_id=?",(p['id'],c['id'])).fetchall():
+        if row['type'] not in ('user_message','ai_message'):continue
+        if any(str(m['text'])[:40] and str(m['text'])[:40] in str(row['summary']) and abs((datetime.fromisoformat(row['created_at'])-datetime.fromisoformat(m['created_at'])).total_seconds())<2 for m in removed):
+            db.execute('DELETE FROM events WHERE id=?',(row['id'],))
+    for mid in affected:
+        remains=[dict(x) for x in db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' AND meeting_id=? ORDER BY julianday(created_at),rowid",(p['id'],c['id'],mid)).fetchall()]
+        if remains:
+            before=db.execute('SELECT location FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone()
+            db.execute('UPDATE meetings SET ai_summary=? WHERE id=?',('',mid))
+            upsert_meeting_record(db,p,c,mid,remains,before['location'] if before else '')
+        else:
+            db.execute('DELETE FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id']))
+            db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(c['id'],p['id'],'meeting:'+mid))
+    q=db.execute('SELECT pending FROM chat_queue WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
+    if q:
+        pending=[x for x in parse_json(q['pending'],[]) if x not in ids]
+        db.execute('UPDATE chat_queue SET pending=?,due_at=CASE WHEN ?=0 THEN 0 ELSE due_at END WHERE profile_id=? AND character_id=?',(js(pending),len(pending),p['id'],c['id']))
+    diary=DIARY_STATE.get((p['id'],c['id']),{}).get('by_date',{})
+    for date in dates:diary.pop(date,None)
+    store=SURVEILLANCE_STATE.get((p['id'],c['id']),{}).get('by_date',{})
+    for daily in store.values():
+        if isinstance(daily.get('slots'),list):daily['slots']=[slot for slot in daily['slots'] if slot.get('meeting_id') not in affected]
+    return {'removedIds':list(ids),'removedMeetingIds':[mid for mid in affected if not db.execute('SELECT 1 FROM meetings WHERE id=?',(mid,)).fetchone()]}
+
 CORRECTION_PATTERNS=('不，我们没有','我们没有过','没有过','你记错了','记错了','记岔了','搞错了','不是在','没去过','从来没','并没有','没有这回事','那是别人','你认错人了')
 
 def detect_and_apply_correction(db,p,c,user_msg):
@@ -3000,6 +3047,30 @@ class Handler(BaseHTTPRequestHandler):
                 if route=='/api/chat-flush-due':
                     p=profile_get(db,data.get('profileId'))
                     return self.respond(queue_flush_due(db,p))
+                if route=='/api/message-forget':
+                    p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId') or '');c=BY_ID.get(cid)
+                    if not c:raise ValueError('角色不存在')
+                    msg_id=str(data.get('messageId') or '')
+                    row=db.execute('SELECT * FROM messages WHERE id=? AND profile_id=? AND character_id=?',(msg_id,p['id'],cid)).fetchone()
+                    if not row:raise ValueError('消息不存在')
+                    if get_task_state(p['id'],cid,'meeting').get('status')=='inflight' or get_task_state(p['id'],cid,'chat').get('status')=='inflight':raise ValueError('请等待当前回复完成后再删除')
+                    result=forget_thread_messages(db,p,c,[msg_id])
+                    db.commit()
+                    return self.respond({'ok':True}|result)
+                if route=='/api/meeting-forget':
+                    p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId') or '');c=BY_ID.get(cid)
+                    if not c:raise ValueError('角色不存在')
+                    mid=str(data.get('meetingId') or '')
+                    record=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],cid)).fetchone()
+                    if not record:raise ValueError('见面不存在')
+                    rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()
+                    if rel and rel['mode']=='meeting' and MEETING_STATE.get((p['id'],cid),{}).get('active_meeting_id')==mid:raise ValueError('不能删除正在进行的整场见面')
+                    ids=parse_json(record['message_ids'],[])
+                    result=forget_thread_messages(db,p,c,ids,[mid])
+                    db.execute('DELETE FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],cid))
+                    db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(cid,p['id'],'meeting:'+mid))
+                    db.commit()
+                    return self.respond({'ok':True}|result)
                 if route=='/api/message-delete':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId');mid=str(data.get('messageId',''))
                     if not mid:raise ValueError('缺少消息 ID')
