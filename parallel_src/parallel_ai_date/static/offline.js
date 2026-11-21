@@ -1935,6 +1935,20 @@
     if(home.test(t)||/\b(?:at my place|in my home)\b/i.test(t))return profileName+' 的家';
     return '';
   }
+  function recoverPreMeetingPlace(p,c,began){
+    // Reconstruct the original stop from the player's pre-meeting plans.
+    // A concrete named venue is evidence; an AI-generated schedule is not.
+    const previous=messagesOf(p.id,c.id).filter(m=>m.mode==='chat'&&m.sender==='user'&&
+      Number.isFinite(Date.parse(m.created_at))&&Date.parse(m.created_at)<=began).slice(-32);
+    for(let i=previous.length-1;i>=0;i--){
+      const line=String(previous[i].text||'').trim();
+      const explicit=line.match(/(?:店名|咖啡馆名|餐厅名)(?:就)?叫\s*[「『“"']?([^，。！？；\s「」『“”"'、]{2,32})/);
+      if(explicit&&!isNonPlaceText(explicit[1]))return explicit[1];
+      const proposed=proposalLocation(line)||explicitArrivalPlace(line);
+      if(proposed&&!isNonPlaceText(proposed))return proposed;
+    }
+    return '';
+  }
   function activeMeetingLocationHistory(p,c){
     const r=relation(p.id,c.id);
     if(!r||r.mode!=='meeting')return [];
@@ -1943,7 +1957,8 @@
     const prior=Array.isArray(r.meeting_location_history)?r.meeting_location_history:[];
     const initial=prior.find(x=>x.source==='start');
     const startingLoc=initial&&!isNonPlaceText(initial.location)?initial.location:
-      (!isNonPlaceText(r.meeting_location)?String(r.meeting_location).trim():'约定的见面地点');
+      (!isNonPlaceText(r.meeting_location)?String(r.meeting_location).trim():
+        (recoverPreMeetingPlace(p,c,began)||'约定的见面地点'));
     const events=[{at:new Date(began).toISOString(),location:startingLoc,source:'start'}];
     const manual=prior.filter(x=>x.source==='manual'&&Number.isFinite(Date.parse(x.at))&&Date.parse(x.at)>=began&&!isNonPlaceText(x.location));
     const userTurns=messagesOf(p.id,c.id).filter(m=>m.sender==='user'&&m.mode==='meeting'&&
