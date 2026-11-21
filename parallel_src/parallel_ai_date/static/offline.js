@@ -1600,7 +1600,7 @@
     const recent=(history||[]).slice(-12).filter(m=>m.engine!=='recalled'&&!m.recalled).map(m=>String(m.text??'')).join(' ');
     if(!/(?:今晚|今夜|晚上|夜里|晚安|梦里|做梦|梦见|梦到|睡觉|洗漱|钻被窝|上床|休息)/.test(recent))return '';
     const lastUsers=(history||[]).slice(-5).filter(m=>m.sender==='user'&&m.engine!=='recalled').map(m=>String(m.text??'')).join(' ');
-    const explicitlyRestingNow=/(?:我现在|现在就|这会儿|我先|我要|我准备|马上|立刻|刚好).{0,10}(?:睡觉|睡了|睡一觉|午睡|睡午觉|休息|眯一会)|(?:我去睡了|我去睡觉|困得不行|要睡了)/.test(lastUsers);
+    const explicitlyRestingNow=/(?:我现在|现在就|这会儿|我先|我要|我准备|马上|立刻|刚好).{0,10}(?:睡觉|睡了|睡一觉|午睡|睡午觉|睡午觉了|睡午觉啦|休息|眯一会)|(?:我去睡了|我去睡觉|困得不行|要睡了)/.test(lastUsers);
     return '\n【白天讨论夜晚·情境校准】最近的短信涉及晚上、梦境或睡眠话题，但现在仍是'+(hour<12?'上午':'下午')+'。这些是谈论中的时间，不表示对方已经准备立刻睡觉或当前已经入夜。'+(explicitlyRestingNow?'对方最近可能明确提到当前要休息；可以尊重并自然回应，但不要把下午误写成夜晚。':'对方没有明确表示此刻要睡：不要把话题当作睡前告别，不要直接催其现在洗漱、钻被窝或以“晚安”结束当前聊天。可以自然说“今晚再说”“晚上做个好梦”，但必须保持时间指向正确。');
   }
   function chatClockContext(history,now=Date.now()){
