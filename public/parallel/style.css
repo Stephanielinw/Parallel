@@ -601,3 +601,14 @@ html,body,#root{width:100%;height:100%;min-height:0;margin:0;overflow:hidden;ove
   .preset-editor .preset-row .preset-text small{font-size:10px}
   .preset-editor .preset-row .preset-role-tag,.preset-editor .preset-row .preset-state-tag{font-size:9.5px;padding:2px 6px}
 }
+
+
+/* Keep the final preset section clear of the fixed mobile navigation bar. */
+@media(max-width:870px){
+  #app #view.main-view:has(.terminal-screen){padding-bottom:calc(110px + env(safe-area-inset-bottom,0px))}
+}
+@media(max-width:580px){
+  .preset-editor .preset-row .preset-order .icon-btn{height:30px}
+  .preset-editor .preset-row>.preset-edit-btn{width:36px;height:36px}
+  .preset-editor .preset-row>.toggle{height:26px}
+}
