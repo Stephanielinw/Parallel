@@ -274,10 +274,10 @@ async function loadCandidates(showToast=false){$('topbar-actions').innerHTML=`${
           }
           return;
         }
-        const deck={key,candidates:d.candidates,index:0,total:d.total_available};discoverDecks.set(pid,deck);
+        const deck={key,candidates:d.candidates,index:Math.min(d.candidates.length,Math.max(0,Number(d.index)||0)),batchId:d.batch_id||'',total:d.total_available};discoverDecks.set(pid,deck);
         if(isCurrentDiscover(pid,key)){
           showDiscoverDeck(pid,deck);
-          if(showToast)toast(`已刷新：${d.candidates.length} 位候选 · ${d.new_count||0} 位新收录${d.batch_failures?' · '+d.batch_failures+' 个分批失败（其他档案已保留）':''}${d.candidates.length<10?' · 本轮不足 10 位':''}`);
+          if(showToast)toast(d.refresh_not_applied?'本轮没有生成新卡，已保留原来刷到的位置':`已刷新：${d.candidates.length} 位候选 · ${d.new_count||0} 位新收录${d.batch_failures?' · '+d.batch_failures+' 个分批失败（其他档案已保留）':''}${d.candidates.length<10?' · 本轮不足 10 位':''}`);
         }
       }catch(e){
         if(discoverRequests.get(pid)!==request||!isCurrentDiscover(pid,key))return;
@@ -368,8 +368,18 @@ async function doSwipe(direction){
   pendingDiscoverSwipes.set(key,{pid,cid:c.id});
   state.loading=true;const card=$('swipe-card');
   if(card){card.style.transform='translate3d('+(direction==='right'?600:-600)+'px,0,0) rotate('+(direction==='right'?25:-25)+'deg)';card.style.opacity='0';}
-  // Advance on the animation timer, never on the network response.
+  // Save position right away, independently from slower match/first message.
+  const progress=globalThis.ParallelOffline&&deck.batchId
+    ?api('/discover-progress',{profileId:pid,batchId:deck.batchId,index,characterId:c.id})
+    :Promise.resolve({ok:true,index:index+1});
   await new Promise(resolve=>setTimeout(resolve,150));
+  let progressed=false;
+  try{const result=await progress;progressed=Boolean(result?.ok);}catch{}
+  if(!progressed){
+    pendingDiscoverSwipes.delete(key);state.loading=false;
+    if(discoverDecks.get(pid)===deck&&isCurrentDiscover(pid,deck.key))showDiscoverDeck(pid,deck);
+    toast('滑卡进度没有保存，已保留当前卡片，请重试');return;
+  }
   if(discoverDecks.get(pid)===deck){deck.index=index+1;if(isCurrentDiscover(pid,deck.key))showDiscoverDeck(pid,deck);}
   state.loading=false;
   const run=async()=>{

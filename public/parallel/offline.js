@@ -63,7 +63,7 @@
     // Keep the existing adaptive translation/continuation budgets unless explicitly overridden.
     return validTokenBudget(explicit)||main;
   }
-  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},queue:{},taskStates:{},bgErrors:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},translations:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,task_max_tokens:{},auto_portraits:false,proactive_mode:'daily',auto_translate:true,character_language_pref:'natural',character_language_custom:''}});
+  const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},discoverSessions:{},queue:{},taskStates:{},bgErrors:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},translations:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,task_max_tokens:{},auto_portraits:false,proactive_mode:'daily',auto_translate:true,character_language_pref:'natural',character_language_custom:''}});
   let db;let storageAvailable=true;let mainStoreReadable=true;let lastSavedRaw=null;
   const LEGACY_ERROR_BUBBLE_RE=/^(?:（模型连接失败，历史已保存。请检查终端设置，再尝试角色回复。）|（模型连接失败，请检查终端设置后重试。）)$/;
   const PROXY_ERROR_SIGNATURE_RE=/(?:所有\s*API\s*密钥均请求失败|具体错误请查看轮询日志|所有(?:渠道|密钥|节点|令牌|账号)(?:均|都)?(?:请求|调用|连接)?失败[\s\S]{0,80}(?:轮询日志|配额|额度|重试|失败))/i;
@@ -288,6 +288,7 @@
     target.photoDescriptions ||= {};
     target.discoveredCharacters ||= {};
     target.discoverSeen ||= {};
+    if(!target.discoverSessions||typeof target.discoverSessions!=='object'||Array.isArray(target.discoverSessions))target.discoverSessions={};
     target.queue ||= {};
     target.taskStates ||= {};
     target.bgErrors ||= {};
@@ -3158,6 +3159,40 @@
   // structured completion. Puppy and other OpenAI-style proxies occasionally
   // reply with HTTP 200 + finish_reason=stop but only the tail of invalid prose.
   // Small, separately validated batches preserve successful new identities.
+  const discoverySessionFilter=p=>JSON.stringify([p.id,p.sources||[],p.interested_in||[],p.min_age,p.max_age,p.role_character_id||'']);
+  // A swipe can create a match, but matching must not invalidate the saved batch.
+  const validSavedCard=(p,c)=>c&&(!p.sources.length||p.sources.some(tag=>sourceMatches(tag,c)))&&
+    p.role_character_id!==c.id&&(!p.interested_in.length||p.interested_in.includes('all')||p.interested_in.includes(c.gender))&&
+    (!c.age||c.age>=p.min_age&&c.age<=p.max_age);
+  const readDiscoverySession=p=>{
+    const session=db.discoverSessions[p.id];
+    if(!session||session.version!==1||session.filter_key!==discoverySessionFilter(p)||
+      typeof session.batch_id!=='string'||!session.batch_id||
+      !Array.isArray(session.ids)||!session.ids.length||session.ids.length>10||
+      !Number.isInteger(session.index)||session.index<0||session.index>session.ids.length)return null;
+    if(new Set(session.ids).size!==session.ids.length)return null;
+    if(!session.ids.every(id=>typeof id==='string'&&validSavedCard(p,byId.get(id))))return null;
+    return session;
+  };
+  const discoverySessionCards=(p,session)=>session.ids.map(id=>byId.get(id)).map(c=>({
+    ...char(c),photo_description:db.photoDescriptions[c.id]?.description||'',
+    photo_engine:db.photoDescriptions[c.id]?.engine||'',
+    previous_swipe:db.swipes[pairKey(p.id,c.id)]?.direction||null,
+    relation_status:relation(p.id,c.id)?.status||null
+  }));
+  const discoverySessionResponse=(p,session,extra={})=>({
+    candidates:discoverySessionCards(p,session),index:session.index,batch_id:session.batch_id,
+    total_available:Number(session.total_available)||candidates(p).length,requested:10,
+    new_count:0,batch_failures:0,generation:'saved-deck',apiError:null,
+    warning:'',demo:pub().mode==='demo',resumed:true,...extra
+  });
+  const createDiscoverySession=(p,ids,total)=>{
+    const session={version:1,batch_id:uid(),filter_key:discoverySessionFilter(p),
+      ids:ids.slice(0,10),index:0,total_available:total,created_at:stamp()};
+    db.discoverSessions[p.id]=session;
+    save();
+    return session;
+  };
   async function generateDiscovery(p,pool,forceRefresh=false,excludedIds=[]){
     const seen=new Set(db.discoverSeen[p.id]||[]),excluded=new Set(excludedIds);
     const eligible=pool.filter(c=>!excluded.has(c.id));
@@ -3597,13 +3632,49 @@
         if(profile.avatar&&(!profile.avatar.startsWith('data:image/')||profile.avatar.length>2000000))bodyErr('头像需是小于约 1.5MB 的图片');
         if(existing)Object.assign(existing,profile);else db.profiles.push(profile);save();return {profile};
       }
+      case '/discover-progress':{
+        const p=getP(data.profileId),session=readDiscoverySession(p);
+        if(!session||session.batch_id!==data.batchId)return {ok:false,reason:'stale'};
+        const index=Number(data.index),characterId=String(data.characterId||'');
+        if(!Number.isInteger(index)||index<0||index>=session.ids.length||session.ids[index]!==characterId)bodyErr('滑卡进度与当前卡组不一致');
+        if(index+1>session.index){session.index=index+1;session.updated_at=stamp();save();}
+        return {ok:true,index:session.index,batch_id:session.batch_id};
+      }
       case '/discover':case '/candidates':{
-        const p=getP(data.profileId||params.get('profileId'));const pool=candidates(p);
+        const p=getP(data.profileId||params.get('profileId'));
         const forceRefresh=Boolean(data.refresh||params.get('refresh')==='1');
+        const stored=route==='/discover'?readDiscoverySession(p):null;
+        if(stored&&!forceRefresh)return discoverySessionResponse(p,stored);
+        const pool=candidates(p);
         const excluded=Array.isArray(data.excludeIds)?data.excludeIds.filter(x=>typeof x==='string'):[];
-        const bioRes=route==='/discover'?await generateDiscovery(p,pool,forceRefresh,excluded):{selected:shuffle(pool).slice(0,10),generation:'catalog-demo',apiError:null,new_count:0};
-        const cs=bioRes.selected.filter(c=>eligibleCandidate(p,c)).map(c=>({...char(c),photo_description:db.photoDescriptions[c.id]?.description||'',photo_engine:db.photoDescriptions[c.id]?.engine||'',previous_swipe:db.swipes[pairKey(p.id,c.id)]?.direction||null,relation_status:relation(p.id,c.id)?.status||null}));
-        return {candidates:cs,total_available:candidates(p).length,requested:10,new_count:bioRes.new_count,batch_failures:bioRes.batch_failures||0,generation:bioRes.generation,apiError:bioRes.apiError||null,warning:bioRes.warning||'',demo:pub().mode==='demo'};
+        const bioRes=route==='/discover'?await generateDiscovery(p,pool,forceRefresh,excluded)
+          :{selected:shuffle(pool).slice(0,10),generation:'catalog-demo',apiError:null,new_count:0};
+        if(stored&&(bioRes.apiError||bioRes.generation==='cached-ai-bios')){
+          return discoverySessionResponse(p,stored,{
+            warning:'本次刷新未生成新的一批，已保留原卡组与进度。',
+            refresh_not_applied:true,batch_failures:bioRes.batch_failures||0,
+            apiError:null
+          });
+        }
+        if(route==='/discover'&&!bioRes.apiError&&bioRes.selected.length){
+          const total=candidates(p).length;
+          const session=createDiscoverySession(p,bioRes.selected.map(c=>c.id),total);
+          return discoverySessionResponse(p,session,{
+            generation:bioRes.generation,new_count:bioRes.new_count||0,
+            batch_failures:bioRes.batch_failures||0,warning:bioRes.warning||'',
+            resumed:false
+          });
+        }
+        const cs=bioRes.selected.filter(c=>eligibleCandidate(p,c)).map(c=>({
+          ...char(c),photo_description:db.photoDescriptions[c.id]?.description||'',
+          photo_engine:db.photoDescriptions[c.id]?.engine||'',
+          previous_swipe:db.swipes[pairKey(p.id,c.id)]?.direction||null,
+          relation_status:relation(p.id,c.id)?.status||null
+        }));
+        return {candidates:cs,index:0,batch_id:'',total_available:candidates(p).length,
+          requested:10,new_count:bioRes.new_count||0,batch_failures:bioRes.batch_failures||0,
+          generation:bioRes.generation,apiError:bioRes.apiError||null,
+          warning:bioRes.warning||'',demo:pub().mode==='demo'};
       }
       case '/swipe':{
         const p=getP(data.profileId),c=getC(data.characterId),d=data.direction;if(p.role_character_id===c.id)bodyErr('当前扮演身份不能匹配同一原作角色版本的自己');if(!['left','right'].includes(d))bodyErr('滑卡方向无效');
