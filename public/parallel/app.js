@@ -1452,9 +1452,34 @@ function openMeetingRecordModal(meetingId){
         <div class="novel-prose">${formatNovelParagraphs(e.text,e.sender)}</div>
       </article>`).join(''):'<p class="caption">暂无详细段落记录。</p>'}
     </div>`;
-  modal(html,`<button class="btn soft" data-action="close-modal">关闭见面记录</button>`);
+  const canRefresh=Boolean(rec.id&&entries.length&&rec.id!==state.activeMeetingId);
+  const buttons=`${canRefresh?`<button class="btn soft" data-action="refresh-meeting-summary" data-id="${esc(rec.id)}">重新整理整场梗概（消耗 Token）</button>`:''}<button class="btn soft" data-action="close-modal">关闭见面记录</button>`;
+  modal(html,buttons);
   const mEl=document.querySelector('#modal-root .modal');
   if(mEl)mEl.classList.add('modal-wide');
+}
+async function refreshMeetingSummary(meetingId){
+  const pid=state.activeId,cid=state.threadId;
+  if(!pid||!cid||!meetingId)return;
+  const btn=document.querySelector('[data-action="refresh-meeting-summary"]');
+  if(btn){btn.disabled=true;btn.textContent='正在按整场时间线整理…';}
+  try{
+    const result=await api('/meeting-summary-refresh',{profileId:pid,characterId:cid,meetingId});
+    if(!result?.meetingRecord)throw Error('没有收到更新后的见面梗概');
+    if(state.activeId!==pid||state.threadId!==cid)return;
+    const rec=result.meetingRecord;
+    const current=(state.meetings||[]).find(x=>x.id===rec.id);
+    if(current)Object.assign(current,rec);
+    else (state.meetings||=[]).push(rec);
+    const mem=(state.lastMemoriesData?.meetings||[]).find(x=>x.id===rec.id);
+    if(mem)Object.assign(mem,rec);
+    if(state.tab==='messages')renderMessages();
+    openMeetingRecordModal(meetingId);
+    toast('已按整场见面重新生成梗概，原始对话保持不变');
+  }catch(e){
+    toast('重新整理未完成：'+String(e.message||e));
+    if(btn){btn.disabled=false;btn.textContent='重新整理整场梗概';}
+  }
 }
 function openDailyMessagesModal(memId){
   const mem=(state.lastMemoriesData?.memories||[]).find(x=>x.id===memId);
@@ -2768,6 +2793,7 @@ if(a==='surv-enter-meeting'){
   return changeMode();
 }
 if(a==='open-meeting-record')return openMeetingRecordModal(el.dataset.id);
+if(a==='refresh-meeting-summary')return await refreshMeetingSummary(el.dataset.id);
 if(a==='open-daily-messages')return openDailyMessagesModal(el.dataset.id);
 if(a==='open-memories')return openMemoriesModal('',state.memoryCategory||'all');
 if(a==='filter-memories')return openMemoriesModal($('memory-search-input')?.value.trim()||'',el.dataset.cat||'all');
