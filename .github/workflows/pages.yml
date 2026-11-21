@@ -55,6 +55,7 @@ jobs:
           node tests/discover-touch-gesture.test.cjs
           node tests/token-usage-panel.test.cjs
           node tests/oauth-wrapped-500.test.cjs
+          node tests/meeting-summary-coverage.test.cjs
           node parallel_src/parallel_ai_date/tests/test_portable.cjs
           python3 -m unittest parallel_src/parallel_ai_date/tests/test_api.py
       - name: Build
