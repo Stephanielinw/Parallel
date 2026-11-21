@@ -160,6 +160,16 @@
     if(!s)return '…';
     return stripProtocolTags(s,{preserveParagraphs:true})||'…';
   };
+  // Only intercept model/policy-style refusals, never an in-character refusal or dialogue.
+  // Keep the original response in diagnostic logs; do not persist it as a scene.
+  const isModelRefusalText=raw=>{
+    const s=String(raw??'').trim();
+    if(!s||s.length>1500)return false;
+    const prefix=s.slice(0,210);
+    const refusal=/^(?:(?:很|非常)?抱歉[，,。\s]*|对不起[，,。\s]*|不好意思[，,。\s]*)?(?:我(?:无法|不能|没法|不可以|不会)|作为(?:一个)?(?:AI|人工智能|语言模型)|抱歉[，,。\s]*(?:我|无法))/i.test(prefix);
+    const outOfStory=/(?:角色扮演|虚构情境|虚构创作|性爱描写|性行为描写|成人内容|色情内容|露骨内容|内容政策|安全准则|内容限制|作为(?:AI|人工智能|语言模型)|不能继续(?:进行|创作)|无法参与(?:浪漫|亲密))/i.test(s);
+    return refusal&&outOfStory;
+  };
   const isNarrationMarker=raw=>/^(?:旁白|【旁白】|\[旁白\]|（旁白）|\(旁白\)|\*旁白\*|narrator|narration)\s*[:：。.!！]?\s*$/i.test(String(raw??'').trim());
   const isBareChatDivider=raw=>/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(String(raw??''));
   const pipeChatParts=line=>{
@@ -3078,6 +3088,20 @@
         usage
       });
     }
+    if((mode==='chat'||mode==='meeting')&&isModelRefusalText(parsedPreview)){
+      throwApiError({
+        error_code:'MODEL_REFUSAL',
+        http_status:res.status||200,
+        title:'模型拒绝了本轮剧情生成',
+        message:'模型返回了出戏的内容拒绝，而非角色正文。用户原文和已有剧情已保留；拒绝文本不会写入聊天、见面归档或记忆。',
+        detail:parsedPreview.slice(0,300),
+        may_consume_tokens:true,
+        background:Boolean(options.background)
+      },logBase,startedMs,{
+        raw_response:data,raw_content:rawTrimmed,parsed_content:parsedPreview,
+        reasoning_content:reasoningRaw,finish_reason:finishReason||'stop',usage
+      });
+    }
     // Check severe truncation on chat/meeting when finish_reason === 'length' and content is severely cut off (< 80 chars or explicit reject_truncated)
     if(isTruncated&&(options.json_mode||options.reject_truncated||parsedPreview.trim().length<80)){
       throwApiError({
@@ -4200,7 +4224,56 @@
         const targetMsg=db.messages.find(m=>m.id===mid&&m.profile_id===p.id&&m.character_id===c.id);
         if(!targetMsg)bodyErr('消息不存在');
         if(targetMsg.recalled||targetMsg.engine==='recalled')bodyErr('已撤回的消息无法编辑');
-        if(targetMsg.mode!=='chat')bodyErr('仅支持编辑手机聊天消息');
+        if(targetMsg.mode==='meeting'){
+          const rel=requireMatch(p.id,c.id),meetingId=rel.active_meeting_id||'';
+          if(rel.mode!=='meeting'||!meetingId||targetMsg.meeting_id!==meetingId||targetMsg.sender!=='user')
+            bodyErr('只能编辑当前面对面见面中自己最新的一段内容');
+          if(meetingRerolls.has(pairKey(p.id,c.id))||getTaskState(p.id,c.id,'meeting')?.status==='inflight')
+            bodyErr('当前现场正在生成，请在完成或暂停后编辑');
+          const session=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===meetingId&&!m.recalled&&m.engine!=='recalled');
+          const latestUser=session.filter(m=>m.sender==='user').at(-1);
+          if(!latestUser||latestUser.id!==mid)bodyErr('只能编辑当前见面最新一条自己发出的内容');
+          if(targetMsg.text===rawTxt)return {ok:true,message:targetMsg,changed:false,removedIds:[],translationInvalidated:false};
+          if(!archiveStoredCurrent())bodyErr('存档已在另一页面更新，请刷新后再编辑');
+          const snapshot=JSON.stringify(db);
+          try{
+            const original=targetMsg.text,position=db.messages.indexOf(targetMsg);
+            const removed=db.messages.slice(position+1).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&m.mode==='meeting'&&m.meeting_id===meetingId&&m.sender==='ai');
+            const removedIds=removed.map(m=>m.id),affected=new Set([mid,...removedIds]);
+            targetMsg.text=rawTxt;targetMsg.edited_at=stamp();
+            if(removedIds.length)db.messages=db.messages.filter(m=>!affected.has(m.id)||m.id===mid);
+            for(const rid of affected)invalidateTranslation(rid);
+            const staleMemIds=new Set();
+            for(const mem of db.episodicMemories){
+              if(mem.profile_id!==p.id||mem.owner_id!==c.id)continue;
+              if([...(mem.raw_msg_ids||[]),...(mem.meeting_data?.message_ids||[])].some(id=>affected.has(id))){
+                mem.archive_stale=true;staleMemIds.add(mem.id);
+              }
+            }
+            for(const mem of db.episodicMemories)
+              if(mem.profile_id===p.id&&mem.owner_id===c.id&&staleMemIds.has(mem.clarifies_id))mem.archive_stale=true;
+            const userEvent='与 '+p.name+' 的见面：'+String(original).slice(0,180);
+            const replacementEvent='与 '+p.name+' 的见面：'+rawTxt.slice(0,180);
+            let changedEvent=false;
+            db.events=db.events.filter(e=>{
+              if(e.profile_id!==p.id||e.character_id!==c.id)return true;
+              if(e.type==='ai_message'&&removedIds.includes(e.message_id))return false;
+              if(e.type==='user_message'&&(e.message_id===mid||(e.summary===userEvent&&Math.abs(Date.parse(e.created_at)-Date.parse(targetMsg.created_at))<10000))){
+                e.summary=replacementEvent;e.message_id=mid;changedEvent=true;
+              }
+              return true;
+            });
+            if(!changedEvent){event(p.id,c.id,'user_message',replacementEvent);db.events.at(-1).message_id=mid;}
+            const oldDiary=db.diaries[pairKey(p.id,c.id)]?.byDate?.[localDateStr(Date.parse(targetMsg.created_at))];
+            if(oldDiary)oldDiary.stale_after_recovery=true;
+            clearTaskState(p.id,c.id,'meeting');
+            const current=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===meetingId);
+            if(current.length)upsertMeetingRecord(p,c,meetingId,current,rel.meeting_location||'');
+            episodeList(p,c);rel.updated_at=stamp();save();
+            return {ok:true,message:targetMsg,changed:true,removedIds,translationInvalidated:true,regenerate:true};
+          }catch(e){db=JSON.parse(snapshot);throw e;}
+        }
+        if(targetMsg.mode!=='chat')bodyErr('不支持编辑此类型消息');
         if(targetMsg.photo_kind==='gallery')bodyErr('真实照片不能编辑，请撤回后重新发送');
         if(targetMsg.photo_kind==='virtual'){
           if(rawTxt.length>2000)bodyErr('照片描写最多 2000 字');
