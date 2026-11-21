@@ -2008,6 +2008,15 @@ def classify_http_status_error(status,detail_msg='',retry_after=0):
     elif str(retry_after).isdigit():
         ra=int(retry_after)
     suffix=f"（{detail_msg}）" if detail_msg else ''
+    # An OpenAI-compatible proxy may return HTTP 500 for a Google 401.
+    # A credential-type mismatch will not recover by simply retrying.
+    if re.search(r'API keys? are not supported by this API',str(detail_msg),re.IGNORECASE) and re.search(r'OAuth2? access token|UNAUTHENTICATED|401',str(detail_msg),re.IGNORECASE):
+        return {
+            'error_code':'UPSTREAM_OAUTH_REQUIRED','error_type':'UPSTREAM_OAUTH_REQUIRED','http_status':s,
+            'title':'上游模型认证方式不匹配（真实原因：401）',
+            'message':'当前模型渠道用 API Key 访问了要求 OAuth 2.0 凭证的 Google 接口。请检查终端所选模型与供应商的上游认证配置；不要反复重试。',
+            'retry_after':0,'suggest_terminal':True,'may_consume_tokens':False
+        }
     def _res(code,title,msg,suggest_terminal=False,may_consume_tokens=False):
         return {'error_code':code,'error_type':code,'http_status':s,'title':title,'message':msg,'retry_after':ra,'suggest_terminal':suggest_terminal,'may_consume_tokens':may_consume_tokens}
     if s==400:return _res('HTTP_400','请求参数异常 (HTTP 400)',f"模型接口拒绝了请求参数{suffix}。请检查终端中的模型名称或 Max tokens 设置。",suggest_terminal=True)
