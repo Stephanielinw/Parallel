@@ -3632,6 +3632,11 @@
         if(profile.avatar&&(!profile.avatar.startsWith('data:image/')||profile.avatar.length>2000000))bodyErr('头像需是小于约 1.5MB 的图片');
         if(existing)Object.assign(existing,profile);else db.profiles.push(profile);save();return {profile};
       }
+      case '/discover-session':{
+        const p=getP(data.profileId||params.get('profileId'));
+        const session=readDiscoverySession(p);
+        return {exists:Boolean(session),index:session?.index||0};
+      }
       case '/discover-progress':{
         const p=getP(data.profileId),session=readDiscoverySession(p);
         if(!session||session.batch_id!==data.batchId)return {ok:false,reason:'stale'};

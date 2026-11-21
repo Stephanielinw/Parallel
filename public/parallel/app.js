@@ -260,7 +260,10 @@ async function loadCandidates(showToast=false){$('topbar-actions').innerHTML=`${
     if(existing&&existing.key===key){await existing.promise;return;}
     if(cached&&cached.key===key&&(!showToast||state.loading)){showDiscoverDeck(pid,cached);return;}
     if(showToast&&state.loading)return;
-    if(!(activeProfile().sources||[]).length&&!discoverAllSources.has(pid)){return $('view').innerHTML=`<div class="empty-state"><div class="empty-illustration">${I('compass')}</div><h2>还没有填写希望匹配的作品</h2><p>请先在你的 Profile 中添加「希望匹配的作品」Tag（如：生化危机、巫师3、漫威电影、赛博朋克2077），平行世界将只为你匹配对应作品中的角色。</p><div class="inline-row" style="justify-content:center"><button class="btn primary" data-action="nav" data-tab="profile">去添加作品 Tag ${I('arrow')}</button><button class="btn soft" data-action="allow-all-sources">不限作品 · 随机探索全部</button></div></div>`}
+    if(!(activeProfile().sources||[]).length&&!discoverAllSources.has(pid)){
+      const stored=globalThis.ParallelOffline?await api('/discover-session',{profileId:pid}).catch(()=>({exists:false})):{exists:false};
+      if(stored.exists)discoverAllSources.add(pid);
+      else return $('view').innerHTML=`<div class="empty-state"><div class="empty-illustration">${I('compass')}</div><h2>还没有填写希望匹配的作品</h2><p>请先在你的 Profile 中添加「希望匹配的作品」Tag（如：生化危机、巫师3、漫威电影、赛博朋克2077），平行世界将只为你匹配对应作品中的角色。</p><div class="inline-row" style="justify-content:center"><button class="btn primary" data-action="nav" data-tab="profile">去添加作品 Tag ${I('arrow')}</button><button class="btn soft" data-action="allow-all-sources">不限作品 · 随机探索全部</button></div></div>`}
     const request={key,promise:null};discoverRequests.set(pid,request);
     request.promise=(async()=>{
       try{
