@@ -1711,9 +1711,14 @@
     if(pub().mode!=='live')return rec;
     // Live meeting truth wins; re-generating a fake day while together is counterproductive.
     if(dStr===today&&relation(p.id,c.id)?.mode==='meeting')return rec;
-    if(forceRefresh&&dStr===today&&rec.post_meeting_anchor&&rec.post_meeting_id){
-      const meeting=(db.meetings||[]).find(x=>x.id===rec.post_meeting_id&&x.profile_id===p.id&&x.character_id===c.id);
-      if(meeting)return await replanRemainingDayAfterMeeting(p,c,meeting,Date.now());
+    if(dStr===today&&rec.post_meeting_anchor&&rec.post_meeting_id){
+      if(forceRefresh){
+        const meeting=(db.meetings||[]).find(x=>x.id===rec.post_meeting_id&&x.profile_id===p.id&&x.character_id===c.id);
+        if(meeting)return await replanRemainingDayAfterMeeting(p,c,meeting,Date.now());
+      }
+      // This date's unfinished timeline has already been rebased on the real ending.
+      // Never regenerate a contradictory entire day from 00:00 on later page opens.
+      return rec;
     }
     if(rec.engine==='live'&&!forceRefresh)return rec;
     try{
@@ -1726,7 +1731,7 @@
       const out=await llm([{role:'system',content:sys},{role:'user',content:`请生成 ${c.name} 在 ${dStr} 的全天足迹 JSON。`}],{json_mode:true,profile:p,character:c,mode:'surveillance',entry_point:'surveillance',background:!forceRefresh});
       const parsed=JSON.parse(out);
       if(Array.isArray(parsed?.slots)&&parsed.slots.length>=5){
-        const preserved=rec.slots.filter(s=>s.source==='meeting'||s.source==='chat_update');
+        const preserved=rec.slots.filter(s=>['meeting','chat_update','meeting_shift'].includes(s.source));
         const aiSlots=parsed.slots.slice(0,12).map((s,i)=>({
           id:`slot_ai_${i+1}`,
           start:/^\d{2}:\d{2}$/.test(String(s.start||''))?String(s.start):'08:00',
@@ -2208,8 +2213,14 @@
   const upsertMeetingRecord=(p,c,meetingId,mMsgs,customLoc='',aiSummary='',finishedAt='')=>{
     if(!mMsgs||!mMsgs.length)return null;
     const existing=(db.meetings||[]).find(x=>x.id===meetingId);
-    const loc=inferMeetingLocation(p.id,c.id,customLoc||existing?.location||'');
     const rel=relation(p.id,c.id),isActive=rel?.mode==='meeting'&&rel.active_meeting_id===meetingId;
+    // Freeze the confirmed scene with the meeting itself. A different itinerary
+    // or later relationship cannot rewrite this meeting's last real position.
+    const archivedHistory=Array.isArray(existing?.location_history)?existing.location_history:[];
+    const sceneHistory=isActive?activeMeetingLocationHistory(p,c).map(e=>({...e})):archivedHistory.map(e=>({...e}));
+    const confirmedPlace=sceneHistory.at(-1)?.location||'';
+    const loc=confirmedPlace||String(customLoc||existing?.location||'').trim()||
+      inferMeetingLocation(p.id,c.id,'');
     const startedAt=(isActive&&rel.meeting_started_at)||existing?.started_at||mMsgs[0].created_at||stamp();
     const actualFinish=finishedAt||existing?.finished_at||'';
     const endedAt=actualFinish||mMsgs[mMsgs.length-1].created_at||startedAt;
@@ -2223,6 +2234,7 @@
       profile_id:p.id,
       character_id:c.id,
       location:loc,
+      location_history:sceneHistory,
       time:timeStr,
       started_at:startedAt,
       ended_at:endedAt,
@@ -4464,11 +4476,16 @@
               r.mode='meeting';
               r.active_meeting_id=resumeMid;
               r.meeting_started_at=prior.started_at||oldTurns[0].created_at;
+              const savedScene=Array.isArray(prior.location_history)?prior.location_history
+                .filter(e=>e&&Number.isFinite(Date.parse(e.at))&&!isNonPlaceText(e.location)).map(e=>({...e})):[];
               const latestConfirmed=oldTurns.slice().reverse().filter(m=>m.sender==='user').map(m=>meetingPlaceInPlayerTurn(m.text,p.name)).find(Boolean)||'';
-              const priorHistory=Array.isArray(r.meeting_location_history)?r.meeting_location_history:[];
-              const recentPlace=priorHistory.slice().reverse().find(x=>['manual','scene'].includes(x.source)&&!isNonPlaceText(x.location))?.location||'';
-              r.meeting_location=locInput||latestConfirmed||recentPlace||prior.location||inferMeetingLocation(p.id,c.id,'');
-              r.meeting_location_history ||= [];
+              const archivedPlace=savedScene.at(-1)?.location||'';
+              // Only this meeting's archived snapshot and own original turns count.
+              // Never use the current surveillance slot, or a different meeting's relation history.
+              r.meeting_location=locInput||archivedPlace||latestConfirmed||(!isNonPlaceText(prior.location)?prior.location:'')||
+                recoverPreMeetingPlace(p,c,Date.parse(r.meeting_started_at))||'约定的见面地点';
+              const initialPlace=savedScene[0]?.location||recoverPreMeetingPlace(p,c,Date.parse(r.meeting_started_at))||prior.location||r.meeting_location;
+              r.meeting_location_history=savedScene.length?savedScene:[{at:r.meeting_started_at,location:initialPlace,source:'start'}];
               r.meeting_location_history.push({at:stamp(),location:r.meeting_location,source:'resume'});
               r.updated_at=stamp();
               // An archived recap is no longer final; refresh a factual recap after the new ending.
