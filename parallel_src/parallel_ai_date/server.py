@@ -1288,7 +1288,7 @@ def chat_temporal_topic_hint(history,now=None):
     recent=' '.join(str(m.get('text') or '') for m in (history or [])[-12:] if m.get('engine')!='recalled' and not m.get('recalled'))
     if not re.search(r'今晚|今夜|晚上|夜里|晚安|梦里|做梦|梦见|梦到|睡觉|洗漱|钻被窝|上床|休息',recent):return ''
     last_users=' '.join(str(m.get('text') or '') for m in (history or [])[-5:] if m.get('sender')=='user' and m.get('engine')!='recalled')
-    resting_now=bool(re.search(r'(?:我现在|现在就|这会儿|我先|我要|我准备|马上|立刻|刚好).{0,10}(?:睡觉|睡了|睡一觉|午睡|睡午觉|休息|眯一会)|(?:我去睡了|我去睡觉|困得不行|要睡了)',last_users))
+    resting_now=bool(re.search(r'(?:我现在|现在就|这会儿|我先|我要|我准备|马上|立刻|刚好).{0,10}(?:睡觉|睡了|睡一觉|午睡|睡午觉|睡午觉了|睡午觉啦|休息|眯一会)|(?:我去睡了|我去睡觉|困得不行|要睡了)',last_users))
     suffix=('对方最近可能明确提到当前要休息；可以尊重并自然回应，但不要把下午误写成夜晚。' if resting_now else
             '对方没有明确表示此刻要睡：不要把话题当作睡前告别，不要直接催其现在洗漱、钻被窝或以“晚安”结束当前聊天。可以自然说“今晚再说”“晚上做个好梦”，但必须保持时间指向正确。')
     return '\n【白天讨论夜晚·情境校准】最近的短信涉及晚上、梦境或睡眠话题，但现在仍是'+('上午' if hour<12 else '下午')+'。这些是谈论中的时间，不表示对方已经准备立刻睡觉或当前已经入夜。'+suffix
