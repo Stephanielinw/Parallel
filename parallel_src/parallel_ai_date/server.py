@@ -1635,7 +1635,7 @@ def summarize_complete_meeting(p,c,m_msgs,location):
     for idx,chunk in enumerate(chunks):
         msg=completion([
             {'role':'system','content':instruction+f'这是第 {idx+1}/{len(chunks)} 段连续记录，仅总结本段确实发生的事件，保留重要转折。'},
-            {'role':'user','content':f'见面起点：{location}；整场消息总数：{len(m_msgs)}。\n'+chunk}
+            {'role':'user','content':f'记录地点（不一定是初见地点）：{location}；整场消息总数：{len(m_msgs)}。\n'+chunk}
         ],json_mode=True,max_tokens=1024,temperature=0.25,log_meta={'mode':'meeting_summary','entryPoint':'meeting_finalize','profile':p,'character':c})
         part=str(parse_json(msg,{}).get('summary') or '').strip()
         if not part:raise ValueError('见面分段摘要为空；保留原始见面记录')
@@ -1643,7 +1643,7 @@ def summarize_complete_meeting(p,c,m_msgs,location):
     if len(notes)==1:return {'summary':notes[0]}
     merged=completion([
         {'role':'system','content':instruction+f'以下是同一场见面按时间顺序整理的 {len(notes)} 段事实小结。合并为整场见面梗概，不得只概括最后一段，也不得增加分段摘要中没有的情节。'},
-        {'role':'user','content':f"见面时间：{m_msgs[0].get('created_at','')} 至 {m_msgs[-1].get('created_at','')}；起点记录地点：{location}。\n"+'\n'.join(f'第{i+1}/{len(notes)}段：{note}' for i,note in enumerate(notes))}
+        {'role':'user','content':f"见面时间：{m_msgs[0].get('created_at','')} 至 {m_msgs[-1].get('created_at','')}；记录地点（不一定是初见地点）：{location}。\n"+'\n'.join(f'第{i+1}/{len(notes)}段：{note}' for i,note in enumerate(notes))}
     ],json_mode=True,max_tokens=1024,temperature=0.25,log_meta={'mode':'meeting_summary','entryPoint':'meeting_finalize','profile':p,'character':c})
     summary=str(parse_json(merged,{}).get('summary') or '').strip()
     if not summary:raise ValueError('整场见面梗概为空；保留原始见面记录')
