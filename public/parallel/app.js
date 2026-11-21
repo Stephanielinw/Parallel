@@ -1040,7 +1040,7 @@ function renderPausedTaskBanner(){
 }
 function renderHeaderModeButton(meeting){
   if(meeting){
-    return `<button type="button" class="btn soft end-meeting-btn" data-action="change-mode" aria-label="结束见面" title="结束本次见面并回退到聊天页面，生成见面卡片">${I('message')}<span>结束见面</span></button>`;
+    return `<button type="button" class="btn soft end-meeting-btn" data-action="surv-close-meeting" aria-label="结束见面" title="确认后才会结束见面，避免误触分出新卡片">${I('message')}<span>结束见面</span></button>`;
   }
   const isHot=Boolean(state.hotChat);
   const hotTitle=isHot
@@ -1467,7 +1467,7 @@ async function resumeArchivedMeeting(meetingId){
 function confirmForgetMessage(messageId){
   const m=state.messages.find(x=>x.id===messageId)||(state.meetings||[]).flatMap(x=>x.entries||[]).find(x=>x.id===messageId);
   if(!m)return toast('找不到这条消息');
-  modal('<h2>永久删除这条消息？</h2><p>这会从聊天和见面原文中移除该段，并清理或重建引用它的关联记忆及归档。已生成的其他消息仍会保留，其中可能提到被删内容；此操作不能撤销，建议先导出存档。</p>',
+  modal('<h2>永久删除这条消息？</h2><p>这会从聊天和见面原文中移除该段，并清理或重建引用它的关联记忆及归档。已生成的其他消息以及历史 API 诊断日志可能仍包含相关文字；此操作不能撤销，建议先导出存档。</p>',
     '<button class="btn soft" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-forget-message" data-id="'+esc(messageId)+'">确认永久删除</button>');
 }
 async function permanentlyForgetMessage(messageId){
@@ -2792,7 +2792,7 @@ if(a==='retry-backlog')return recoverOnOpen(0,true);
 if(a==='select-thread')return loadThread(el.dataset.id);
 if(a==='back-threads'){++threadRequestSeq;state.threadId='';state.renderedThreadId='';return renderMessages()}
 if(a==='change-mode')return changeMode();
-if(a==='surv-close-meeting')return modal('<h2>结束这次见面？</h2><p>这会保存当前现场记录并切回手机聊天。它只结束 Parallel 的见面模式，不会代替 Lin 描写 Carlos 已经离开；如希望剧情连贯，可以先在小说中完成告别。</p>','<button class="btn ghost" data-action="close-modal">继续见面</button><button class="btn primary" data-action="confirm-surv-close-meeting">保存并结束</button>');
+if(a==='surv-close-meeting')return modal('<h2>结束这次见面？</h2><p>会把这一场存为回忆卡片并切回手机聊天。若是不小心点到，请选「继续见面」；即使误结束，也能从旧卡片接着这一场继续。</p>','<button class="btn primary" data-action="close-modal">继续见面</button><button class="btn soft" data-action="confirm-surv-close-meeting">确认结束并归档</button>');
 if(a==='confirm-surv-close-meeting'){closeModal();return changeMode();}
 if(a==='toggle-hot-chat')return toggleHotChat();
 if(a==='open-char-hub')return openCharacterHubModal(false);
