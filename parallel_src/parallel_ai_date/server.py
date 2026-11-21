@@ -1478,7 +1478,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
         start_m=hhmm_to_min(s['start'])
         end_m=hhmm_to_min(s['end'])
         if (not is_today) or start_m<=now_m:
-            is_cur=bool(is_today and start_m<=now_m<=end_m)
+            is_cur=bool(is_today and (s.get('source')=='meeting' and s.get('id','').startswith('live_meeting_') if current and current.get('source')=='meeting' else start_m<=now_m<=end_m))
             unlocked.append(dict(s,
                 isCurrent=is_cur,
                 state='current' if is_cur else 'past'
@@ -1692,6 +1692,18 @@ def current_plan_rows(db,pid,cid):
     cutoff=db.execute("SELECT MAX(created_at) FROM events WHERE profile_id=? AND character_id=? AND type IN ('matched','unmatched','return','meeting')",(pid,cid)).fetchone()[0] or ''
     rows=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='chat' AND created_at>=? ORDER BY rowid DESC LIMIT 41",(pid,cid,cutoff)).fetchall()
     return [m for m in reversed([dict(r) for r in rows]) if m['engine']!='recalled' and not _is_chat_artifact(m) and not is_legacy_error_artifact(m)]
+
+def meeting_place_in_player_turn(raw,profile_name):
+    """Only the player's affirmative on-site narrative can override a proposed venue."""
+    text=str(raw or '').strip()
+    if not text or re.match(r'^(?:假如|如果|要是|万一|明天|下次|以后)',text):return ''
+    if re.search(r'(?:赖|躺|睡|窝|待|坐|留|趴|靠|滚|倒).{0,16}我(?:家)?(?:的)?床(?:上|边)?|(?:在|回到|走进|进入)我(?:家)?(?:的)?(?:卧室|房间)',text):
+        return profile_name+' 的卧室'
+    if re.search(r'(?:正在|现在|已经|此刻|就|还|仍).{0,20}(?:在|到了|回到|走进|进入|来到)我(?:的)?家(?:里)?|(?:带|领|接|跟|陪).{0,20}(?:回|到)(?:了)?我(?:的)?家|(?:带|领|接|跟|陪).{0,20}回家了?',text):
+        return profile_name+' 的家'
+    if re.search(r'\b(?:on my bed|in my bedroom)\b',text,re.I):return profile_name+' 的卧室'
+    if re.search(r'\b(?:at my place|in my home)\b',text,re.I):return profile_name+' 的家'
+    return ''
 
 def infer_meeting_location(db,pid,cid,custom_loc=''):
     clean_custom=str(custom_loc or '').strip()
