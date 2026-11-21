@@ -845,7 +845,7 @@ function renderChatMessagesHtml(c){
         <div class="meeting-loc-pill">
           ${I('map')}
           <span>见面地点</span>
-          <input id="meeting-location-input" class="meeting-loc-input" type="text" maxlength="36" value="${esc(locVal)}" placeholder="如：街角咖啡馆门口" title="可随时修改本次见面地点，结束见面后将写入见面卡片">
+          <input id="meeting-location-input" class="meeting-loc-input" type="text" maxlength="36" value="${esc(locVal)}" placeholder="如：Lin 的卧室" title="请输入实际地点，修改后会同步给监控，并用于下一次角色回复" aria-label="当前见面地点（修改并失焦后自动保存）">
         </div>
         <span class="meeting-stage-hint" id="meeting-real-clock">${esc(meetingClockText())}</span>
       </div>
@@ -1288,8 +1288,8 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
         <div class="surv-live-act">${esc(cur.activity||'正在处理日常事务')}</div>
         <div class="surv-live-scene">${esc(cur.scene||`${c.name}正在当下所在的位置处理日常事务。`)}</div>
         <div class="surv-live-actions">
-          <span class="caption">如果在聊天中直接点「进入见面」，将默认前往该实时地点</span>
-          ${state.chatMode==='chat'?`<button type="button" class="btn primary tiny-btn" data-action="surv-enter-meeting" data-loc="${esc(cur.location||'')}">${I('map')} 前往此处与 TA 见面</button>`:`<span class="pill">当前正在线下见面中</span>`}
+          <span class="caption">${state.chatMode==='meeting'?'地点变化后，请在面对面小说页面顶部的「见面地点」栏修改，监控会同步。':'如果在聊天中直接点「进入见面」，将默认前往该实时地点'}</span>
+          ${state.chatMode==='chat'?`<button type="button" class="btn primary tiny-btn" data-action="surv-enter-meeting" data-loc="${esc(cur.location||'')}">${I('map')} 前往此处与 TA 见面</button>`:`<span class="pill">当前正在线下见面中</span><button type="button" class="btn soft tiny-btn" data-action="surv-close-meeting">结束本次见面</button>`}
         </div>
       </div>`:''}
       <div class="surv-section-head">
@@ -2640,6 +2640,8 @@ if(a==='retry-backlog')return recoverOnOpen(0,true);
 if(a==='select-thread')return loadThread(el.dataset.id);
 if(a==='back-threads'){++threadRequestSeq;state.threadId='';state.renderedThreadId='';return renderMessages()}
 if(a==='change-mode')return changeMode();
+if(a==='surv-close-meeting')return modal('<h2>结束这次见面？</h2><p>这会保存当前现场记录并切回手机聊天。它只结束 Parallel 的见面模式，不会代替 Lin 描写 Carlos 已经离开；如希望剧情连贯，可以先在小说中完成告别。</p>','<button class="btn ghost" data-action="close-modal">继续见面</button><button class="btn primary" data-action="confirm-surv-close-meeting">保存并结束</button>');
+if(a==='confirm-surv-close-meeting'){closeModal();return changeMode();}
 if(a==='toggle-hot-chat')return toggleHotChat();
 if(a==='open-char-hub')return openCharacterHubModal(false);
 if(a==='toggle-nickname-edit'){
@@ -2764,9 +2766,23 @@ if(a==='save-preset')return savePreset(el.dataset.id);
 if(a==='delete-preset'){await api('/preset',{action:'delete',id:el.dataset.id});closeModal();toast('条目已删除');return refreshPresets()}
 }catch(err){toast(err.message)}});
 addEventListener('pointerdown',()=>{state.lastUserActiveAt=Date.now()},{passive:true});
-addEventListener('change',e=>{
+addEventListener('change',async e=>{
   if(e.target.id==='portable-restore')importBackup(e.target.files[0]);
   if(e.target.id==='preset-import-file')choosePresetImport(e.target.files[0]);
+  if(e.target.id==='meeting-location-input'&&state.chatMode==='meeting'&&state.activeId&&state.threadId){
+    const next=e.target.value.trim();
+    if(!next){toast('见面地点不能为空');e.target.value=state.meetingLocation||'';return;}
+    state.meetingLocation=next;
+    const profileId=state.activeId,characterId=state.threadId;
+    try{
+      const updated=await api('/mode',{profileId,characterId,mode:'meeting',location:next});
+      if(isCurrentPair(profileId,characterId)){
+        if(updated.surveillance)state.surveillanceMap[characterId]=updated.surveillance;
+        toast('见面地点已同步到监控与后续剧情');
+      }
+    }catch(error){toast('地点同步失败：'+error.message);}
+    return;
+  }
   if(e.target.id==='surv-date-input'&&e.target.value)openSurveillanceModal(false,e.target.value);
   if(e.target.id==='diary-date-input'&&e.target.value)openDiaryModal(e.target.value,false);
 });
