@@ -1599,9 +1599,59 @@ def infer_meeting_location(db,pid,cid,custom_loc=''):
         pass
     return '约定的街角咖啡馆'
 
+def meeting_summary_chunks(m_msgs,p,c):
+    """Every turn contributes a short chronological excerpt, instead of only the final ten."""
+    chunks=[]
+    chunk=''
+    for m in m_msgs:
+        original=re.sub(r'\s+',' ',str(m.get('text') or '')).strip()
+        maximum=220 if m.get('sender')=='user' else 200
+        if len(original)>maximum:
+            left=int(maximum*.55)
+            right=int(maximum*.45)
+            excerpt=original[:left]+' … '+original[-right:]
+        else:
+            excerpt=original
+        timestamp=str(m.get('created_at') or '')[:19].replace('T',' ')
+        name=p['name'] if m.get('sender')=='user' else c['name']
+        line=f'[{timestamp}] {name}：{excerpt}\n'
+        if chunk and len(chunk)+len(line)>9000:
+            chunks.append(chunk)
+            chunk=''
+        chunk+=line
+    if chunk:chunks.append(chunk)
+    return chunks
+
+def summarize_complete_meeting(p,c,m_msgs,location):
+    if not m_msgs:return None
+    chunks=meeting_summary_chunks(m_msgs,p,c)
+    instruction=(
+        '你是见面记录的事实归档员。只能总结提供的实际对话，不得补写未出现的事件、亲吻、去过的地点、'
+        '感情承诺或人物心理。严格按时间顺序，保留开场、中段、结尾的关键事件；优先记录已发生的行动与对话，'
+        '忽略描写性赘述。若记录跨越午夜，必须体现前一晚和第二天。'
+        '只输出 JSON 对象：{"summary":"120至240字的中文纪实梗概"}。'
+    )
+    notes=[]
+    for idx,chunk in enumerate(chunks):
+        msg=completion([
+            {'role':'system','content':instruction+f'这是第 {idx+1}/{len(chunks)} 段连续记录，仅总结本段确实发生的事件，保留重要转折。'},
+            {'role':'user','content':f'见面起点：{location}；整场消息总数：{len(m_msgs)}。\n'+chunk}
+        ],json_mode=True,max_tokens=1024,temperature=0.25,log_meta={'mode':'meeting_summary','entryPoint':'meeting_finalize','profile':p,'character':c})
+        part=str(parse_json(msg,{}).get('summary') or '').strip()
+        if not part:raise ValueError('见面分段摘要为空；保留原始见面记录')
+        notes.append(part)
+    if len(notes)==1:return {'summary':notes[0]}
+    merged=completion([
+        {'role':'system','content':instruction+f'以下是同一场见面按时间顺序整理的 {len(notes)} 段事实小结。合并为整场见面梗概，不得只概括最后一段，也不得增加分段摘要中没有的情节。'},
+        {'role':'user','content':f"见面时间：{m_msgs[0].get('created_at','')} 至 {m_msgs[-1].get('created_at','')}；起点记录地点：{location}。\n"+'\n'.join(f'第{i+1}/{len(notes)}段：{note}' for i,note in enumerate(notes))}
+    ],json_mode=True,max_tokens=1024,temperature=0.25,log_meta={'mode':'meeting_summary','entryPoint':'meeting_finalize','profile':p,'character':c})
+    summary=str(parse_json(merged,{}).get('summary') or '').strip()
+    if not summary:raise ValueError('整场见面梗概为空；保留原始见面记录')
+    return {'summary':summary}
+
 def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary=''):
     if ai_summary and len(str(ai_summary).strip())>=6:
-        return strip_protocol_tags(str(ai_summary),preserve_paragraphs=False)[:160]
+        return strip_protocol_tags(str(ai_summary),preserve_paragraphs=False)[:320]
     u_turns=[m for m in m_msgs if m['sender']=='user' and m.get('engine')!='recalled']
     a_turns=[m for m in m_msgs if m['sender']=='ai' and m.get('engine')!='recalled']
     if u_turns:
@@ -2589,6 +2639,27 @@ class Handler(BaseHTTPRequestHandler):
                         models=[x['id'] for x in data.get('data',[]) if isinstance(x,dict) and isinstance(x.get('id'),str)]
                         return self.respond({'models':models})
                     except urllib.error.HTTPError as e:raise ValueError('图片模型列表请求失败：HTTP '+str(e.code))
+                if route=='/api/meeting-summary-refresh':
+                    p=profile_get(db,data.get('profileId'))
+                    cid=str(data.get('characterId') or '')
+                    c=BY_ID.get(cid)
+                    if not c:raise ValueError('角色不存在')
+                    meeting_id=str(data.get('meetingId') or '')
+                    rec=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(meeting_id,p['id'],cid)).fetchone()
+                    if not rec:raise ValueError('未找到当前角色的见面记录')
+                    wanted=set(parse_json(rec['message_ids'],[]))
+                    all_rows=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' ORDER BY rowid",(p['id'],cid)).fetchall()
+                    m_msgs=[dict(row) for row in all_rows if row['id'] in wanted]
+                    if not m_msgs:raise ValueError('原始见面记录不可用，无法重新整理')
+                    original=[(m['id'],m['text']) for m in m_msgs]
+                    summary=summarize_complete_meeting(p,c,m_msgs,rec['location'] or '')
+                    after=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode=? ORDER BY rowid',(p['id'],cid,'meeting')).fetchall()
+                    latest=[dict(row) for row in after if row['id'] in wanted]
+                    if [(m['id'],m['text']) for m in latest]!=original:
+                        raise ValueError('整理期间原始见面记录变化，未覆盖旧梗概')
+                    updated=upsert_meeting_record(db,p,c,meeting_id,latest,rec['location'] or '',summary['summary'])
+                    db.commit()
+                    return self.respond({'ok':True,'meetingRecord':updated})
                 if route=='/api/task-state':
                     pid=arg('profileId').strip();cid=arg('characterId').strip();mode=arg('mode').strip() or 'chat'
                     return self.respond({'taskState':get_task_state(pid,cid,mode),'queue':queue_view(db,pid,cid) if (pid and cid) else None})
@@ -2831,14 +2902,8 @@ class Handler(BaseHTTPRequestHandler):
                                 ai_sum='';ai_loc=loc_input or m_state.get('meeting_location','')
                                 if data.get('finalizeMeeting') is True and public_connection()['mode']=='live':
                                     try:
-                                        transcript='\n'.join(f"{p['name'] if x['sender']=='user' else c['name']}：{x['text'][:180]}" for x in m_msgs[-10:])
-                                        sum_json=completion([
-                                            {'role':'system','content':f"请根据以下 {c['name']} 与 {p['name']} 的见面互动记录，提取见面地点与一句温暖简练的见面梗概（如：和{p['name']}在街角咖啡馆见面，聊了近况并度过了安静的傍晚）。只输出 JSON 对象：{{\"location\":\"地点（不超过12字）\",\"summary\":\"见面梗概（不超过65字）\"}}"},
-                                            {'role':'user','content':transcript}
-                                        ],json_mode=True,log_meta={'mode':'meeting_summary','entryPoint':'meeting_finalize','profile':p,'character':c})
-                                        parsed=parse_json(sum_json,{})
-                                        if parsed.get('location') and not loc_input:ai_loc=str(parsed['location']).strip()[:32]
-                                        if parsed.get('summary'):ai_sum=str(parsed['summary']).strip()[:150]
+                                        parsed=summarize_complete_meeting(p,c,m_msgs,ai_loc)
+                                        if parsed and parsed.get('summary'):ai_sum=str(parsed['summary']).strip()[:320]
                                     except Exception:pass
                                 meeting_record=upsert_meeting_record(db,p,c,mid,m_msgs,ai_loc,ai_sum)
                                 if meeting_record:
