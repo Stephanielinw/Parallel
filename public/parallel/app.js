@@ -2415,6 +2415,7 @@ function showApiErrorModal(apiError,taskState=null,retryContext=null){
   const statusBadge=err.http_status?`HTTP ${err.http_status} · ${err.error_code||'ERROR'}`:(err.error_code||'API_ERROR');
   const needsTerminal=Boolean(err.suggest_terminal||[400,401,403,404].includes(Number(err.http_status))||/CONFIG|KEY|AUTH|401|403|404|PROXY/i.test(String(err.error_code||'')));
   const retryAfterSec=Number(err.retry_after)||0;
+  const requiresUpstreamAuthFix=err.error_code==='UPSTREAM_OAUTH_REQUIRED';
   state.activeErrorContext={
     apiError:err,
     taskState:ts,
@@ -2458,6 +2459,7 @@ function showApiErrorModal(apiError,taskState=null,retryContext=null){
       ${I('clock','inline-doodle-ic')}
       <span>服务商建议等待时间（Retry-After）：建议等待约 <b>${retryAfterSec} 秒</b> 后再点击重试。</span>
     </div>`:''}
+    ${requiresUpstreamAuthFix?`<div class="api-error-hint-box is-token-warn"><span><b>不要继续重试：</b>这不是临时服务器繁忙，而是上游身份凭证类型错误。请先修复代理的 Google 渠道认证，或在终端改选可用的 API Key 模型渠道，再重新触发回复。</span></div>`:''}
     ${err.may_consume_tokens?`<div class="api-error-hint-box is-token-warn" data-testid="api-error-token-warn">
       ${I('info','inline-doodle-ic')}
       <span>注意：请求超时或网络中断时，上游服务商可能已处理该请求，手动重试可能产生额外 Token 消耗。</span>
@@ -2471,7 +2473,7 @@ function showApiErrorModal(apiError,taskState=null,retryContext=null){
       ${needsTerminal?`<button type="button" class="btn soft tiny-btn" data-action="api-error-go-terminal" data-testid="api-error-terminal-btn">${I('terminal')} 前往终端检查 API 配置</button>`:''}
     </div>
   </div>`;
-  const buttons=`<button type="button" class="btn soft" data-action="api-error-pause" data-testid="api-error-pause-btn">暂停调用</button><button type="button" class="btn primary" data-action="api-error-retry" data-testid="api-error-retry-btn" ${state.retryInflight?'disabled':''}>${I('refresh')} ${state.retryInflight?'正在重试…':'重试'}</button>`;
+  const buttons=`<button type="button" class="btn soft" data-action="api-error-pause" data-testid="api-error-pause-btn">暂停调用</button>${requiresUpstreamAuthFix?'':`<button type="button" class="btn primary" data-action="api-error-retry" data-testid="api-error-retry-btn" ${state.retryInflight?'disabled':''}>${I('refresh')} ${state.retryInflight?'正在重试…':'重试'}</button>`}`;
   modal(html,buttons);
 }
 async function pauseFailedApiTask(toastMsg='已暂停当前对话的模型调用；点击聊天页「点击恢复」可随时继续'){
