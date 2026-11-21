@@ -2266,7 +2266,7 @@ function renderSystemLogs(){
     </div>
     <div class="token-layout-toggle" role="group" aria-label="日志查看方式"><button type="button" class="btn ${state.logLayout!=='diagnostics'?'primary':'soft'}" data-action="log-layout" data-layout="usage">Token 用量</button><button type="button" class="btn ${state.logLayout==='diagnostics'?'primary':'soft'}" data-action="log-layout" data-layout="diagnostics">诊断详情</button></div>
     ${state.logLayout!=='diagnostics'?renderTokenUsagePanel(logs):''}
-    ${state.logLayout==='diagnostics'?(${logs.length===0?`<div class="notice">暂无生成日志。当你在「消息」或「面对面小说」中触发模型回复后，这里会记录完整的请求 Payload、生效预设与模型原始响应。</div>`:`<div class="syslog-list">${logs.map((log,idx)=>{
+    ${state.logLayout==='diagnostics'?(logs.length===0?`<div class="notice">暂无生成日志。当你在「消息」或「面对面小说」中触发模型回复后，这里会记录完整的请求 Payload、生效预设与模型原始响应。</div>`:`<div class="syslog-list">${logs.map((log,idx)=>{
       const isErr=Boolean(log.error);
       const isTrunc=Boolean(log.truncation_warning)||log.finish_reason==='length'||log.finish_reason==='max_tokens';
       const u=log.usage||{};
