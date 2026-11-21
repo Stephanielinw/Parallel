@@ -2071,7 +2071,7 @@
     for(let i=0;i<chunks.length;i++){
       const data=await llm([
         {role:'system',content:instruction+'这是第 '+(i+1)+'/'+chunks.length+' 段连续记录，仅总结本段确实发生的事件，保留重要转折。'},
-        {role:'user',content:'见面起点：'+location+'；整场消息总数：'+mMsgs.length+'。\n'+chunks[i]}
+        {role:'user',content:'记录地点（不一定是初见地点）：'+location+'；整场消息总数：'+mMsgs.length+'。\n'+chunks[i]}
       ],opts);
       const parsed=JSON.parse(data);
       const part=String(parsed?.summary||'').trim();
@@ -2081,7 +2081,7 @@
     if(partSummaries.length===1)return {summary:partSummaries[0]};
     const final=await llm([
       {role:'system',content:instruction+'以下是同一场见面按时间顺序整理的 '+partSummaries.length+' 段事实小结。合并为整场见面梗概，不得只概括最后一段，也不得增加分段摘要中没有的情节。'},
-      {role:'user',content:'见面时间：'+String(mMsgs[0].created_at||'')+' 至 '+String(mMsgs[mMsgs.length-1].created_at||'')+'；起点记录地点：'+location+'。\n'+partSummaries.map((x,i)=>'第'+(i+1)+'/'+partSummaries.length+'段：'+x).join('\n')}
+      {role:'user',content:'见面时间：'+String(mMsgs[0].created_at||'')+' 至 '+String(mMsgs[mMsgs.length-1].created_at||'')+'；记录地点（不一定是初见地点）：'+location+'。\n'+partSummaries.map((x,i)=>'第'+(i+1)+'/'+partSummaries.length+'段：'+x).join('\n')}
     ],opts);
     const parsed=JSON.parse(final);
     const summary=String(parsed?.summary||'').trim();
