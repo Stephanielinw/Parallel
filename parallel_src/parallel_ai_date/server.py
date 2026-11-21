@@ -175,6 +175,9 @@ def init_db():
             if name not in cols:db.execute('ALTER TABLE chat_queue ADD COLUMN '+name+' '+typ)
         message_cols={r['name'] for r in db.execute('PRAGMA table_info(messages)')}
         if 'meeting_id' not in message_cols:db.execute("ALTER TABLE messages ADD COLUMN meeting_id TEXT NOT NULL DEFAULT ''")
+        meeting_cols={r['name'] for r in db.execute('PRAGMA table_info(meetings)')}
+        if 'location_history' not in meeting_cols:
+            db.execute("ALTER TABLE meetings ADD COLUMN location_history TEXT NOT NULL DEFAULT '[]'")
         # A server restart cannot leave a real request in flight.
         for row in db.execute("SELECT * FROM chat_queue WHERE status='inflight'").fetchall():
             sources=parse_json(row['inflight_sources'],[]);pending=parse_json(row['pending'],[])
@@ -1416,10 +1419,14 @@ def ensure_live_surveillance(db,p,c,force=False,target_date=''):
     if public_connection()['mode']!='live':return rec
     rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
     if d_str==today and rel and rel['mode']=='meeting':return rec
-    if force and d_str==today and rec.get('post_meeting_anchor') and rec.get('post_meeting_id'):
-        mid=rec['post_meeting_id']
-        meeting=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone()
-        if meeting:return replan_remaining_day_after_meeting(db,p,c,dict(meeting),datetime.now().astimezone())
+    if d_str==today and rec.get('post_meeting_anchor') and rec.get('post_meeting_id'):
+        if force:
+            mid=rec['post_meeting_id']
+            meeting=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone()
+            if meeting:return replan_remaining_day_after_meeting(db,p,c,dict(meeting),datetime.now().astimezone())
+        # The day's remaining timeline was rebased at a confirmed meeting ending.
+        # Never replace it with a fresh speculative full-day itinerary.
+        return rec
     if rec.get('engine')=='live' and not force:return rec
     try:
         recent_rows=db.execute('SELECT sender,text,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 6',(p['id'],c['id'])).fetchall()
@@ -1443,7 +1450,7 @@ def ensure_live_surveillance(db,p,c,force=False,target_date=''):
                     'source':'schedule'
                 })
             if len(cleaned)>=5:
-                preserved=[s for s in rec.get('slots',[]) if s.get('source') in ('meeting','chat_update')]
+                preserved=[s for s in rec.get('slots',[]) if s.get('source') in ('meeting','chat_update','meeting_shift')]
                 rec['slots']=overlay_actual_slots(cleaned,preserved)
                 rec['engine']='live'
                 rec['updated_at']=utc()
@@ -1790,7 +1797,12 @@ def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary=''):
 def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
     if not m_msgs:return None
     existed=db.execute('SELECT * FROM meetings WHERE id=?',(meeting_id,)).fetchone()
-    loc=infer_meeting_location(db,p['id'],c['id'],custom_loc or (existed['location'] if existed else ''))
+    state=MEETING_STATE.get((p['id'],c['id']),{})
+    is_active=state.get('active_meeting_id')==meeting_id
+    stored_history=parse_json(existed['location_history'],[]) if existed else []
+    history=list(state.get('meeting_location_history') or []) if is_active else stored_history
+    loc=(history[-1].get('location') if history else '') or str(custom_loc or (existed['location'] if existed else '')).strip()
+    if not loc:loc=infer_meeting_location(db,p['id'],c['id'],'')
     started_at=(existed['started_at'] if existed else '') or m_msgs[0]['created_at'] or utc()
     ended_at=m_msgs[-1]['created_at'] or utc()
     time_str=str(started_at)[:16].replace('T',' ')
@@ -1798,13 +1810,14 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
     summary=build_meeting_summary_text(p,c,loc,m_msgs,ai_sum)
     entries=[{'id':m['id'],'sender':m['sender'],'speaker':p['name'] if m['sender']=='user' else c['name'],'text':str(m.get('text','')) if m['sender']=='user' else clean_meeting_novel_text(m['text']),'created_at':m['created_at']} for m in m_msgs]
     msg_ids=[m['id'] for m in m_msgs]
-    db.execute('''INSERT OR REPLACE INTO meetings (id,profile_id,character_id,location,time,started_at,ended_at,summary,ai_summary,message_ids,entries)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)''',(meeting_id,p['id'],c['id'],loc,time_str,started_at,ended_at,summary,ai_sum,js(msg_ids),js(entries)))
+    db.execute('''INSERT OR REPLACE INTO meetings (id,profile_id,character_id,location,time,started_at,ended_at,summary,ai_summary,message_ids,entries,location_history)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',(meeting_id,p['id'],c['id'],loc,time_str,started_at,ended_at,summary,ai_sum,js(msg_ids),js(entries),js(history)))
     rec={
         'id':meeting_id,
         'profile_id':p['id'],
         'character_id':c['id'],
         'location':loc,
+        'location_history':history,
         'time':time_str,
         'started_at':started_at,
         'ended_at':ended_at,
@@ -2157,6 +2170,7 @@ def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0):
             m_state=MEETING_STATE.get((pid,cid),{})
             if place and m_state.get('meeting_location')!=place:
                 m_state['meeting_location']=place
+                m_state.setdefault('meeting_location_history',[]).append({'at':item['created_at'],'location':place,'source':'scene'})
                 sync_surveillance_on_meeting_start(db,p,c,place,meeting_id)
     if sender=='ai' and mode=='chat' and engine in ('live','demo') and not _is_chat_artifact(item):reconcile_phone_activity(db,pid,cid,at)
     if at:
@@ -3062,7 +3076,9 @@ class Handler(BaseHTTPRequestHandler):
                     # Reject automatic transitions from cached legacy clients.
                     if 'autoArrivalId' in data:return self.respond({'mode':r['mode'],'autoRejected':True})
                     loc_input=str(data.get('location') or data.get('meetingLocation') or '').strip()[:40]
-                    if loc_input:
+                    if loc_input and r['mode']=='meeting' and m_state.get('active_meeting_id'):
+                        if m_state.get('meeting_location')!=loc_input:
+                            m_state.setdefault('meeting_location_history',[]).append({'at':utc(),'location':loc_input,'source':'manual'})
                         m_state['meeting_location']=loc_input
                     meeting_record=None;opening_reply=None;warning=''
                     if r['mode']!=mode:
@@ -3083,6 +3099,7 @@ class Handler(BaseHTTPRequestHandler):
                             m_state['started_after_rowid']=int(max_row or 0)
                             m_state['active_meeting_id']=resume_mid or ('meet_'+uid())
                             m_state['meeting_started_at']=(prior['started_at'] if prior else utc())
+                            stored_history=parse_json(prior['location_history'],[]) if prior else []
                             latest_scene=''
                             if resume_mid:
                                 history=db.execute("SELECT sender,text FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' AND meeting_id=? ORDER BY rowid DESC LIMIT 50",(p['id'],cid,resume_mid)).fetchall()
@@ -3090,7 +3107,14 @@ class Handler(BaseHTTPRequestHandler):
                                     if msg['sender']=='user':
                                         latest_scene=meeting_place_in_player_turn(msg['text'],p['name'])
                                         if latest_scene:break
-                            m_state['meeting_location']=loc_input or latest_scene or (prior['location'] if prior else inferred_location)
+                            saved_last=stored_history[-1].get('location') if stored_history else ''
+                            m_state['meeting_location']=loc_input or saved_last or latest_scene or (prior['location'] if prior else inferred_location)
+                            # Restore the archived meeting's own state, not the monitor's
+                            # current schedule or another meeting's last known location.
+                            original=stored_history[0].get('location') if stored_history else (prior['location'] if prior else inferred_location)
+                            m_state['meeting_location_history']=stored_history or [{'at':m_state['meeting_started_at'],'location':original,'source':'start'}]
+                            if resume_mid:
+                                m_state['meeting_location_history'].append({'at':utc(),'location':m_state['meeting_location'],'source':'resume'})
                             if prior:
                                 db.execute('UPDATE meetings SET ai_summary=? WHERE id=?',('',resume_mid))
                                 db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(cid,p['id'],'meeting:'+resume_mid))
