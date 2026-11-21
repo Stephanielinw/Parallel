@@ -1680,7 +1680,15 @@
     // appended alongside an incompatible generated schedule.
     const actualMeetingSlots=isToday&&current?.isMeetingLive?
       meetingSurveillanceSegments(p,c,selDate,Date.now()):[];
-    const visibleSlots=actualMeetingSlots.length?overlayActualSlots(rec.slots,actualMeetingSlots):rec.slots;
+    // Current live scene is authoritative. Never display an old tentative itinerary
+    // after the real meeting began as though that itinerary had already occurred.
+    const visibleSlots=actualMeetingSlots.length?(()=>{
+      const activeMid=relation(p.id,c.id)?.active_meeting_id||'';
+      const first=actualMeetingSlots[0].start,cut=hhmmToMin(first);
+      const before=rec.slots.filter(s=>s.meeting_id!==activeMid&&hhmmToMin(s.start)<cut)
+        .map(s=>hhmmToMin(s.end)>cut?{...s,end:first}:s);
+      return [...before,...actualMeetingSlots];
+    })():rec.slots;
     const unlocked=[];
     let lockedCount=0;
     for(const s of visibleSlots){
@@ -1943,7 +1951,7 @@
     const namedBedroom=/(?:正在|现在|已经|此刻|就|还|仍|已经).{0,24}(?:在|待在|回到|走进|进入|来到)我(?:家)?(?:的)?(?:卧室|房间)/;
     const home=/(?:正在|现在|已经|此刻|就|还|仍).{0,20}(?:在|到了|回到|走进|进入|来到)我(?:的)?家(?:里)?/;
     if(bedroom.test(t)||namedBedroom.test(t)||/\b(?:on my bed|in my bedroom)\b/i.test(t))return profileName+' 的卧室';
-    if(home.test(t)||/\b(?:at my place|in my home)\b/i.test(t))return profileName+' 的家';
+    if(home.test(t)||/(?:带|领|接|跟|陪).{0,12}(?:他|她|你|[A-Za-z]+)?.{0,8}(?:回|到)(?:了)?我(?:的)?家|(?:带|领|接|跟|陪).{0,12}(?:他|她|你|[A-Za-z]+)?.{0,8}回家了?|\b(?:at my place|in my home)\b/i.test(t))return profileName+' 的家';
     return '';
   }
   function recoverPreMeetingPlace(p,c,began){
@@ -1971,7 +1979,7 @@
       (!isNonPlaceText(r.meeting_location)?String(r.meeting_location).trim():
         (recoverPreMeetingPlace(p,c,began)||'约定的见面地点'));
     const events=[{at:new Date(began).toISOString(),location:startingLoc,source:'start'}];
-    const manual=prior.filter(x=>x.source==='manual'&&Number.isFinite(Date.parse(x.at))&&Date.parse(x.at)>=began&&!isNonPlaceText(x.location));
+    const manual=prior.filter(x=>['manual','resume'].includes(x.source)&&Number.isFinite(Date.parse(x.at))&&Date.parse(x.at)>=began&&!isNonPlaceText(x.location));
     const userTurns=messagesOf(p.id,c.id).filter(m=>m.sender==='user'&&m.mode==='meeting'&&
       (!r.active_meeting_id||!m.meeting_id||m.meeting_id===r.active_meeting_id)&&
       Number.isFinite(Date.parse(m.created_at))&&Date.parse(m.created_at)>=began);
@@ -1980,7 +1988,7 @@
       if(loc)events.push({at:m.created_at,location:loc,source:'scene'});
     }
     events.push(...manual);
-    const priority={start:0,scene:1,manual:2};
+    const priority={start:0,scene:1,resume:2,manual:3};
     events.sort((a,b)=>Date.parse(a.at)-Date.parse(b.at)||(priority[a.source]-priority[b.source]));
     const settled=[];
     for(const event of events){
@@ -4373,7 +4381,10 @@
               r.mode='meeting';
               r.active_meeting_id=resumeMid;
               r.meeting_started_at=prior.started_at||oldTurns[0].created_at;
-              r.meeting_location=locInput||prior.location||inferMeetingLocation(p.id,c.id,'');
+              const latestConfirmed=oldTurns.slice().reverse().filter(m=>m.sender==='user').map(m=>meetingPlaceInPlayerTurn(m.text,p.name)).find(Boolean)||'';
+              const priorHistory=Array.isArray(r.meeting_location_history)?r.meeting_location_history:[];
+              const recentPlace=priorHistory.slice().reverse().find(x=>['manual','scene'].includes(x.source)&&!isNonPlaceText(x.location))?.location||'';
+              r.meeting_location=locInput||latestConfirmed||recentPlace||prior.location||inferMeetingLocation(p.id,c.id,'');
               r.meeting_location_history ||= [];
               r.meeting_location_history.push({at:stamp(),location:r.meeting_location,source:'resume'});
               r.updated_at=stamp();
