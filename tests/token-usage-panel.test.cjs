@@ -19,6 +19,11 @@ assert.equal(requestTokenUsage(zero).total,null,'all zero proxy usage must not b
 assert.equal(requestTokenUsage(missing).total,null,'missing usage must remain unknown');
 assert.equal(requestTokenUsage(fallback).total,560);
 assert.equal(requestTokenUsage(fallback).source,'sum');
+
+const bogusTotal={...fallback,usage:{prompt_tokens:500,completion_tokens:60,total_tokens:0}};
+assert.equal(requestTokenUsage(bogusTotal).total,560,'zero total from proxy cannot override positive input/output');
+assert.equal(requestTokenUsage(bogusTotal).source,'sum');
+
 assert.equal(requestTokenUsage(partial).total,null,'partial counts cannot make up a total');
 assert.equal(requestTextLength(openai),5);
 assert.equal(requestTextLength(zero),null);
