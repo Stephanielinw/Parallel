@@ -1280,6 +1280,19 @@ def chat_clock_label(ts):
         return d.strftime('%Y-%m-%d %H:%M')
     except (TypeError,ValueError,OverflowError):return '时间未知'
 
+def chat_temporal_topic_hint(history,now=None):
+    """Distinguish talking about bedtime from actually reaching bedtime."""
+    d=(now or datetime.now().astimezone()).astimezone()
+    hour=d.hour
+    if hour<5 or hour>=18:return ''
+    recent=' '.join(str(m.get('text') or '') for m in (history or [])[-12:] if m.get('engine')!='recalled' and not m.get('recalled'))
+    if not re.search(r'今晚|今夜|晚上|夜里|晚安|梦里|做梦|梦见|梦到|睡觉|洗漱|钻被窝|上床|休息',recent):return ''
+    last_users=' '.join(str(m.get('text') or '') for m in (history or [])[-5:] if m.get('sender')=='user' and m.get('engine')!='recalled')
+    resting_now=bool(re.search(r'(?:我现在|现在就|这会儿|我先|我要|我准备|马上|立刻|刚好).{0,10}(?:睡觉|睡了|睡一觉|午睡|睡午觉|睡午觉了|睡午觉啦|休息|眯一会)|(?:我去睡了|我去睡觉|困得不行|要睡了)',last_users))
+    suffix=('对方最近可能明确提到当前要休息；可以尊重并自然回应，但不要把下午误写成夜晚。' if resting_now else
+            '对方没有明确表示此刻要睡：不要把话题当作睡前告别，不要直接催其现在洗漱、钻被窝或以“晚安”结束当前聊天。可以自然说“今晚再说”“晚上做个好梦”，但必须保持时间指向正确。')
+    return '\n【白天讨论夜晚·情境校准】最近的短信涉及晚上、梦境或睡眠话题，但现在仍是'+('上午' if hour<12 else '下午')+'。这些是谈论中的时间，不表示对方已经准备立刻睡觉或当前已经入夜。'+suffix
+
 def chat_clock_context(history,now=None):
     d=(now or datetime.now().astimezone()).astimezone()
     raw=d.strftime('%z');zone='UTC'+raw[:3]+':'+raw[3:]
@@ -1293,7 +1306,12 @@ def chat_clock_context(history,now=None):
             previous=f"最近一条用户消息实际发送于 {t.strftime('%Y-%m-%d %H:%M')}，距现在约 {minutes} 分钟。"
             break
         except (TypeError,ValueError,OverflowError):continue
-    return f"\n【本次手机回复的当前时间】{d.strftime('%Y-%m-%d %H:%M')}（{period}，{zone}，应用本地时钟）。{previous}较早的消息是历史，不代表现在仍处在当时的时段。请按此刻的时间自然回应，尤其注意跨日、早晚问候及作息；不要机械复述时间，也不要把现实日期改变为原作年份或输出时间前缀。"
+    return (f"\n【本次手机回复的当前时间 · 事实优先级最高】{d.strftime('%Y-%m-%d %H:%M')}（{period}，{zone}，应用本地时钟）。{previous}"
+            "现实时钟与用户最新的明确行动决定当前状态；历史聊天中的“今晚、晚安、睡觉、做梦”仅表示说话时的内容，不是现在已经入夜或正在睡觉的证据。"
+            "绝不因为当前话题在谈将来的晚上，就把现在改写成夜晚、催对方立即入睡或提前结束对话。"
+            "只有对方当前明确表示现在要睡/休息、或角色明说是提前祝福时，才在白天自然使用睡前告别。"
+            "发送前默默检查时间指向：讨论未来的夜晚与此刻的白天必须区分；不要机械报时，不要输出时间元数据，也不要把现实日期改变为原作年份。"
+            +chat_temporal_topic_hint(history,d))
 
 def sync_surveillance_from_chat(db,p,c,ai_text='',at=0):
     txt=str(ai_text or '').strip()
@@ -2489,7 +2507,9 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     surv_hint=f"\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「{cur_surv['location']}」·「{cur_surv['activity']}」。{wake_hint}实际互动优先于预设日程，不必主动汇报行踪或生硬解释日程。" if cur_surv else ''
     conn_cfg=load_connection()
     lang_hint='\n'+build_character_language_directive(conn_cfg.get('character_language_pref','natural'),conn_cfg.get('character_language_custom',''))
-    system+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+chat_clock_context(working_history,datetime.fromtimestamp(simulated_at/1000).astimezone() if simulated_at else None)+surv_hint+batch_hint+lang_hint
+    system+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+surv_hint+batch_hint+lang_hint
+    # Place temporal truth last among chat system rules; user/assistant messages stay unmodified.
+    system+='\n'+chat_clock_context(working_history,datetime.fromtimestamp(simulated_at/1000).astimezone() if simulated_at else None)
     messages=[{'role':'system','content':system}]
     for x in post_presets:
         messages.append({'role':x['role'],'content':macros(x['content'])})
