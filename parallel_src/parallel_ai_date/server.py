@@ -1284,7 +1284,7 @@ def chat_temporal_topic_hint(history,now=None):
     """Distinguish talking about bedtime from actually reaching bedtime."""
     d=(now or datetime.now().astimezone()).astimezone()
     hour=d.hour
-    if hour<5 or hour>=19:return ''
+    if hour<5 or hour>=18:return ''
     recent=' '.join(str(m.get('text') or '') for m in (history or [])[-12:] if m.get('engine')!='recalled' and not m.get('recalled'))
     if not re.search(r'今晚|今夜|晚上|夜里|晚安|梦里|做梦|梦见|梦到|睡觉|洗漱|钻被窝|上床|休息',recent):return ''
     last_users=' '.join(str(m.get('text') or '') for m in (history or [])[-5:] if m.get('sender')=='user' and m.get('engine')!='recalled')
