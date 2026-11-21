@@ -335,34 +335,68 @@ async function generateCardPortrait(regenerate=false,silent=false){
 let activeSwipeGesture=false;
 function attachSwipe(){
   const el=$('swipe-card');if(!el)return;
-  let startX=0,startY=0,dx=0,dragging=false,pointer=null,raf=0,captured=false,suppressClick=false;
+  let startX=0,startY=0,dx=0,dragging=false,pointer=null,touchId=null,raf=0,captured=false,suppressClick=false;
   const canSwipe=()=>!state.loading&&!discoverRequests.has(state.activeId)&&el.isConnected;
   const paint=()=>{raf=0;if(!el.isConnected)return;el.style.transform='translate3d('+dx+'px,0,0) rotate('+dx/24+'deg)';const like=el.querySelector('#stamp-like'),nope=el.querySelector('#stamp-nope');if(like)like.style.opacity=Math.min(1,Math.max(0,dx/100));if(nope)nope.style.opacity=Math.min(1,Math.max(0,-dx/100));};
-  const release=(commit=false)=>{
-    if(pointer===null)return;
-    const old=pointer,wasDragging=dragging;
-    pointer=null;dragging=false;activeSwipeGesture=false;el.classList.remove('dragging');
+  const finish=(commit=false)=>{
+    const wasDragging=dragging;
+    dragging=false;activeSwipeGesture=false;el.classList.remove('dragging');
     if(raf){cancelAnimationFrame(raf);raf=0;}
-    if(captured){try{if(el.hasPointerCapture(old))el.releasePointerCapture(old);}catch{}captured=false;}
     if(wasDragging)suppressClick=true;
     if(wasDragging&&commit&&Math.abs(dx)>75&&canSwipe())void doSwipe(dx>0?'right':'left');
     else{dx=0;paint();el.style.transform='';}
   };
-  el.addEventListener('pointerdown',e=>{if(!e.isPrimary||e.button!==0||!canSwipe())return;pointer=e.pointerId;startX=e.clientX;startY=e.clientY;dx=0;suppressClick=false;});
+  const releasePointer=(commit=false)=>{
+    if(pointer===null)return;
+    const old=pointer;pointer=null;
+    if(captured){captured=false;try{if(el.hasPointerCapture(old))el.releasePointerCapture(old);}catch{}}
+    finish(commit);
+  };
+  // Mouse/pen use pointer capture; iOS Safari touch can cancel pointer capture
+  // when a finger starts over the full-size photo button, snapping the card back.
+  // Touch events own finger gestures so the two event paths never compete.
+  el.addEventListener('pointerdown',e=>{if(e.pointerType==='touch'||!e.isPrimary||e.button!==0||!canSwipe())return;pointer=e.pointerId;startX=e.clientX;startY=e.clientY;dx=0;suppressClick=false;});
   el.addEventListener('pointermove',e=>{
     if(pointer===null||e.pointerId!==pointer)return;
     dx=e.clientX-startX;const dy=e.clientY-startY;
     if(!dragging){
-      if(Math.abs(dy)>14&&Math.abs(dy)>Math.abs(dx)){release(false);return;}
+      if(Math.abs(dy)>14&&Math.abs(dy)>Math.abs(dx)){releasePointer(false);return;}
       if(Math.abs(dx)<9||Math.abs(dx)<Math.abs(dy))return;
       dragging=true;activeSwipeGesture=true;el.classList.add('dragging');
       try{el.setPointerCapture(pointer);captured=true;}catch{}
     }
     if(!raf)raf=requestAnimationFrame(paint);
   });
-  el.addEventListener('pointerup',e=>{if(e.pointerId===pointer){dx=e.clientX-startX;release(true);}});
-  el.addEventListener('pointercancel',()=>release(false));el.addEventListener('lostpointercapture',()=>release(false));
-  el.addEventListener('pointerleave',()=>{if(!captured)release(false);});
+  el.addEventListener('pointerup',e=>{if(e.pointerId===pointer){dx=e.clientX-startX;releasePointer(true);}});
+  el.addEventListener('pointercancel',e=>{if(e.pointerId===pointer)releasePointer(false);});
+  el.addEventListener('lostpointercapture',e=>{if(e.pointerId===pointer)releasePointer(false);});
+  el.addEventListener('pointerleave',()=>{if(pointer!==null&&!captured)releasePointer(false);});
+  const findTouch=touches=>{for(let i=0;i<(touches?.length||0);i++)if(touches[i].identifier===touchId)return touches[i];return null;};
+  el.addEventListener('touchstart',e=>{
+    if(touchId!==null||pointer!==null||!canSwipe()||e.touches.length!==1)return;
+    const t=e.changedTouches[0];if(!t)return;
+    touchId=t.identifier;startX=t.clientX;startY=t.clientY;dx=0;dragging=false;suppressClick=false;
+  },{passive:true});
+  el.addEventListener('touchmove',e=>{
+    if(touchId===null)return;
+    const t=findTouch(e.touches);if(!t)return;
+    const mx=t.clientX-startX,dy=t.clientY-startY;
+    if(!dragging){
+      if(Math.abs(dy)>14&&Math.abs(dy)>Math.abs(mx)){touchId=null;return;}
+      if(Math.abs(mx)<9||Math.abs(mx)<Math.abs(dy))return;
+      dragging=true;activeSwipeGesture=true;el.classList.add('dragging');
+    }
+    dx=mx;
+    // Prevent native horizontal gestures without blocking deliberate page scroll.
+    if(e.cancelable)e.preventDefault();
+    if(!raf)raf=requestAnimationFrame(paint);
+  },{passive:false});
+  el.addEventListener('touchend',e=>{
+    if(touchId===null)return;
+    const t=findTouch(e.changedTouches);if(!t)return;
+    dx=t.clientX-startX;touchId=null;finish(true);
+  },{passive:true});
+  el.addEventListener('touchcancel',()=>{if(touchId!==null){touchId=null;finish(false);}},{passive:true});
   el.addEventListener('click',e=>{if(suppressClick){suppressClick=false;e.preventDefault();e.stopImmediatePropagation();}},true);
   activeSwipeGesture=false;
 }
