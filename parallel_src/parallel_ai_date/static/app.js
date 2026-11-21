@@ -2107,7 +2107,7 @@ function renderPresetRow(p,index,total,group){
     <div class="preset-text">
       <div class="preset-title-line"><strong><span class="preset-seq">#${index+1}</span> ${esc(getPresetDisplayName(p,group))}</strong></div>
       <div class="preset-row-tags"><span class="preset-role-tag role-${esc(p.role)}">${esc(p.role)}</span><span class="preset-state-tag ${p.enabled?'on':'off'}">${p.enabled?'启用中':'已禁用'}</span></div>
-      <small>${content.length} 字符 · ${esc(content.replace(/\\s+/g,' ').slice(0,75))}${content.length>75?'…':''}</small>
+      <small>${content.length} 字符 · ${esc(content.replace(/\s+/g,' ').slice(0,75))}${content.length>75?'…':''}</small>
     </div>
     <button type="button" class="icon-btn preset-edit-btn" title="编辑" aria-label="编辑 ${esc(p.name)}" data-action="edit-preset" data-id="${esc(p.id)}">${I('edit')}</button>
     <button type="button" class="toggle ${p.enabled?'on':''}" title="${p.enabled?'禁用':'启用'}" aria-label="${p.enabled?'禁用':'启用'} ${esc(p.name)}" aria-pressed="${p.enabled?'true':'false'}" data-action="toggle-preset" data-id="${esc(p.id)}"></button>
@@ -2297,7 +2297,7 @@ function editPresetModal(p){
     <p>仅适用于「${item.mode==='chat'?'手机聊天':'面对面小说'}」模式。编组仅用于整理，实际调用仍依条目顺序。</p>
     <form id="preset-edit-form">
       <div class="field"><label for="pe-name">条目名称</label><input id="pe-name" maxlength="100" value="${esc(item.name)}" required></div>
-      <div class="field"><label for="pe-group">所属编组（可选）</label><input id="pe-group" maxlength="70" list="pe-group-list" value="${esc(item.group||getPresetGroupName(item).replace('未分组',''))}" placeholder="例如：入园仪式"><datalist id="pe-group-list">${groups.map(g=>`<option value="${esc(g)}"></option>`).join('')}</datalist><small class="field-hint">使用已有编组名可放进同一组；留空显示为「未分组」。</small></div>
+      <div class="field"><label for="pe-group">所属编组（可选）</label><input id="pe-group" maxlength="70" list="pe-group-list" value="${esc(item.group||(getPresetGroupName(item)==='未分组'?'':getPresetGroupName(item)))}" placeholder="例如：入园仪式"><datalist id="pe-group-list">${groups.map(g=>`<option value="${esc(g)}"></option>`).join('')}</datalist><small class="field-hint">使用已有编组名可放进同一组；留空显示为「未分组」。</small></div>
       <div class="field"><label for="pe-role">Role</label><select id="pe-role">${['system','user','assistant'].map(r=>`<option ${item.role===r?'selected':''}>${r}</option>`).join('')}</select></div>
       <div class="field"><label for="pe-content">Prompt 内容</label><textarea id="pe-content" rows="9" style="min-height:170px">${esc(item.content)}</textarea></div>
       <label class="inline-row" style="font-size:12px;margin-top:12px"><input id="pe-enabled" type="checkbox" ${item.enabled?'checked':''}> 启用此条目</label>
