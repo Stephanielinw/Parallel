@@ -1984,7 +1984,7 @@ def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids
         if cutoff:
             # A recovered reply can have a later insertion rowid but an earlier conversation timestamp.
             where+=' AND (julianday(created_at)<julianday(?) OR (julianday(created_at)=julianday(?) AND rowid<=?))';args.extend([cutoff['created_at'],cutoff['created_at'],through_rowid])
-    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
+    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at,meeting_id FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
     excl=set(exclude_ids or [])
     chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m) and m['id'] not in excl]
     if mode=='meeting':
