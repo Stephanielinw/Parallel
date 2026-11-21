@@ -1596,7 +1596,7 @@
   // In particular, future-night talk must not automatically become a "go to bed now" reply.
   function chatTemporalTopicHint(history,now=Date.now()){
     const hour=new Date(now).getHours();
-    if(hour<5||hour>=19)return '';
+    if(hour<5||hour>=18)return '';
     const recent=(history||[]).slice(-12).filter(m=>m.engine!=='recalled'&&!m.recalled).map(m=>String(m.text??'')).join(' ');
     if(!/(?:今晚|今夜|晚上|夜里|晚安|梦里|做梦|梦见|梦到|睡觉|洗漱|钻被窝|上床|休息)/.test(recent))return '';
     const lastUsers=(history||[]).slice(-5).filter(m=>m.sender==='user'&&m.engine!=='recalled').map(m=>String(m.text??'')).join(' ');
