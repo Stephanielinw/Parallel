@@ -1916,6 +1916,9 @@ async function changeMode(){
     }
     return;
   }
+  // A location blur can trigger a save just before the end-meeting click.
+  // Serialize it so a late save cannot accidentally reopen a new meeting.
+  if(state.meetingLocationSyncPromise)await state.meetingLocationSyncPromise.catch(()=>{});
   const loc=$('meeting-location-input')?.value?.trim()||state.meetingLocation||'';
   state.chatBusy=true;
   try{
@@ -2774,13 +2777,16 @@ addEventListener('change',async e=>{
     if(!next){toast('见面地点不能为空');e.target.value=state.meetingLocation||'';return;}
     state.meetingLocation=next;
     const profileId=state.activeId,characterId=state.threadId;
+    const saving=api('/mode',{profileId,characterId,mode:'meeting',location:next});
+    state.meetingLocationSyncPromise=saving;
     try{
-      const updated=await api('/mode',{profileId,characterId,mode:'meeting',location:next});
+      const updated=await saving;
       if(isCurrentPair(profileId,characterId)){
         if(updated.surveillance)state.surveillanceMap[characterId]=updated.surveillance;
         toast('见面地点已同步到监控与后续剧情');
       }
     }catch(error){toast('地点同步失败：'+error.message);}
+    finally{if(state.meetingLocationSyncPromise===saving)state.meetingLocationSyncPromise=null;}
     return;
   }
   if(e.target.id==='surv-date-input'&&e.target.value)openSurveillanceModal(false,e.target.value);
