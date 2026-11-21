@@ -1153,8 +1153,8 @@ def get_current_surveillance_slot(db,p,c,at=0):
     if rel and rel['mode']=='meeting':
         loc=m_state.get('meeting_location') or '约定的街角咖啡馆'
         return {
-            'start':rec.get('live_override',{}).get('start') if isinstance(rec.get('live_override'),dict) else now_hhmm,
-            'end':min_to_hhmm(min(1439,now_m+90)),
+            'start':('00:00' if m_state.get('meeting_started_at') and chat_clock_label(m_state['meeting_started_at'])[:10]!=date else fmt_hhmm(m_state.get('meeting_started_at') or None)),
+            'end':now_hhmm,
             'location':loc,
             'status':f"正在与 {p['name']} 线下见面",
             'activity':f"与 {p['name']} 在「{loc}」面对面相处互动",
@@ -1171,62 +1171,137 @@ def get_current_surveillance_slot(db,p,c,at=0):
 
 def sync_surveillance_on_meeting_start(db,p,c,loc,meeting_id=''):
     rec=get_or_init_surveillance(db,p,c)
-    now_hhmm=fmt_hhmm()
-    now_m=hhmm_to_min(now_hhmm)
-    clean_loc=loc or '约定的街角咖啡馆'
-    rec['live_override']={
-        'start':now_hhmm,
-        'location':clean_loc,
-        'meeting_id':meeting_id or ''
-    }
-    slots=rec.get('slots') or []
-    idx=next((i for i,s in enumerate(slots) if hhmm_to_min(s['start'])<=now_m<=hhmm_to_min(s['end'])),-1)
-    if idx>=0:
-        slots[idx]=dict(slots[idx],
-            location=clean_loc,
-            status=f"与 {p['name']} 见面中",
-            activity=f"与 {p['name']} 在「{clean_loc}」面对面见面互动",
-            scene=f"{c['name']}已抵达「{clean_loc}」，正在与 {p['name']} 面对面相处。",
-            source='meeting'
-        )
-        if idx+1<len(slots):
-            nxt=slots[idx+1]
-            slots[idx+1]=dict(nxt,
-                activity=f"从「{clean_loc}」与 {p['name']} 分别后，{re.sub(r'^从「.*?」.*?(?:，|后)','',nxt['activity'])}",
-                scene=f"结束在「{clean_loc}」的见面后，{c['name']}一边回味刚才的对话一边继续接下来的安排。",
-                source='meeting_shift'
-            )
+    state=MEETING_STATE.get((p['id'],c['id']),{})
+    started=state.get('meeting_started_at') or utc()
+    rec['live_override']={'start':fmt_hhmm(started),'started_at':started,
+                          'location':loc or state.get('meeting_location') or '约定的见面地点',
+                          'meeting_id':meeting_id or state.get('active_meeting_id','')}
+    # Planned future activities are NOT actual events. Keep them as alternatives
+    # but do not write them into the observed timeline while the meeting is live.
     rec['updated_at']=utc()
 
 def sync_surveillance_on_meeting_end(db,p,c,meeting_rec):
     if not meeting_rec:return
-    rec=get_or_init_surveillance(db,p,c)
-    loc=meeting_rec.get('location') or '约定的街角咖啡馆'
-    start_hhmm=fmt_hhmm(meeting_rec.get('started_at')) or (rec.get('live_override') or {}).get('start') or fmt_hhmm()
-    end_hhmm=fmt_hhmm(meeting_rec.get('ended_at')) or fmt_hhmm()
-    now_m=hhmm_to_min(end_hhmm)
-    rec['live_override']=None
-    slots=rec.get('slots') or []
-    idx=next((i for i,s in enumerate(slots) if hhmm_to_min(s['start'])<=now_m<=hhmm_to_min(s['end'])),-1)
-    if idx>=0:
-        slots[idx]=dict(slots[idx],
-            location=loc,
-            status='线下见面足迹',
-            activity=f"与 {p['name']} 在「{loc}」见面（{start_hhmm}–{end_hhmm}）：{str(meeting_rec.get('summary') or '')[:80]}",
-            scene=f"在「{loc}」与 {p['name']} 度过了面对面的时光，刚刚结束见面准备离开。",
-            source='meeting',
-            meeting_id=meeting_rec.get('id','')
-        )
-        if idx+1<len(slots):
-            nxt=slots[idx+1]
-            cleaned_act=re.sub(r'^从「.*?」.*?(?:·|，|后)\s*','',nxt['activity'])
-            slots[idx+1]=dict(nxt,
-                status='见面后返程',
-                activity=f"从「{loc}」离开后 · {cleaned_act}",
-                scene=f"{c['name']}刚从「{loc}」离开，还在回想刚才和 {p['name']} 见面的细节。",
-                source='meeting_shift'
-            )
+    started=str(meeting_rec.get('started_at') or '')
+    ended=str(meeting_rec.get('ended_at') or utc())
+    try:
+        begin_dt=datetime.fromisoformat(started.replace('Z','+00:00')).astimezone()
+        finish_dt=datetime.fromisoformat(ended.replace('Z','+00:00')).astimezone()
+    except (ValueError,TypeError):return
+    if finish_dt<begin_dt:return
+    loc=str(meeting_rec.get('location') or '约定的见面地点')
+    date=begin_dt.date()
+    while date<=finish_dt.date():
+        date_str=date.isoformat()
+        rec=get_or_init_surveillance(db,p,c,date_str)
+        current_day=date==finish_dt.date()
+        start='00:00' if date>begin_dt.date() else begin_dt.strftime('%H:%M')
+        end=finish_dt.strftime('%H:%M') if current_day else '23:59'
+        if hhmm_to_min(end)>=hhmm_to_min(start):
+            observed={
+                'id':'slot_real_meeting_'+str(meeting_rec.get('id',''))+'_'+date_str,
+                'start':start,'end':end,'location':loc,'status':'线下见面足迹',
+                'activity':'与 '+p['name']+' 在「'+loc+'」实际见面',
+                'scene':str(meeting_rec.get('summary') or '已确认的线下见面经历')[:150],
+                'source':'meeting','meeting_id':meeting_rec.get('id','')
+            }
+            rec['slots']=overlay_actual_slots([x for x in rec['slots'] if not (x.get('meeting_id')==meeting_rec.get('id') and x.get('source')=='meeting')],[observed])
+        rec['live_override']=None
+        rec['updated_at']=utc()
+        date+=timedelta(days=1)
+    anchor_remaining_day_after_meeting(db,p,c,meeting_rec,finish_dt)
+
+def anchor_remaining_day_after_meeting(db,p,c,meeting_rec,from_dt=None):
+    if not meeting_rec:return None
+    try:
+        finish=(from_dt or datetime.fromisoformat(str(meeting_rec['ended_at']).replace('Z','+00:00'))).astimezone()
+    except (KeyError,ValueError,TypeError):return None
+    minute=finish.hour*60+finish.minute
+    if minute>=1439:return None
+    rec=get_or_init_surveillance(db,p,c,finish.strftime('%Y-%m-%d'))
+    loc=str(meeting_rec.get('location') or '约定的见面地点')
+    ident=str(meeting_rec.get('id') or '')
+    pending={'id':'slot_meeting_shift_'+ident+'_'+str(minute),'start':min_to_hhmm(minute),'end':'23:59',
+             'location':loc,'status':'见面后安排待定',
+             'activity':'刚结束见面，尚未确认离开当前地点',
+             'scene':c['name']+'刚结束与 '+p['name']+' 的见面，最后确认身处「'+loc+'」，后续尚未发生。',
+             'source':'meeting_shift','meeting_id':ident}
+    rec['slots']=overlay_actual_slots(rec['slots'],[pending])
+    rec['post_meeting_anchor']=str(meeting_rec.get('ended_at') or finish.isoformat())
+    rec['post_meeting_location']=loc
+    rec['post_meeting_id']=ident
     rec['updated_at']=utc()
+    return rec
+
+def replan_remaining_day_after_meeting(db,p,c,meeting_rec,from_dt=None):
+    if public_connection()['mode']!='live':return None
+    try:
+        original=datetime.fromisoformat(str(meeting_rec['ended_at']).replace('Z','+00:00')).astimezone()
+        anchor=max(original,(from_dt or original).astimezone())
+    except (ValueError,TypeError,KeyError):return None
+    if anchor.date()!=datetime.now().astimezone().date():return None
+    rec=anchor_remaining_day_after_meeting(db,p,c,meeting_rec,anchor)
+    if not rec:return None
+    minute=anchor.hour*60+anchor.minute
+    settle_end=min(1439,minute+15)
+    if settle_end>=1424:return rec
+    place=rec['post_meeting_location']
+    mid=rec['post_meeting_id']
+    anchor_stamp=rec['post_meeting_anchor']
+    plan_from=min_to_hhmm(settle_end)
+    try:
+        instruction=(
+            '你是个人日程规划器。今天先前的生活日程是可取消的计划，真实见面优先。'
+            '只规划今天余下尚未发生的时间；不能修改已经发生的见面与短信。'
+            '角色刚在「'+place+'」与 '+p['name']+' 结束见面，尚无证据已离开此处。'
+            '安排合理的告别、停留、交通和工作衔接，不能瞬移；角色必须符合其原作设定。'
+            '返回 2 至 4 个按时间排序的时段，首段不早于 '+plan_from+'，末段覆盖23:59。'
+            '仅输出 JSON：{"slots":[{"start":"HH:MM","end":"HH:MM","location":"地点",'
+            '"status":"状态","activity":"行为","scene":"第三人称画面"}]}。'
+        )
+        response=completion([
+            {'role':'system','content':instruction},
+            {'role':'user','content':'日期：'+anchor.strftime('%Y-%m-%d')+'；实际结束时间：'+anchor.strftime('%H:%M')+
+             '；最后确认地点：'+place+'；见面摘要：'+str(meeting_rec.get('summary') or '')[:260]+'。仅重排此后的时间。'}
+        ],json_mode=True,max_tokens=1200,temperature=0.35,log_meta={
+            'mode':'surveillance','entryPoint':'surveillance_after_meeting','profile':p,'character':c})
+        rows=parse_json(response,{}).get('slots') or []
+        if not isinstance(rows,list):return rec
+        state=MEETING_STATE.get((p['id'],c['id']),{})
+        rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
+        if (rel and rel['mode']=='meeting') or state.get('active_meeting_id') or rec.get('post_meeting_id')!=mid or rec.get('post_meeting_anchor')!=anchor_stamp:return rec
+        planned=[]
+        cursor=settle_end
+        for row in rows[:5]:
+            if not isinstance(row,dict):continue
+            end_str=str(row.get('end') or '')
+            if not re.fullmatch(r'\d{2}:\d{2}',end_str):continue
+            end=min(1439,hhmm_to_min(end_str))
+            if end<=cursor:continue
+            planned.append({
+                'id':'slot_replanned_'+mid+'_'+str(cursor),'start':min_to_hhmm(cursor),
+                'end':min_to_hhmm(end),'location':str(row.get('location') or place)[:28],
+                'status':str(row.get('status') or '调整后行程')[:14],
+                'activity':str(row.get('activity') or '重新安排日程')[:85],
+                'scene':str(row.get('scene') or '根据实际见面调整余下时间。')[:140],
+                'source':'meeting_shift','meeting_id':mid
+            })
+            cursor=end
+            if cursor>=1439:break
+        if planned:
+            planned[-1]['end']='23:59'
+            settle={'id':'slot_post_on_site_'+mid+'_'+str(minute),
+                    'start':min_to_hhmm(minute),'end':plan_from,'location':place,
+                    'status':'见面后整理','activity':'仍在最后确认的见面地点',
+                    'scene':c['name']+'仍在「'+place+'」处理现场事务，后续行程尚未开始。',
+                    'source':'meeting_shift','meeting_id':mid}
+            rec['slots']=overlay_actual_slots(rec['slots'],[settle]+planned)
+            rec['engine']='live'
+            rec['updated_at']=utc()
+    except Exception:
+        # Keep the safe stationary fallback, never reinstate an obsolete route.
+        pass
+    return rec
 
 def active_slot_index(slots,minute):
     return next((i for i in range(len(slots)-1,-1,-1) if hhmm_to_min(slots[i]['start'])<=minute<=hhmm_to_min(slots[i]['end'])),-1)
@@ -1339,6 +1414,12 @@ def ensure_live_surveillance(db,p,c,force=False,target_date=''):
     d_str=target_date if (target_date and re.match(r'^\d{4}-\d{2}-\d{2}$',str(target_date))) else today
     rec=get_or_init_surveillance(db,p,c,d_str)
     if public_connection()['mode']!='live':return rec
+    rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
+    if d_str==today and rel and rel['mode']=='meeting':return rec
+    if force and d_str==today and rec.get('post_meeting_anchor') and rec.get('post_meeting_id'):
+        mid=rec['post_meeting_id']
+        meeting=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone()
+        if meeting:return replan_remaining_day_after_meeting(db,p,c,dict(meeting),datetime.now().astimezone())
     if rec.get('engine')=='live' and not force:return rec
     try:
         recent_rows=db.execute('SELECT sender,text,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 6',(p['id'],c['id'])).fetchall()
@@ -1382,11 +1463,22 @@ def build_surveillance_payload(db,p,c,requested_date=''):
     current=get_current_surveillance_slot(db,p,c) if is_today else None
     unlocked=[]
     slots=rec.get('slots') or []
+    # A live meeting is actual reality; AI itinerary entries after its start
+    # are neither current nor already-occurred. Only actual scene + prior slots show.
+    if is_today and current and current.get('source')=='meeting':
+        m_state=MEETING_STATE.get((p['id'],c['id']),{})
+        cut=hhmm_to_min(current['start'])
+        prev=[]
+        for s in slots:
+            if s.get('meeting_id')==m_state.get('active_meeting_id') or hhmm_to_min(s['start'])>=cut:continue
+            prev.append(dict(s,end=current['start']) if hhmm_to_min(s['end'])>cut else s)
+        slots=prev+[dict(current,id='live_meeting_'+str(m_state.get('active_meeting_id','')),
+                         meeting_id=m_state.get('active_meeting_id',''))]
     for s in slots:
         start_m=hhmm_to_min(s['start'])
         end_m=hhmm_to_min(s['end'])
         if (not is_today) or start_m<=now_m:
-            is_cur=bool(is_today and start_m<=now_m<=end_m)
+            is_cur=bool(is_today and (s.get('source')=='meeting' and s.get('id','').startswith('live_meeting_') if current and current.get('source')=='meeting' else start_m<=now_m<=end_m))
             unlocked.append(dict(s,
                 isCurrent=is_cur,
                 state='current' if is_cur else 'past'
@@ -1600,6 +1692,18 @@ def current_plan_rows(db,pid,cid):
     cutoff=db.execute("SELECT MAX(created_at) FROM events WHERE profile_id=? AND character_id=? AND type IN ('matched','unmatched','return','meeting')",(pid,cid)).fetchone()[0] or ''
     rows=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='chat' AND created_at>=? ORDER BY rowid DESC LIMIT 41",(pid,cid,cutoff)).fetchall()
     return [m for m in reversed([dict(r) for r in rows]) if m['engine']!='recalled' and not _is_chat_artifact(m) and not is_legacy_error_artifact(m)]
+
+def meeting_place_in_player_turn(raw,profile_name):
+    """Only the player's affirmative on-site narrative can override a proposed venue."""
+    text=str(raw or '').strip()
+    if not text or re.match(r'^(?:假如|如果|要是|万一|明天|下次|以后)',text):return ''
+    if re.search(r'(?:赖|躺|睡|窝|待|坐|留|趴|靠|滚|倒).{0,16}我(?:家)?(?:的)?床(?:上|边)?|(?:在|回到|走进|进入)我(?:家)?(?:的)?(?:卧室|房间)',text):
+        return profile_name+' 的卧室'
+    if re.search(r'(?:正在|现在|已经|此刻|就|还|仍).{0,20}(?:在|到了|回到|走进|进入|来到)我(?:的)?家(?:里)?|(?:带|领|接|跟|陪).{0,20}(?:回|到)(?:了)?我(?:的)?家|(?:带|领|接|跟|陪).{0,20}回家了?',text):
+        return profile_name+' 的家'
+    if re.search(r'\b(?:on my bed|in my bedroom)\b',text,re.I):return profile_name+' 的卧室'
+    if re.search(r'\b(?:at my place|in my home)\b',text,re.I):return profile_name+' 的家'
+    return ''
 
 def infer_meeting_location(db,pid,cid,custom_loc=''):
     clean_custom=str(custom_loc or '').strip()
@@ -2046,6 +2150,14 @@ def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0):
     meeting_id=MEETING_STATE.get((pid,cid),{}).get('active_meeting_id','') if mode=='meeting' else ''
     item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc(),meeting_id=meeting_id)
     db.execute('INSERT INTO messages (id,profile_id,character_id,sender,mode,text,engine,created_at,meeting_id) VALUES (?,?,?,?,?,?,?,?,?)',tuple(item.values()))
+    if sender=='user' and mode=='meeting' and not at and meeting_id:
+        p=profile_get(db,pid);c=BY_ID.get(cid)
+        if c:
+            place=meeting_place_in_player_turn(clean_txt,p['name'])
+            m_state=MEETING_STATE.get((pid,cid),{})
+            if place and m_state.get('meeting_location')!=place:
+                m_state['meeting_location']=place
+                sync_surveillance_on_meeting_start(db,p,c,place,meeting_id)
     if sender=='ai' and mode=='chat' and engine in ('live','demo') and not _is_chat_artifact(item):reconcile_phone_activity(db,pid,cid,at)
     if at:
         date=datetime.fromtimestamp(at/1000).astimezone().strftime('%Y-%m-%d')
@@ -2971,10 +3083,21 @@ class Handler(BaseHTTPRequestHandler):
                             m_state['started_after_rowid']=int(max_row or 0)
                             m_state['active_meeting_id']=resume_mid or ('meet_'+uid())
                             m_state['meeting_started_at']=(prior['started_at'] if prior else utc())
-                            m_state['meeting_location']=loc_input or (prior['location'] if prior else inferred_location)
+                            latest_scene=''
+                            if resume_mid:
+                                history=db.execute("SELECT sender,text FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' AND meeting_id=? ORDER BY rowid DESC LIMIT 50",(p['id'],cid,resume_mid)).fetchall()
+                                for msg in history:
+                                    if msg['sender']=='user':
+                                        latest_scene=meeting_place_in_player_turn(msg['text'],p['name'])
+                                        if latest_scene:break
+                            m_state['meeting_location']=loc_input or latest_scene or (prior['location'] if prior else inferred_location)
                             if prior:
                                 db.execute('UPDATE meetings SET ai_summary=? WHERE id=?',('',resume_mid))
                                 db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(cid,p['id'],'meeting:'+resume_mid))
+                            if resume_mid:
+                                rec=get_or_init_surveillance(db,p,c)
+                                rec['slots']=[x for x in rec['slots'] if not (x.get('source')=='meeting_shift' and x.get('meeting_id')==resume_mid)]
+                                for key in ('post_meeting_anchor','post_meeting_location','post_meeting_id'):rec.pop(key,None)
                             sync_surveillance_on_meeting_start(db,p,c,m_state['meeting_location'],m_state['active_meeting_id'])
                             if not resume_mid:log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 在线下见面')
                             api_error=None
@@ -3014,12 +3137,18 @@ class Handler(BaseHTTPRequestHandler):
                                     except Exception:pass
                                 meeting_record=upsert_meeting_record(db,p,c,mid,m_msgs,ai_loc,ai_sum)
                                 if meeting_record:
+                                    # The meeting ends at the actual mode switch, not at the last typed message.
+                                    ended_actual=utc()
+                                    meeting_record['ended_at']=ended_actual
+                                    db.execute('UPDATE meetings SET ended_at=? WHERE id=?',(ended_actual,meeting_record['id']))
                                     sync_surveillance_on_meeting_end(db,p,c,meeting_record)
                             db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
                             m_state['active_meeting_id']=''
                             m_state.pop('meeting_started_at',None)
                             m_state.pop('started_after_rowid',None)
                             log_event(db,p['id'],cid,'return','与 '+p['name']+' 返回手机消息')
+                            if meeting_record:
+                                replan_remaining_day_after_meeting(db,p,c,meeting_record)
                     elif mode=='meeting':
                         if loc_input:
                             sync_surveillance_on_meeting_start(db,p,c,loc_input,m_state.get('active_meeting_id',''))
