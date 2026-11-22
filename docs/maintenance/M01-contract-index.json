@@ -1,0 +1,321 @@
+{
+  "version": "M01-2026-11-22",
+  "repository": "Stephanielinw/Parallel",
+  "baseline": "6131b21753895a3397c43944cdbb0cc8cb03eee5",
+  "authority": "public/parallel/offline.js",
+  "contractKind": "documented-current-behavior-and-open-gaps",
+  "warning": "A covered tag means a named checked-in regression test exists and is run by CI; it is not a proof of exhaustive real-device correctness.",
+  "contracts": [
+    {
+      "id": "C-01",
+      "area": "身份与隔离",
+      "title": "Profile × 角色 × 原作版本隔离",
+      "expected": "同一角色在不同 Profile、不同原作版本下分别维护聊天、记忆、任务和关系；未匹配者不能被当作已匹配关系。",
+      "forbidden": "任意跨 Profile 或跨角色版本的私人事件、回忆、排队回复和监控串线。",
+      "scenarios": [
+        "两个 Profile 先后与同一角色互动",
+        "同名角色不同版本交替打开"
+      ],
+      "tests": [
+        "tests/recent-meeting-chat-memory.test.cjs",
+        "tests/thread-typing-isolation.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-02",
+      "area": "发现",
+      "title": "发现卡组的进度稳定",
+      "expected": "退出重进继续从下一张卡显示；只有明确刷新才生成新批次；刷新失败不丢现有卡组。",
+      "forbidden": "每次打开自动刷新、跨 Profile 共享游标或刷新失败清空已生成的卡组。",
+      "scenarios": [
+        "刷四张后返回，从第五张继续",
+        "切换 Profile 后返回",
+        "请求失败时保留旧卡组"
+      ],
+      "tests": [
+        "tests/discover-session.test.cjs",
+        "tests/discover-resume.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-03",
+      "area": "聊天",
+      "title": "手机模式与回复队列",
+      "expected": "聊天保持手机气泡语境；队列按设定节奏回复；暂停、重启和后台恢复不重复发送，同一角色以真实发送时间和当前时钟为准。",
+      "forbidden": "将见面小说旁白作为短信、重复发送后台任务、在白天下意识进入晚安时间线。",
+      "scenarios": [
+        "后台退出后重进",
+        "暂停队列后重新打开",
+        "白天聊晚上的计划"
+      ],
+      "tests": [
+        "tests/chat-backlog-recovery.test.cjs",
+        "tests/phone-clock-sleep.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-04",
+      "area": "聊天",
+      "title": "气泡菜单、引用与重抽权限",
+      "expected": "点击对应气泡打开操作；引用保留对应消息 ID 与上下文；AI 最新手机回复按整轮重抽；撤回仅允许自己的消息，永久删除清理关联引用。",
+      "forbidden": "用户撤回 AI 的消息；重抽最新轮之外的 AI 气泡；删除后仍保留被删原文的悬挂引用。",
+      "scenarios": [
+        "引用 AI 气泡再发送",
+        "撤回对方消息被拒",
+        "删除被引用原消息",
+        "重抽最新多个 AI 气泡"
+      ],
+      "tests": [
+        "tests/chat-bubble-menu-quote.test.cjs",
+        "tests/meeting-reroll.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-05",
+      "area": "见面",
+      "title": "见面必须手动开始，开场不替玩家行动",
+      "expected": "见面仅由用户明确进入；第一条 AI 回复描述角色正在等待或做什么，玩家决定首次接触。",
+      "forbidden": "仅凭「我到了」自动切见面；AI 假设玩家已经出现、靠近、说话或接受邀约。",
+      "scenarios": [
+        "聊天中发送我到了",
+        "明确点击进入见面",
+        "重抽首次见面开场"
+      ],
+      "tests": [
+        "tests/scene-transition.test.cjs",
+        "tests/meeting-opening-agency.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-06",
+      "area": "见面",
+      "title": "归档、续接与单幕重抽",
+      "expected": "一场见面保留原始 meeting ID、开始时间、现场原文及地点轨迹；续接回到原卡片；重抽替换同一幕且失败保留旧回复。",
+      "forbidden": "续接生成第二张重复卡片、重抽导致起始时间重置、删除错误卡片时波及无关场次。",
+      "scenarios": [
+        "结束后续接旧见面",
+        "跨午夜重抽",
+        "生成失败后核对原文",
+        "永久删除某场错误见面"
+      ],
+      "tests": [
+        "tests/meeting-resume-forget.test.cjs",
+        "tests/meeting-reroll.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-07",
+      "area": "记忆",
+      "title": "见面后短信衔接真实时间线",
+      "expected": "已结束见面是短信即时上下文的分界线；总结失败时使用已保存现场末尾作为依据；旧短信仍保留在历史与按需回忆里。",
+      "forbidden": "把见面前敲门、赶路当作见面后当下正在发生；小结失败后伪造见面细节。",
+      "scenarios": [
+        "09:51 结束见面，12:50 再发短信",
+        "总结失败后的第一轮短信",
+        "有总结时正常衔接"
+      ],
+      "tests": [
+        "tests/post-meeting-chat-handoff.test.cjs",
+        "tests/recent-meeting-chat-memory.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-08",
+      "area": "记忆",
+      "title": "来源可追踪、阶段归档与删除失效",
+      "expected": "阶段摘要关联原始消息 ID；50 组见面问答创建检查点，按话题回查原文；源消息修改或删除会使相应记忆失效。",
+      "forbidden": "阶段摘要替代并删除原文；失效记忆继续作为已证实事实；把其他角色记录混入本角色。",
+      "scenarios": [
+        "跨过 50 组见面互动",
+        "询问很久前某细节",
+        "编辑或删除某条来源消息"
+      ],
+      "tests": [
+        "tests/meeting-checkpoints.test.cjs",
+        "tests/auto-episode-archive.test.cjs",
+        "tests/meeting-resume-forget.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-09",
+      "area": "监控",
+      "title": "真实见面地点高于推测日程",
+      "expected": "真实见面时间与现场地点变化覆盖此前推演日程，保留地点轨迹；仍在见面时不得生成互相矛盾的新全天行程。",
+      "forbidden": "使用旧日程假装角色已移动；把约定地点当作已确认玩家到场。",
+      "scenarios": [
+        "原计划去工作但实际在公寓见面",
+        "见面期间从露台进入卧室",
+        "见面中点击监控刷新"
+      ],
+      "tests": [
+        "tests/meeting-surveillance-authority.test.cjs",
+        "tests/live-meeting-scene-location.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-10",
+      "area": "监控",
+      "title": "结束见面后重排与失败恢复",
+      "expected": "结束见面后结合现场末尾及新短信重排余下日程；失败留错误诊断且限频重试；不明去向和推演应有明确标记。",
+      "forbidden": "09:51 结束后一直显示「刚结束」直到深夜；失败静默卡死；把推演当亲眼证实的地点。",
+      "scenarios": [
+        "重排模型返回损坏 JSON",
+        "过三小时再打开监控",
+        "新短信后冷却结束再重排"
+      ],
+      "tests": [
+        "tests/post-meeting-surveillance-replan.test.cjs",
+        "tests/meeting-surveillance-authority.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-11",
+      "area": "日记",
+      "title": "按已发生经历回顾，不倒填未来",
+      "expected": "日记按角色与日期隔离；不会无故重写已生成日记；过去已发生的短信与见面应优先于推演行程，角色有自己的生活。",
+      "forbidden": "把未发生的模型计划写成既定经历；跨 Profile 借用私密日记；无请求时反复付费改写日记。",
+      "scenarios": [
+        "跨午夜生成昨天日记",
+        "监控含推演但当天真实见面取消原计划",
+        "再次打开已写好的日记"
+      ],
+      "tests": [],
+      "status": "gap",
+      "plannedTests": [
+        "tests/m02-diary-evidence.test.cjs",
+        "tests/m02-lifecycle.test.cjs"
+      ],
+      "note": "现有实现读取监控 slots 和少量当日消息，尚无专门针对推演/已发生的日记回归门禁。"
+    },
+    {
+      "id": "C-12",
+      "area": "存档",
+      "title": "备份可逆与照片完整性",
+      "expected": "完整 JSON 导入后保留 Profile、短信、见面、记忆、日记、监控、预设与真实照片；恢复为覆盖操作且必须先保护当前记录。",
+      "forbidden": "把无效备份写入现有存档、缺图仍宣称完整恢复、将 API Key 或生成日志打包公开。",
+      "scenarios": [
+        "在隔离环境完整备份后恢复",
+        "恢复缺照片备份",
+        "恢复不存在的 schemaVersion"
+      ],
+      "tests": [
+        "tests/m00-backup-contract.test.cjs",
+        "tests/chat-photos.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-13",
+      "area": "存档",
+      "title": "空间不足的非破坏性恢复",
+      "expected": "localStorage 配额不足时，已有聊天仍可读取及导出；保存失败明确报错，旧存档字节保留；压缩往返不损失中文和 Emoji。",
+      "forbidden": "写入失败时默默宣称成功、清空旧历史以腾空间、因保存失败就无法打开旧对话。",
+      "scenarios": [
+        "大型旧存档自动无损压缩",
+        "写入配额被拒绝",
+        "只读导出长篇见面记录"
+      ],
+      "tests": [
+        "tests/browser-storage-quota-rescue.test.cjs",
+        "tests/m00-backup-contract.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-14",
+      "area": "时间",
+      "title": "真实时钟与原作时间线区分",
+      "expected": "现实日期用于应用调度，角色原作版本与身份不被现实年份改写；日程调整遵守事件时间先后；屏幕当前时间不被未来计划污染。",
+      "forbidden": "现实 2026 年直接改写角色原作年代、夜晚计划误判当前晚上、跨午夜见面时长计算错误。",
+      "scenarios": [
+        "下午谈今晚见面",
+        "跨午夜见面",
+        "模型回信跨日期"
+      ],
+      "tests": [
+        "tests/phone-clock-sleep.test.cjs",
+        "tests/meeting-reroll.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-15",
+      "area": "预设",
+      "title": "用户预设顺序与启用状态",
+      "expected": "聊天和见面预设保持对应模式、条目顺序、启停及编组；导入他处预设尽可能保留原语义。",
+      "forbidden": "覆盖或重新排序用户预设而不告知；把见面小说预设混成手机聊天。",
+      "scenarios": [
+        "导入分组 JSON",
+        "手机界面展开分组",
+        "首场见面检查预设顺序"
+      ],
+      "tests": [
+        "tests/preset-mobile-groups.test.cjs",
+        "tests/meeting-opening-agency.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-16",
+      "area": "运行安全",
+      "title": "任务隔离与模型错误不污染记录",
+      "expected": "每个 Profile/角色的任务状态独立；推理草稿不进入气泡；模型失败不覆盖上一条成功消息。",
+      "forbidden": "后台任务让别的角色显示输入中、模型思考泄漏为角色话语、失败覆盖旧消息。",
+      "scenarios": [
+        "快速切换多个角色",
+        "API 返回思考或无效输出",
+        "见面重抽失败"
+      ],
+      "tests": [
+        "tests/thread-typing-isolation.test.cjs",
+        "tests/chat-backlog-recovery.test.cjs",
+        "tests/meeting-reroll.test.cjs"
+      ],
+      "status": "covered"
+    },
+    {
+      "id": "C-17",
+      "area": "跨模块",
+      "title": "一次真实事件传播到全部派生视图",
+      "expected": "同一场见面从原文、归档、短信记忆、监控到次日日记保持时间与事实一致；失败子任务不会破坏主存档。",
+      "forbidden": "消息已归档但监控停滞、日记按旧计划书写、修复某一视图后其他视图倒退。",
+      "scenarios": [
+        "匹配→短信→见面→地点变更→结束→总结失败→短信→监控→跨日记→重启"
+      ],
+      "tests": [],
+      "status": "gap",
+      "plannedTests": [
+        "tests/m02-lifecycle.test.cjs"
+      ],
+      "note": "多个分段测试已覆盖部分链路；尚缺把完整流程贯通的单一端到端场景。"
+    },
+    {
+      "id": "C-18",
+      "area": "客户端",
+      "title": "真实 iPhone 浏览器操作与缓存一致性",
+      "expected": "刷新后加载配套脚本，旧数据继续可读；触摸菜单、输入框和导航不被缓存旧脚本破坏。",
+      "forbidden": "新业务引擎与旧 UI 脚本混用；仅 Node 测试通过就推定 iOS Safari 端到端正确。",
+      "scenarios": [
+        "iOS Safari/PWA 冷启动与恢复",
+        "部署升级后旧缓存",
+        "存档较大时进入会话"
+      ],
+      "tests": [],
+      "status": "gap",
+      "plannedTests": [
+        "e2e/m02-safari-smoke.spec.ts"
+      ],
+      "note": "目前只有源代码/模拟 DOM 测试；没有在 CI 中执行的 WebKit 真实浏览器 E2E。"
+    }
+  ]
+}
