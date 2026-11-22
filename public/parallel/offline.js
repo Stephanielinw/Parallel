@@ -3078,7 +3078,7 @@
     }
     return groups.slice(start).flat();
   }
-  const selectWorkingHistory=(pid,cid,mode='chat',excludeIds=null,protectedIds=[])=>{
+  const selectWorkingHistory=(pid,cid,mode='chat',excludeIds=null,protectedIds=[],at=Date.now())=>{
     const all=messagesOf(pid,cid).filter(m=>!isChatArtifact(m)&&!(excludeIds&&excludeIds.has(m.id)));
     if(mode==='meeting'){
       const r=relation(pid,cid),activeMid=r?.active_meeting_id||'';
@@ -3090,7 +3090,17 @@
       for(let i=all.length-1;i>=0&&all[i].mode==='meeting';i--)trailing.unshift(all[i]);
       return selectTurnWindow(trailing,mode,protectedIds);
     }
-    return selectTurnWindow(all.filter(m=>m.mode==='chat'),mode,protectedIds);
+    // A finished face-to-face meeting is a hard chronological boundary for SMS
+    // generation. Older SMS remain in the archive and episodic recall, but must
+    // never masquerade as the immediately preceding exchange after the meeting.
+    const lastFinished=(db.meetings||[]).reduce((end,m)=>{
+      if(m.profile_id!==pid||m.character_id!==cid)return end;
+      const time=Date.parse(m.finished_at||m.ended_at||'');
+      return Number.isFinite(time)&&time<=at?Math.max(end,time):end;
+    },0);
+    const protectedSet=new Set(protectedIds||[]);
+    const chats=all.filter(m=>m.mode==='chat'&&(!lastFinished||Date.parse(m.created_at)>lastFinished||protectedSet.has(m.id)));
+    return selectTurnWindow(chats,mode,protectedIds);
   };
   const selectPreMeetingChatContext=(pid,cid,limit=6)=>{
     const all=messagesOf(pid,cid);
@@ -3249,11 +3259,23 @@
     const meeting=candidates[0];
     const summary=String(meeting.ai_summary||meeting.summary||'').trim().slice(0,500);
     const overview='\n\n【过去真实见面的事实小结 · 默认记忆】\n'+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'，与 '+p.name+' 的这场见面：'+(summary||'见面原文已归档，小结等待重建。')+'\n这是已经发生的事情，原来的计划不代表已经完成；小结不足以证明的细节不能自行编造。只有确实需要具体细节时才查看引用的现场原文。';
-    if(!detail)return overview;
     const entries=(Array.isArray(meeting.entries)?meeting.entries:[]).filter(m=>
       ['user','ai'].includes(m?.sender)&&String(m.text||'').trim()&&
       !(m.sender==='user'&&/(?:心想|心里|内心独白|默念|梦见|如果|假如)/.test(String(m.text))));
-    if(!entries.length)return overview;
+    // The summary API can fail while the underlying meeting transcript survives.
+    // Always ground the SMS handoff in the last observed scene, even for a
+    // casual first message such as "今天好安静". Never resume old doorstep SMS.
+    const hasMissingDigest=!summary||/小结尚未生成成功|小结等待重建/.test(summary);
+    const finalTurns=entries.slice(hasMissingDigest?-8:-4).map(m=>{
+      const cleaned=String(m.text).replace(/\s+/g,' ').trim();
+      return '- '+(m.sender==='user'?p.name:c.name)+'：'+cleaned.slice(0,220);
+    }).join('\n');
+    const handoff='\n\n【线下见面结束 → 当前手机聊天 · 强制时间线分界】\n这场线下见面已经结束，当前互动是结束后的手机短信，不是重演见面前的短信。见面开始前有关开门、正在楼下、正在路上、即将抵达等话语均已成为过去的聊天历史；绝不能因为读到这些旧信息就再次等待开门、再次赶去赴约或把旧计划当作此刻进行中的行动。现场未明确证实的离开、回家、到达及后续行动也不能自行补写。只以见面中实际发生的事情和最新短信为依据。'+
+      (finalTurns?'\n【这场见面最后的真实交互（来自保存的现场原文，不是新短信）】\n'+finalTurns:'\n（目前未读取到现场末尾原文；不可假造结局。）')+
+      (hasMissingDigest?'\n整场 AI 小结尚未生成成功；以上现场末尾原文是可确认依据，缺失的中间情节保持未知，不得把见面前计划当成见面后的事实。':'');
+    const context=overview+handoff;
+    if(!detail)return context;
+    if(!entries.length)return context;
     const queryTerms=extractQueryTerms(query).filter(t=>t.length>=2);
     const important=/(?:本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见)/;
     const n=entries.length;
@@ -3291,8 +3313,8 @@
       if(used+line.length>3400)continue;
       used+=line.length;lines.push(line);
     }
-    if(!lines.length)return overview;
-    return overview+'\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'。\n'+
+    if(!lines.length)return context;
+    return context+'\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'。\n'+
       lines.join('\n')+'\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。见面发生的这段时间不能被描述成角色一整天都在巡逻、值班、开车或完成其他无记录的事务；未被证实的生活安排保持未知。私人内心不可当作角色亲眼所见；没有展示的情节保持不确定。';
   }
   // A generated slot can mix versions of a character. Do not promote that
@@ -3310,7 +3332,7 @@
     const macros=t=>expandPresetMacros(t,p,c);
     const excludeSet=options.excludeMessageIds?new Set(options.excludeMessageIds):null;
     const protectedIds=mode==='chat'?(pendingIds.length?pendingIds:(queueInfo(p.id,c.id).pendingIds||[])):(getTaskState(p.id,c.id,'meeting')?.pending_ids||[]);
-    const workingHistory=selectWorkingHistory(p.id,c.id,mode,excludeSet,protectedIds);
+    const workingHistory=selectWorkingHistory(p.id,c.id,mode,excludeSet,protectedIds,options.simulatedAt||Date.now());
     const isMeetingOpening=mode==='meeting'&&workingHistory.length===0;
     const workingIds=new Set(workingHistory.map(m=>m.id));
     ensureMeetingRecords(p,c);
