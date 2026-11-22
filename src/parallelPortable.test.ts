@@ -714,9 +714,11 @@ test('10. Character Diary (角色日记) auto-generates past-day diaries from su
   assert.ok(Array.isArray(diaryLatest.availableDates) && diaryLatest.availableDates.length >= 2, 'Provides selectable past diary dates');
   assert.notEqual(diaryLatest.intimacy.stage, 'deep_love', 'Initial stage is independent life focus');
   assert.ok(
-    Array.isArray(diaryLatest.diary.sourceLocations) && diaryLatest.diary.sourceLocations.length >= 2,
-    'Diary is grounded in previous day surveillance locations'
+    Array.isArray(diaryLatest.diary.sourceLocations) && diaryLatest.diary.sourceLocations.length === 0,
+    'C-11: schedule-only locations are NOT confirmed diary footprints'
   );
+  assert.match(diaryLatest.diary.content,/计划|推演|不能断定/,
+    'C-11: default diary must mark a synthetic itinerary as unverified');
   assert.ok(diaryLatest.diary.content.length >= 40, 'Diary contains multi-paragraph prose');
 
   // Selecting an earlier diary date or any calendar past date (e.g., 2026-11-01) returns that specific day's surveillance & diary

@@ -2035,68 +2035,71 @@
     }
     return {score,stage:'independent',label:'独立生活 · 自有天地',desc:'角色拥有独立完整的生活重心与日常，日记主要记录自身经历，不以你为生活核心'};
   };
+  // M02 C-11: the surveillance ledger is partly a schedule, not a camera.
+  // An AI-imagined itinerary (including legacy rows without an is_planned
+  // marker) must never become a factual diary entry merely because it is in
+  // the past. Only explicit face-to-face and chat-observed rows are evidence.
+  const isDiaryObservedSlot=slot=>
+    Boolean(slot)&&!slot.is_planned&&!slot.is_unconfirmed&&
+    (slot.source==='meeting'||slot.source==='chat_update');
+  const diarySourceEvidence=(p,c,dateStr,survRec)=>{
+    const all=Array.isArray(survRec?.slots)?survRec.slots:[];
+    const actual=all.filter(isDiaryObservedSlot);
+    const projected=all.filter(s=>s&&!isDiaryObservedSlot(s));
+    const meetingRecords=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&
+      m.started_at&&(localDateStr(m.started_at)===dateStr||localDateStr(m.ended_at||m.finished_at||m.started_at)===dateStr));
+    const messages=messagesOf(p.id,c.id).filter(m=>m.created_at&&localDateStr(m.created_at)===dateStr&&
+      m.engine!=='recalled'&&!m.recalled);
+    return {actual,projected,meetingRecords,messages};
+  };
+  const diaryRows=slots=>slots.map(s=>String(s.start||'')+'-'+String(s.end||'')+
+    ' 【'+String(s.location||'地点未知')+'】'+String(s.activity||'')+
+    '（'+String(s.scene||'')+'）').join('\n');
   const buildDefaultDiary=(p,c,dateStr,survRec)=>{
-    const slots=survRec?.slots||buildDefaultSurveillanceSlots(p,c,dateStr);
+    const evidence=diarySourceEvidence(p,c,dateStr,survRec);
+    const {actual,projected,meetingRecords:dayMeetings,messages:dayMsgs}=evidence;
     const intimacy=computeIntimacyInfo(p,c);
-    const dayMsgs=messagesOf(p.id,c.id).filter(m=>m.created_at&&localDateStr(m.created_at)===dateStr&&m.engine!=='recalled');
-    const dayMeetings=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&m.started_at&&localDateStr(m.started_at)===dateStr);
-    const slotMeet=slots.find(s=>s.source==='meeting');
-    const sMorning=slots[2]||slots[1]||slots[0];
-    const sAfternoon=slots[4]||slots[3]||slots[1];
-    const sEvening=slots[6]||slots[5]||slots[slots.length-1];
     let h=0;for(const ch of (c.id+dateStr))h=(Math.imul(31,h)+ch.charCodeAt(0))|0;
     const weathers=['晴朗微风','多云转晴','微凉阴天','夜风清朗','浅雾转晴'];
     const moods=intimacy.stage==='deep_love'?['心绪温柔','满怀牵挂','平静而笃定']:['专注沉稳','平静松弛','略感倦意但踏实','波澜不惊'];
-    const weather=weathers[(h>>>0)%weathers.length];
-    const mood=moods[((h>>>2)>>>0)%moods.length];
-
-    let title=`《${sMorning?.location?.split('·')[0]?.trim()||'日常勤务'}与${sEvening?.location?.split('·')[0]?.trim()||'夜色'}》`;
+    const weather=weathers[(h>>>0)%weathers.length],mood=moods[((h>>>2)>>>0)%moods.length];
+    let title='《'+dateStr+' · 日常记录》';
+    const first=actual[0],last=actual.at(-1);
     const paras=[];
-    // Paragraph 1: Always grounded in the character's morning & daytime surveillance life (their own world!)
-    paras.push(`上午在${sMorning?.location||'常去的地方'}处理完「${sMorning?.activity||'例行事务'}」，花了不少精力把积压的细节逐一核对清楚。作为${c.source.split('·')[0].trim()}世界里习惯了随时应对突发状况的人，这种按部就班的节奏反而让我觉得踏实。中午简单解决了午饭，没有多作停留。`);
-
-    // Paragraph 2: Afternoon & evening footprints from surveillance
-    paras.push(`下午去了${sAfternoon?.location||'城区'}继续「${sAfternoon?.activity||'手头的安排'}」，一直忙到傍晚才去${sEvening?.location||'河岸附近'}透了口气。晚风吹过来的时候，白天的紧绷感才算真正散去了一些。对我来说，能拥有这样一段不被打扰的独处时间已经足够难得。`);
-
-    // Paragraph 3: Proportional reflection depending on intimacy stage and whether they interacted on dateStr
-    if(intimacy.stage==='deep_love'){
-      if(dayMeetings.length||slotMeet){
-        const mLoc=dayMeetings[0]?.location||slotMeet?.location||'约定的地方';
-        title=`《在${mLoc}与${p.name}相见的这一天》`;
-        paras.push(`不过今天最让我反复回味的，还是在「${mLoc}」和 ${p.name} 见面的那段时光。以前我总觉得自己的生活只需要冷静与秩序就够了，可现在哪怕只是处理完日常事务走回住处的路上，脑海里也全都是 ${p.name} 说话时的神情。大概是真的栽在这段关系里了——只要想到明天还能听见这个人的声音，连原本枯燥的日常都变得让人期待起来。`);
-      }else{
-        title=`《忙完日常之后，格外想念${p.name}的夜晚》`;
-        paras.push(`回到住处整理好装备后，房间里安静下来，思绪却不受控制地飘向了 ${p.name}。明明白天在${sMorning?.location||'外勤'}和${sAfternoon?.location||'办事'}时还能保持一贯的冷静，可一到空闲下来的时候，满脑子都会想 ${p.name} 今天过得怎么样、有没有按时休息。原来不知不觉间，这个人已经成了我生活里最放不下的重心。`);
-      }
-    }else if(dayMeetings.length||slotMeet){
-      const mLoc=dayMeetings[0]?.location||slotMeet?.location||'街角咖啡馆';
-      paras.push(`值得一提的是，今天抽空在「${mLoc}」和 ${p.name} 见了一面。能在各自忙碌的生活间隙里坐下来面对面聊聊天，感觉还不坏。回去之后继续处理完了手头剩下的收尾工作，明天还有早起的正事，先记到这里。`);
-    }else if(dayMsgs.length>0){
-      const userSnippet=dayMsgs.filter(m=>m.sender==='user').slice(-1)[0]?.text?.slice(0,28)||'日常近况';
-      paras.push(`今天办事的间隙里，手机上收到了 ${p.name} 发来的消息，聊了几句关于「${userSnippet}」的话题。我的生活依然沿着原本的轨道运转，不过偶尔有这样一个能聊得来的朋友穿插在日常里，倒也不讨厌。夜深了，早点休息。`);
+    if(first){
+      paras.push('今天有明确记录的一段行踪是在「'+first.location+'」：'+first.activity+'。'+
+        (actual.length>1?'后来可确认的地点还包括「'+last.location+'」。':'其他时段并没有足够的现场记录。')+
+        '我宁愿只记下能确定的部分，也不替那些空白编造答案。');
     }else{
-      paras.push(`今天一整天都扑在自己的事情上，没有太多额外的社交。回到住处后把随身装备重新保养了一遍，翻了几页还没读完的旧书。明天上午在${sMorning?.location||'老地方'}还有安排，关灯睡觉。`);
+      paras.push('今天没有完整、可核对的现场行踪记录。即使日程表上安排得很满，也不能断定所有事情都照计划发生。工作与生活还有很多没有留下记录的细节。');
     }
-
-    const footprints=slots.filter(s=>hhmmToMin(s.start)>=420&&hhmmToMin(s.start)<=1300).slice(0,4).map(s=>`${s.start} ${s.location}（${s.activity}）`);
-    const sourceLocations=slots.filter(s=>hhmmToMin(s.start)>=420&&hhmmToMin(s.start)<=1300).slice(0,4).map(s=>s.location);
+    if(projected.length){
+      paras.push('原先的日程里还计划去「'+String(projected[0].location||'其他地方')+'」处理「'+String(projected[0].activity||'个人事务')+
+        '」。这只是计划或推演，我不知道最后是否成行。无论如何，明天还有自己的事情要安排。');
+    }else{
+      paras.push('今天留给自己的时间也很重要。工作、休息和生活都应按实际情况调整；没有记录的部分暂且不下结论。');
+    }
+    if(dayMeetings.length||actual.some(s=>s.source==='meeting')){
+      const mLoc=dayMeetings[0]?.location||actual.find(s=>s.source==='meeting')?.location||'约定的地方';
+      title='《在'+mLoc+'相见的一天》';
+      paras.push('今天确实在「'+mLoc+'」和 '+p.name+' 当面见过。这是有现场记录的一段经历，值得记住。至于分别之后各自去了哪里，若没有后续证据，就留待以后再说。');
+    }else if(dayMsgs.length){
+      const quote=dayMsgs.filter(m=>m.sender==='user').at(-1)?.text?.slice(0,28)||'近况';
+      paras.push('今天在手机上和 '+p.name+' 交流过，谈到了「'+quote+'」。聊天中说过的计划未必就已经兑现。其他时间也要留给自己的生活。');
+    }else{
+      paras.push(intimacy.stage==='deep_love'
+        ?'今天没有可确认的线下相处或短信互动，但安静下来时，我还是会想起 '+p.name+'。这份牵挂是真实的心绪，不代表今天已经见面或有过联系。自己的生活也仍要好好过下去。'
+        :'今天没有可确认的线下相处或短信互动。那些没被记录下来的日常不必强行写成已经发生的故事；先整理心绪，接着过自己的生活。');
+    }
     return {
-      id:`diary_${c.id}_${dateStr}`,
-      date:dateStr,
-      profile_id:p.id,
-      character_id:c.id,
-      title,
-      weather,
-      mood,
-      intimacy_stage:intimacy.stage,
-      intimacyStage:intimacy.stage,
-      intimacy_label:intimacy.label,
-      intimacy_score:intimacy.score,
+      id:'diary_'+c.id+'_'+dateStr,date:dateStr,profile_id:p.id,character_id:c.id,
+      title,weather,mood,
+      intimacy_stage:intimacy.stage,intimacyStage:intimacy.stage,
+      intimacy_label:intimacy.label,intimacy_score:intimacy.score,
       content:paras.join('\n\n'),
-      footprints,
-      sourceLocations,
-      engine:'demo',
-      created_at:stamp()
+      footprints:actual.slice(0,4).map(s=>s.start+' '+s.location+'（'+s.activity+'）'),
+      sourceLocations:actual.slice(0,4).map(s=>s.location),
+      engine:'demo',created_at:stamp()
     };
   };
   const ensureDiariesUpToDate=(p,c)=>{
@@ -2136,19 +2139,25 @@
     if(entry.engine==='live'&&!forceRefresh)return entry;
     try{
       const intimacy=computeIntimacyInfo(p,c);
-      const slotsTxt=(survRec.slots||[]).map(s=>`${s.start}-${s.end} 在【${s.location}】${s.activity}（${s.scene}）`).join('\n');
+      const evidence=diarySourceEvidence(p,c,dStr,survRec);
+      const slotsTxt=diaryRows(evidence.actual)||'未取得可确认的现场地点记录';
+      const planTxt=diaryRows(evidence.projected)||'无';
+      const meetingTxt=evidence.meetingRecords.map(m=>{
+        const turns=(m.entries||[]).filter(e=>e.sender==='user'||e.sender==='ai').slice(-4);
+        return '已发生的见面 '+String(m.started_at||'')+' 至 '+String(m.ended_at||m.finished_at||'')+'，最后确认地点：'+String(m.location||'未知')+'；末尾原文：'+turns.map(e=>(e.sender==='user'?p.name:c.name)+'：'+String(e.text||'').replace(/\s+/g,' ').slice(0,180)).join(' / ');
+      }).join('\n')||'没有确认的线下见面';
       const dayMsgs=messagesOf(p.id,c.id).filter(m=>m.created_at&&localDateStr(m.created_at)===dStr&&m.engine!=='recalled');
       const chatTxt=dayMsgs.length?dayMsgs.slice(-8).map(m=>`${m.sender==='user'?p.name:c.name}：${m.text.slice(0,80)}`).join('\n'):'当日无手机聊天';
       const sys=`你是 ${c.name}（来自《${c.source}》· ${c.version}，设定：${c.canon}）。现在是午夜 00:00 之后，请根据你【${dStr} 全天的监控行踪记录】写一篇你自己的第一人称私密日记。现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。
 核心铁律（必须严格遵守）：
-1. 日记主要来源于你这一天的监控行踪（必须自然写到你在监控中的具体地点、做的事、工作细节与个人思考）。
+1. 日记只把【确实发生的现场足迹】和【真实见面原文】当作已发生事实；【计划/AI 推演】只能用“原计划”“本想”“尚未确认”一类措辞提及，绝不能用“我去了”“我已经完成”等完成式陈述。即便日期已过去，推演也不会自动升级成事实。原始短信中对未来的约定也不等于已经兑现。已确认事实优先于推演。
 2. 记住：你有自己独立完整的生活、事业与世界，并不是以用户（${p.name}）为生活核心！
    - 当前你对 ${p.name} 的感情阶段为：${intimacy.label}（阶段代码：${intimacy.stage}，好感分：${intimacy.score}/100）。
    - 如果阶段不是 deep_love（深陷偏爱）：日记 80%–90% 必须写你自己的工作、日常经历与独处感想；如果当天和 ${p.name} 聊过天或见过面，只在日记中自然、克制地顺带提一两句；如果当天没有互动，就完全不提或仅一笔带过，绝不围着用户转！
    - 只有当阶段为 deep_love（爱到不行了）时，才会在记录日常之余流露出对 ${p.name} 浓烈的爱意与反复回味。
 3. 严禁使用任何 emoji 表情符号！文风必须符合 ${c.name} 的性格（第一人称“我”，分 3 个自然段，段与段之间用 \\n\\n 分隔）。
 4. 只输出 JSON 对象，格式为：{"title":"《...》","weather":"纯文字天气（如：夜风微凉）","mood":"纯文字心情（如：平静专注）","content":"第一人称日记正文（3段）"}`;
-      const out=await llm([{role:'system',content:sys},{role:'user',content:`【${dStr} 你的全天监控行踪】：\n${slotsTxt}\n\n【${dStr} 与 ${p.name} 的互动记录】：\n${chatTxt}\n\n请生成该日日记 JSON。`}],{json_mode:true,profile:p,character:c,mode:'diary',entry_point:'diary',background:!forceRefresh});
+      const out=await llm([{role:'system',content:sys},{role:'user',content:`【${dStr} 已确认的现场足迹（可以作为事实）】：\n${slotsTxt}\n\n【已发生的线下见面与末尾原文】：\n${meetingTxt}\n\n【${dStr} 计划与模型推演（未证实发生，禁止倒填为事实）】：\n${planTxt}\n\n【${dStr} 与 ${p.name} 的真实消息（消息中的主张或未来计划不自动成为客观事实）】：\n${chatTxt}\n\n请严格区分已发生事实与推测，生成该日日记 JSON。`}],{json_mode:true,profile:p,character:c,mode:'diary',entry_point:'diary',background:!forceRefresh});
       const parsed=JSON.parse(out);
       if(parsed&&parsed.content&&String(parsed.content).trim().length>=30){
         entry.title=String(parsed.title||entry.title).trim().slice(0,40);

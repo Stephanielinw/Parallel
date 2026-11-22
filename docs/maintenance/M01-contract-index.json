@@ -1,10 +1,10 @@
 {
-  "version": "M01-2026-11-22",
+  "version": "M02-2026-11-22",
   "repository": "Stephanielinw/Parallel",
   "baseline": "6131b21753895a3397c43944cdbb0cc8cb03eee5",
   "authority": "public/parallel/offline.js",
-  "contractKind": "documented-current-behavior-and-open-gaps",
-  "warning": "A covered tag means a named checked-in regression test exists and is run by CI; it is not a proof of exhaustive real-device correctness.",
+  "contractKind": "documented-behavior-regression-with-explicit-device-gap",
+  "warning": "covered = CI-backed synthetic behavior; partial = WebKit automation without real iOS/Safari hardware; neither proves a live user save is backed up.",
   "contracts": [
     {
       "id": "C-01",
@@ -189,13 +189,12 @@
         "监控含推演但当天真实见面取消原计划",
         "再次打开已写好的日记"
       ],
-      "tests": [],
-      "status": "gap",
-      "plannedTests": [
+      "tests": [
         "tests/m02-diary-evidence.test.cjs",
         "tests/m02-lifecycle.test.cjs"
       ],
-      "note": "现有实现读取监控 slots 和少量当日消息，尚无专门针对推演/已发生的日记回归门禁。"
+      "status": "covered",
+      "note": "Node 仿真检查真实见面 vs 推演日程及日记重开不重复生成；自然语言输出仍存在模型不可完全控制的风险。"
     },
     {
       "id": "C-12",
@@ -292,12 +291,11 @@
       "scenarios": [
         "匹配→短信→见面→地点变更→结束→总结失败→短信→监控→跨日记→重启"
       ],
-      "tests": [],
-      "status": "gap",
-      "plannedTests": [
+      "tests": [
         "tests/m02-lifecycle.test.cjs"
       ],
-      "note": "多个分段测试已覆盖部分链路；尚缺把完整流程贯通的单一端到端场景。"
+      "status": "covered",
+      "note": "贯通真实引擎的合成匹配、短信、见面、总结失败、监控、隔夜日记、重新加载及 Profile 隔离；非真实手机生产数据。"
     },
     {
       "id": "C-18",
@@ -310,12 +308,14 @@
         "部署升级后旧缓存",
         "存档较大时进入会话"
       ],
-      "tests": [],
-      "status": "gap",
-      "plannedTests": [
+      "tests": [
         "e2e/m02-safari-smoke.spec.ts"
       ],
-      "note": "目前只有源代码/模拟 DOM 测试；没有在 CI 中执行的 WebKit 真实浏览器 E2E。"
+      "status": "partial",
+      "plannedTests": [
+        "manual/ios-safari-pwa-acceptance (physical device)"
+      ],
+      "note": "Playwright WebKit 在 390×844 触屏模拟下运行构建后的站点，校验脚本加载、手机导航、Unicode 长记录及刷新；并不等于在物理 iPhone Safari/PWA 实测。"
     }
   ]
 }
