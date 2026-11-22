@@ -51,7 +51,9 @@ class RecentMeetingContinuityTest(unittest.TestCase):
         self.assertNotIn('DSO',text)
         self.assertEqual(server.recent_actual_meeting_context(self.db,self.p,
             {'id':'re-game:leon:re6','name':'Leon'},'今天怎么样',self.at),'')
-        self.assertEqual(server.recent_actual_meeting_context(self.db,self.p,self.c,'吃烧烤',self.at+4*86400000),'')
+        days_later=server.recent_actual_meeting_context(self.db,self.p,self.c,'吃烧烤',self.at+4*86400000)
+        self.assertIn('事实小结',days_later,'past encounters remain as summary memories after the previous 72-hour cutoff')
+        self.assertNotIn('现场原文 #',days_later)
 
     def test_expected_pickup_and_real_dropoff_are_not_future_plans(self):
         self.assertEqual(server.proposal_location('我来日落大道接你。'),'日落大道')
