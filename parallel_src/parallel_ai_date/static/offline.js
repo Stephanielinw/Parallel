@@ -2991,7 +2991,7 @@
         batchHint=`\n【连续消息提示】对方${recent?'刚刚连续发来了':'此前陆续发来了'}最后 ${bundledRows.length} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。`;
       }
     }
-    const survHint=curSurv?`\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「${curSurv.location}」·「${curSurv.activity}」。${isSleepingSlot(curSurv)?'原日程为睡眠，但你正在阅读并准备发送手机消息，应视作已暂时醒来；不要声称自己仍在熟睡。':''}实际互动优先于预设日程，不必主动汇报行踪或生硬解释日程。`:'';
+    const survHint=curSurv&&curSurv.source!=='unverified'?`\n【个人日程草案（不是已发生的事实）】可参考：「${curSurv.location}」·「${curSurv.activity}」。${isSleepingSlot(curSurv)?'原日程为睡眠，但你现在正在回复手机，应当是醒着的。':''}如果与真实见面原文或实际行动冲突，必须以亲历现场为准；不得把预定行程当作已经完成的生活经历。`:'';
     const langHint='\n'+buildCharacterLanguageDirective(db.connection?.character_language_pref||'natural',db.connection?.character_language_custom||'');
     sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint+langHint;
     sys+='\n【照片消息】可以在自然合适的时候自主发送虚拟照片，也可以回应对方索要照片。每张照片必须单独占一个气泡，格式严格为 [[PHOTO: 一段镜头内可见的照片描写]]，其中不能包含换行或 |||；普通短信仍按原有格式回复，最多四个气泡。不要把文字说明或分析当成照片，不需要每轮发图。对方照片描写或视觉输入仅作为对方实际发送的照片内容。';
