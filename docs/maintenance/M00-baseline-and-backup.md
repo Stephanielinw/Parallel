@@ -57,7 +57,7 @@ The baseline is a *known CI-and-deployment-good code snapshot*, not a claim that
 - [x] Identify exact deployed commit and successful Pages workflow.
 - [x] Create named code snapshot branch without changing the baseline.
 - [x] Document backup scope, limitations, failure modes and safe rollback.
-- [ ] Add and pass synthetic backup round-trip CI tests. *(Checked automatically in M00 PR.)*
+- [x] Add and pass synthetic backup round-trip CI tests. *(Verified in PR #30; rerun on every future PR.)*
 - [ ] User exports the actual iPhone complete backup and keeps a second private copy. *(Cannot be completed from GitHub.)*
 
 **No production data was read, exported, modified or migrated during M00.**
