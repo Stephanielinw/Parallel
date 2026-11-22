@@ -1298,11 +1298,14 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
     }
     const isToday=data.isToday!==false;
     const cur=data.current||{};
+    const liveUncertain=Boolean(cur.is_planned||cur.is_unconfirmed);
     const unlocked=data.unlockedSlots||[];
     const lockedCount=Number(data.lockedCount||0);
     const todayStr=data.today||localDateStr();
     const curDateVal=data.date||todayStr;
     const sourceBadge=s=>{
+      if(s.is_unconfirmed)return '去向待核实';
+      if(s.is_planned)return '日程推演';
       if(s.isCurrent)return '正在进行';
       if(s.source==='meeting')return '线下见面足迹';
       if(s.source==='meeting_shift')return '见面后行程';
@@ -1327,20 +1330,20 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
       ${data.bgError?`<div class="preset-diag-warn" style="margin-bottom:10px"><span>上次自动生成监控未成功（${esc(data.bgError.error_code)}：${esc(data.bgError.title)}），当前展示已保留的有效日程。</span></div>`:''}
       ${isToday?`<div class="surv-live-card">
         <div class="surv-live-head">
-          <span class="surv-live-badge"><i class="surv-live-dot"></i> 此刻实时画面 · ${esc(cur.status||'日常活动')}</span>
+          <span class="surv-live-badge"><i class="surv-live-dot"></i> ${cur.is_unconfirmed?'最后确认状态 · 当前去向待核实':(cur.is_planned?'此刻日程推演 · 尚未现场确认':'此刻实时画面')} · ${esc(cur.status||'日常活动')}</span>
           <span class="surv-live-time">${esc(cur.start||'00:00')}</span>
         </div>
         <div class="surv-live-loc">${I('map')}<span>${esc(cur.location||`${c.name}的常去地点`)}</span></div>
         <div class="surv-live-act">${esc(cur.activity||'正在处理日常事务')}</div>
         <div class="surv-live-scene">${esc(cur.scene||`${c.name}正在当下所在的位置处理日常事务。`)}</div>
         <div class="surv-live-actions">
-          <span class="caption">${state.chatMode==='meeting'?'地点变化后，请在面对面小说页面顶部的「见面地点」栏修改，监控会同步。':'如果在聊天中直接点「进入见面」，将默认前往该实时地点'}</span>
-          ${state.chatMode==='chat'?`<button type="button" class="btn primary tiny-btn" data-action="surv-enter-meeting" data-loc="${esc(cur.location||'')}">${I('map')} 前往此处与 TA 见面</button>`:`<span class="pill">当前正在线下见面中</span><button type="button" class="btn soft tiny-btn" data-action="surv-close-meeting">结束本次见面</button>`}
+          <span class="caption">${liveUncertain?'此处仅是推演地点或最后确认位置，并非已证实的当前地点；请先通过聊天确认见面地点。':(state.chatMode==='meeting'?'地点变化后，请在面对面小说页面顶部的「见面地点」栏修改，监控会同步。':'如果在聊天中直接点「进入见面」，将默认前往该实时地点')}</span>
+          ${state.chatMode==='chat'&&!liveUncertain?`<button type="button" class="btn primary tiny-btn" data-action="surv-enter-meeting" data-loc="${esc(cur.location||'')}">${I('map')} 前往此处与 TA 见面</button>`:`<span class="pill">当前正在线下见面中</span><button type="button" class="btn soft tiny-btn" data-action="surv-close-meeting">结束本次见面</button>`}
         </div>
       </div>`:''}
       <div class="surv-section-head">
-        <h3>${isToday?'今日已发生足迹（随时间自然解锁）':`${esc(curDateVal)} 全天经历回溯`}</h3>
-        <span class="caption">${unlocked.length} 条已发生记录</span>
+        <h3>${isToday?'今日足迹与日程推演（随时间自然解锁）':`${esc(curDateVal)} 行踪记录回溯`}</h3>
+        <span class="caption">${unlocked.length} 条足迹或推演</span>
       </div>
       <div class="surv-timeline">
         ${unlocked.map(s=>`<div class="surv-slot ${s.isCurrent?'is-current':''} ${s.source==='meeting'?'is-meeting':''}">
