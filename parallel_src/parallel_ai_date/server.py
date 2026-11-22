@@ -1713,6 +1713,12 @@ def meeting_place_in_player_turn(raw,profile_name):
         return profile_name+' 的家'
     if re.search(r'\b(?:on my bed|in my bedroom)\b',text,re.I):return profile_name+' 的卧室'
     if re.search(r'\b(?:at my place|in my home)\b',text,re.I):return profile_name+' 的家'
+    # Explicit player-witnessed drop-off, not the earlier plan to travel there.
+    if re.search(r'下车|下了车|停车|停下了车|送到了|已经到达|已经抵达',text) and not re.search(r'如果|假如|打算|准备|将要|计划|还没|没有|尚未|梦见|想象',text):
+        movement=re.search(r'(?:在|到了?|到达|抵达(?:了)?|送(?:我|你)?到(?:了)?|送到(?:了)?|停车在)\s*([^，。！？；、\n]{2,32}?)(?:下(?:了)?车|停(?:了)?车|，|。|！|$)',text)
+        if movement:
+            place=clean_scene_place(movement.group(1))
+            if place and not re.fullmatch(r'我|你|他|她|这里|那里|这儿|那儿|家|路边|车里',place) and not re.search(r'[我你他她]',place):return place
     return ''
 
 def infer_meeting_location(db,pid,cid,custom_loc=''):
