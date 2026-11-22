@@ -1811,16 +1811,22 @@ def meeting_summary_chunks(m_msgs,p,c):
     if chunk:chunks.append(chunk)
     return chunks
 
-def summarize_complete_meeting(p,c,m_msgs,location):
+def summarize_complete_meeting(p,c,m_msgs,location,db=None):
     if not m_msgs:return None
-    chunks=meeting_summary_chunks(m_msgs,p,c)
+    mid=m_msgs[0].get('meeting_id') or ''
+    groups=completed_meeting_groups(db,p['id'],c['id'],mid) if db is not None and mid else []
+    expected=len(groups)//MEETING_CHECKPOINT_INTERVAL
+    checkpoints=valid_meeting_checkpoints(db,p['id'],c['id'],mid,groups) if expected else []
+    reuse=bool(expected and len(checkpoints)==expected)
+    trailing=[m for g in groups[expected*MEETING_CHECKPOINT_INTERVAL:] for m in g] if reuse else m_msgs
+    chunks=meeting_summary_chunks(trailing,p,c)
     instruction=(
         '你是见面记录的事实归档员。只能总结提供的实际对话，不得补写未出现的事件、亲吻、去过的地点、'
         '感情承诺或人物心理。严格按时间顺序，保留开场、中段、结尾的关键事件；优先记录已发生的行动与对话，'
         '忽略描写性赘述。若记录跨越午夜，必须体现前一晚和第二天。'
         '只输出 JSON 对象：{"summary":"120至240字的中文纪实梗概"}。'
     )
-    notes=[]
+    notes=([f"第{(cp['block_index']-1)*50+1}–{cp['block_index']*50}组（{cp['started_at']}至{cp['ended_at']}）：{cp['summary']}；具体事件：{'；'.join(cp['details'])}；关键对话：{'；'.join(q['speaker']+'「'+q['quote']+'」' for q in cp['key_dialogues'])}" for cp in checkpoints] if reuse else [])
     for idx,chunk in enumerate(chunks):
         msg=completion([
             {'role':'system','content':instruction+f'这是第 {idx+1}/{len(chunks)} 段连续记录，仅总结本段确实发生的事件，保留重要转折。'},
@@ -1829,7 +1835,7 @@ def summarize_complete_meeting(p,c,m_msgs,location):
         part=str(parse_json(msg,{}).get('summary') or '').strip()
         if not part:raise ValueError('见面分段摘要为空；保留原始见面记录')
         notes.append(part)
-    if len(notes)==1:return {'summary':notes[0]}
+    if len(notes)==1:return {'summary':checkpoints[0]['summary'] if reuse else notes[0]}
     merged=completion([
         {'role':'system','content':instruction+f'以下是同一场见面按时间顺序整理的 {len(notes)} 段事实小结。合并为整场见面梗概，不得只概括最后一段，也不得增加分段摘要中没有的情节。'},
         {'role':'user','content':f"见面时间：{m_msgs[0].get('created_at','')} 至 {m_msgs[-1].get('created_at','')}；记录地点（不一定是初见地点）：{location}。\n"+'\n'.join(f'第{i+1}/{len(notes)}段：{note}' for i,note in enumerate(notes))}
@@ -3479,7 +3485,7 @@ class Handler(BaseHTTPRequestHandler):
                                 ai_sum='';ai_loc=loc_input or m_state.get('meeting_location','')
                                 if data.get('finalizeMeeting') is True and public_connection()['mode']=='live':
                                     try:
-                                        parsed=summarize_complete_meeting(p,c,m_msgs,ai_loc)
+                                        parsed=summarize_complete_meeting(p,c,m_msgs,ai_loc,db=db)
                                         if parsed and parsed.get('summary'):ai_sum=str(parsed['summary']).strip()[:320]
                                     except Exception:pass
                                 meeting_record=upsert_meeting_record(db,p,c,mid,m_msgs,ai_loc,ai_sum)
