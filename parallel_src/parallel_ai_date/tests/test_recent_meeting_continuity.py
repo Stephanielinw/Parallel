@@ -44,7 +44,9 @@ class RecentMeetingContinuityTest(unittest.TestCase):
         self.assertIn('电影并没有看',text)
         self.assertIn('亲密相处',text)
         self.assertIn('相拥睡了两个小时',text)
-        self.assertIn('相拥睡了两个小时',server.recent_actual_meeting_context(self.db,self.p,self.c,'洗香香',self.at))
+        generic=server.recent_actual_meeting_context(self.db,self.p,self.c,'洗香香',self.at)
+        self.assertIn('事实小结',generic)
+        self.assertNotIn('现场原文 #',generic)
         self.assertIn('日落大道下车',text)
         self.assertNotIn('DSO',text)
         self.assertEqual(server.recent_actual_meeting_context(self.db,self.p,
