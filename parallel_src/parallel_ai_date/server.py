@@ -1208,6 +1208,55 @@ def sync_surveillance_on_meeting_start(db,p,c,loc,meeting_id=''):
     for key in ('post_meeting_anchor','post_meeting_location','post_meeting_id'):rec.pop(key,None)
     rec['updated_at']=utc()
 
+
+def observed_meeting_segments(p,c,meeting_rec,date_str,live=False):
+    """Day-scoped observed scene path; never render a speculative schedule as
+    an actual move. A cross-midnight encounter creates segments on both days."""
+    mid=str(meeting_rec.get('id') or '')
+    history=meeting_rec.get('location_history') or []
+    if isinstance(history,str):history=parse_json(history,[])
+    try:
+        begin=datetime.fromisoformat(str(meeting_rec['started_at']).replace('Z','+00:00')).astimezone()
+        finish=datetime.fromisoformat(str(meeting_rec['ended_at']).replace('Z','+00:00')).astimezone()
+        day=datetime.fromisoformat(date_str).astimezone()
+        start_day=day.replace(hour=0,minute=0,second=0,microsecond=0)
+        end_day=start_day+timedelta(days=1)
+    except (ValueError,TypeError,KeyError):return []
+    if finish<begin or finish<start_day or begin>=end_day:return []
+    events=[dict(at=meeting_rec['started_at'],location=history[0].get('location') if history else meeting_rec.get('location','约定的见面地点'),source='start')]
+    events.extend(dict(x) for x in history if x.get('location') and x.get('at'))
+    validated=[]
+    for event in events:
+        try:at=datetime.fromisoformat(str(event['at']).replace('Z','+00:00')).astimezone()
+        except (ValueError,TypeError):continue
+        if at<begin:at=begin
+        if at>finish:continue
+        validated.append((at,str(event['location'])))
+    if not validated:return []
+    validated.sort(key=lambda x:x[0])
+    condensed=[]
+    for at,loc in validated:
+        if condensed and condensed[-1][1]==loc:continue
+        condensed.append((at,loc))
+    segments=[]
+    for i,(at,loc) in enumerate(condensed):
+        until=condensed[i+1][0] if i+1<len(condensed) else finish
+        lo=max(begin,at,start_day)
+        hi=min(finish,until,end_day-timedelta(seconds=1))
+        if hi<lo:continue
+        start_s=lo.strftime('%H:%M')
+        end_s=hi.strftime('%H:%M')
+        if start_s==end_s and i<len(condensed)-1:continue
+        segments.append({
+            'id':'slot_real_meeting_'+mid+'_'+str(i)+'_'+date_str,
+            'start':start_s,'end':end_s,'location':loc,'status':'线下见面足迹',
+            'activity':'与 '+p['name']+' 在「'+loc+'」实际见面',
+            'scene':str(meeting_rec.get('summary') or c['name']+'在此处的已确认现场行动')[:150],
+            'source':'meeting','meeting_id':mid
+        })
+    if live and segments:segments[-1]['id']='live_meeting_'+mid
+    return segments
+
 def sync_surveillance_on_meeting_end(db,p,c,meeting_rec):
     if not meeting_rec:return
     started=str(meeting_rec.get('started_at') or '')
@@ -1223,17 +1272,9 @@ def sync_surveillance_on_meeting_end(db,p,c,meeting_rec):
         date_str=date.isoformat()
         rec=get_or_init_surveillance(db,p,c,date_str)
         current_day=date==finish_dt.date()
-        start='00:00' if date>begin_dt.date() else begin_dt.strftime('%H:%M')
-        end=finish_dt.strftime('%H:%M') if current_day else '23:59'
-        if hhmm_to_min(end)>=hhmm_to_min(start):
-            observed={
-                'id':'slot_real_meeting_'+str(meeting_rec.get('id',''))+'_'+date_str,
-                'start':start,'end':end,'location':loc,'status':'线下见面足迹',
-                'activity':'与 '+p['name']+' 在「'+loc+'」实际见面',
-                'scene':str(meeting_rec.get('summary') or '已确认的线下见面经历')[:150],
-                'source':'meeting','meeting_id':meeting_rec.get('id','')
-            }
-            rec['slots']=overlay_actual_slots([x for x in rec['slots'] if not (x.get('meeting_id')==meeting_rec.get('id') and x.get('source')=='meeting')],[observed])
+        actual=observed_meeting_segments(p,c,meeting_rec,date_str)
+        if actual:
+            rec['slots']=overlay_actual_slots([x for x in rec['slots'] if not (x.get('meeting_id')==meeting_rec.get('id') and x.get('source')=='meeting')],actual)
         rec['live_override']=None
         rec['updated_at']=utc()
         date+=timedelta(days=1)
@@ -1522,17 +1563,24 @@ def build_surveillance_payload(db,p,c,requested_date=''):
     current=get_current_surveillance_slot(db,p,c) if is_today else None
     unlocked=[]
     slots=rec.get('slots') or []
-    # A live meeting is actual reality; AI itinerary entries after its start
-    # are neither current nor already-occurred. Only actual scene + prior slots show.
+    # Once live, preserve every witnessed location transition as a separate
+    # time-scoped monitor entry, while hiding the abandoned daily itinerary.
     if is_today and current and current.get('source')=='meeting':
         m_state=MEETING_STATE.get((p['id'],c['id']),{})
-        cut=hhmm_to_min(current['start'])
+        history=refresh_meeting_scene_history(db,p,c)
+        mid=m_state.get('active_meeting_id','')
+        observed=observed_meeting_segments(p,c,{
+            'id':mid,'started_at':m_state.get('meeting_started_at') or utc(),
+            'ended_at':utc(),'location':current['location'],
+            'location_history':history
+        },sel_date,live=True)
+        if not observed:observed=[dict(current,id='live_meeting_'+str(mid),meeting_id=mid)]
+        cut=hhmm_to_min(observed[0]['start'])
         prev=[]
         for s in slots:
-            if s.get('meeting_id')==m_state.get('active_meeting_id') or hhmm_to_min(s['start'])>=cut:continue
-            prev.append(dict(s,end=current['start']) if hhmm_to_min(s['end'])>cut else s)
-        slots=prev+[dict(current,id='live_meeting_'+str(m_state.get('active_meeting_id','')),
-                         meeting_id=m_state.get('active_meeting_id',''))]
+            if s.get('meeting_id')==mid or hhmm_to_min(s['start'])>=cut:continue
+            prev.append(dict(s,end=observed[0]['start']) if hhmm_to_min(s['end'])>cut else s)
+        slots=prev+observed
     for stored_slot in slots:
         s=verified_surveillance_slot(c,stored_slot)
         start_m=hhmm_to_min(s['start'])
