@@ -2307,6 +2307,7 @@
     }
     db.episodicMemories=(db.episodicMemories||[]).filter(mem=>!oldMemIds.has(mem.id)&&!(mem.owner_id===c.id&&mem.profile_id===p.id&&oldMemIds.has(mem.clarifies_id)));
     db.messages=db.messages.filter(m=>!(m.profile_id===p.id&&m.character_id===c.id&&ids.has(m.id)));
+    for(const msg of db.messages)if(msg.profile_id===p.id&&msg.character_id===c.id&&ids.has(msg.quote?.id))msg.quote=null;
     for(const id of ids)invalidateTranslation(id);
     const oldEventIds=new Set(removed.map(m=>m.id));
     db.events=(db.events||[]).filter(e=>{
@@ -2737,13 +2738,24 @@
     const cleanSum=type==='user_message'?String(summary??'').trim():stripProtocolTags(summary,{preserveParagraphs:false});
     db.events.push({id:uid(),profile_id:pid,character_id:cid,type,summary:cleanSum.slice(0,500),created_at:nowStr});
   };
-  const write=(pid,cid,sender,mode,text,engine='human',at=0)=>{
+  const quoteSnapshot=(pid,cid,id)=>{
+    if(!id)return null;
+    const m=db.messages.find(x=>x.id===id&&x.profile_id===pid&&x.character_id===cid&&x.mode==='chat'&&!x.recalled&&x.engine!=='recalled'&&!isChatArtifact(x));
+    if(!m)return null;
+    return {id:m.id,sender:m.sender,text:String(m.text||'').replace(/\s+/g,' ').trim().slice(0,220)};
+  };
+  const write=(pid,cid,sender,mode,text,engine='human',at=0,quoteId='')=>{
     const r=relation(pid,cid);
     const photoDescription=sender==='ai'&&mode==='chat'&&engine==='live'?parseChatPhoto(text):'';
     const cleanTxt=photoDescription?photoDescriptionText(sender,photoDescription):(sender==='ai'&&engine!=='error'&&engine!=='recalled')
       ?(mode==='meeting'?cleanMeetingNovelText(text):(cleanChatBubbleText(text)||'…'))
       :String(text??'');
     const m={id:uid(),profile_id:pid,character_id:cid,sender,mode,text:cleanTxt,engine,meeting_id:mode==='meeting'?(r?.active_meeting_id||''):'',created_at:at?new Date(at).toISOString():stamp(),...(at?{generated_at:stamp()}: {})};
+    if(sender==='user'&&mode==='chat'&&quoteId){
+      const quote=quoteSnapshot(pid,cid,quoteId);
+      if(!quote)bodyErr('引用的原消息已失效，请重新选择');
+      m.quote=quote;
+    }
     if(photoDescription){m.photo_kind='virtual';m.photo_description=photoDescription;}
     // A user can send another message while historical recovery is generating.
     // Insert recovered bubbles at their original chronological position in this pair.
@@ -2947,7 +2959,9 @@
       const mLabel=m.mode==='meeting'?'线下见面':'线上短信';
       const who=m.sender==='ai'?c.name:p.name;
       timelineLines.push(`#${idx+1} ${tTag}（${mLabel}·${who}）`);
-      const cleanBody=m.sender==='user'?String(m.text??''):(m.mode==='meeting'?cleanMeetingNovelText(m.text):(cleanChatBubbleText(m.text)||'…'));
+      const originalBody=m.sender==='user'?String(m.text??''):(m.mode==='meeting'?cleanMeetingNovelText(m.text):(cleanChatBubbleText(m.text)||'…'));
+      const quoted=m.quote&&m.mode==='chat'?('[引用'+(m.quote.sender==='user'?'自己':'对方')+'的消息：「'+String(m.quote.text||'').slice(0,220)+'」]\n'):'';
+      const cleanBody=quoted+originalBody;
       const useVision=mode==='chat'&&m.sender==='user'&&m.photo_kind==='gallery'&&m.photo_ref&&(protectedIds.includes(m.id)||(!protectedIds.length&&workingHistory.slice(idx+1).every(x=>x.sender==='user')));
       historyTurns.push({role,content:cleanBody,...(useVision?{photo_ref:m.photo_ref}:{})});
     });
@@ -4690,6 +4704,8 @@
         const p=getP(data.profileId),c=getC(data.characterId),mid=String(data.messageId||'');
         if(!mid)bodyErr('缺少消息 ID');
         const targetMsg=db.messages.find(m=>m.id===mid&&m.profile_id===p.id&&m.character_id===c.id);
+        if(!targetMsg)bodyErr('消息不存在');
+        if(targetMsg.sender!=='user')bodyErr('只能撤回自己发送的消息');
         if(targetMsg){
           const photoRef=targetMsg.photo_ref;
           delete targetMsg.photo_ref;delete targetMsg.photo_kind;delete targetMsg.photo_description;
@@ -4705,6 +4721,7 @@
           }
           event(p.id,c.id,'message_recalled',p.name+' 撤回了一条消息');
           // Keep bytes until the recall metadata has been committed.
+          for(const other of db.messages)if(other.profile_id===p.id&&other.character_id===c.id&&other.quote?.id===mid)other.quote=null;
           if(photoRef){save();void removeChatPhotos([photoRef]).catch(()=>{});}
         }
         const q=db.queue[pairKey(p.id,c.id)];
@@ -5052,7 +5069,7 @@
         let user=null;
         if(route==='/message'){
           const txt=String(data.text||'').trim();if(!txt||txt.length>4000)bodyErr('消息长度需在 1–4000 字之间');
-          user=write(p.id,c.id,'user',mode,txt);
+          user=write(p.id,c.id,'user',mode,txt,'human',0,mode==='chat'?String(data.quoteMessageId||''):'');
           if(mode==='meeting')activeMeetingLocationHistory(p,c);
           detectAndApplyCorrection(p,c,user);
           event(p.id,c.id,'user_message','与 '+p.name+' 的'+(mode==='meeting'?'见面':'聊天')+'：'+txt.slice(0,180));
