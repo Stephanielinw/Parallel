@@ -24,7 +24,9 @@ class RecentMeetingContinuityTest(unittest.TestCase):
         entries=[]
         for i in range(119):
             text=('我们最初约好一起看电影。' if i==0 else
-                  '结果电影并没有看，我们在家里亲密相处，后来相拥睡了两个小时。' if i==59 else
+                  '结果电影并没有看，后来改了行程。' if i==59 else
+                  '我们在家里亲密相处，后来相拥睡了两个小时。' if i==72 else
+                  '告别前拥抱、接吻，Leon披着外套。' if 92<=i<116 else
                   '我在日落大道下车了，Leon送我去见朋友。' if i==117 else
                   '第%d回合的现场对话。'%i)
             entries.append({'sender':'user' if i==117 else 'ai','text':text})
@@ -41,6 +43,8 @@ class RecentMeetingContinuityTest(unittest.TestCase):
         self.assertIn('最近一次真实线下见面',text)
         self.assertIn('电影并没有看',text)
         self.assertIn('亲密相处',text)
+        self.assertIn('相拥睡了两个小时',text)
+        self.assertIn('相拥睡了两个小时',server.recent_actual_meeting_context(self.db,self.p,self.c,'洗香香',self.at))
         self.assertIn('日落大道下车',text)
         self.assertNotIn('DSO',text)
         self.assertEqual(server.recent_actual_meeting_context(self.db,self.p,

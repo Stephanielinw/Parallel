@@ -2575,6 +2575,22 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
         body=str(e['text'])
         hits=sum(1 for t in terms if str(t).lower() in body.lower())
         candidates.append((hits*7+(5 if salient.search(body) else 0)+(1 if e['sender']=='user' else 0),i))
+    # Keep real, high-impact encounter events even when repeated flirtation or
+    # closing dialogue would otherwise crowd them out of the excerpt budget.
+    # These are still attributed original lines, never invented summary facts.
+    milestone_patterns=(
+        re.compile(r'睡着|睡了|睡醒|醒来|午睡|入睡|相拥而眠|睡过去'),
+        re.compile(r'没有(?:去|看|做)|没(?:去|看|做)|取消|改成|改为'),
+        re.compile(r'回家|到家|家里|卧室|床上'),
+        re.compile(r'下车|送.{0,12}(?:到|回)|告别|再见'),
+    )
+    focused={}
+    for pattern in milestone_patterns:
+        matches=[(score,i) for score,i in candidates if pattern.search(str(entries[i]['text']))]
+        if matches:
+            _,idx=max(matches)
+            anchors.add(idx)
+            focused[idx]=pattern
     for score,i in sorted(candidates,key=lambda x:(x[0],x[1]),reverse=True):
         if len(anchors)>=13:break
         if score>0:anchors.add(i)
@@ -2582,9 +2598,14 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
     for i in sorted(anchors):
         e=entries[i]
         whole=re.sub(r'\s+',' ',str(e['text'])).strip()
-        excerpt=whole[:115]+' … '+whole[-85:] if len(whole)>205 else whole
+        focus=focused[i].search(whole) if i in focused else None
+        if len(whole)>205 and focus:
+            start=max(0,min(focus.start()-90,len(whole)-205))
+            excerpt=('… ' if start else '')+whole[start:start+205]+(' …' if start+205<len(whole) else '')
+        else:
+            excerpt=whole[:115]+' … '+whole[-85:] if len(whole)>205 else whole
         line=f"[{p['name'] if e['sender']=='user' else c['name']} · 现场原文 #{i+1}] {excerpt}"
-        if used+len(line)>3000:continue
+        if used+len(line)>3400:continue
         used+=len(line);parts.append(line)
     if not parts:return ''
     return ("\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下只属于你与 "+p['name']+
@@ -2592,6 +2613,7 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
         "\n".join(parts)+
         "\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。"
         "若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。"
+        "见面发生的这段时间不能被描述成角色一整天都在巡逻、值班、开车或完成其他无记录的事务；未被证实的生活安排保持未知。"
         "私人内心不可当作角色亲眼所见；没有展示的情节保持不确定。")
 
 def incompatible_character_slot(c,slot):
