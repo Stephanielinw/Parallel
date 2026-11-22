@@ -1526,7 +1526,7 @@
         start:r.meeting_started_at&&localDateStr(r.meeting_started_at)!==localDateStr(at)?'00:00':fmtHHMM(r.meeting_started_at||at)||nowHHMM,
         end:nowHHMM,
         location:loc,
-        status:'线下见面进行中',
+        status:`与 ${p.name} 见面中（接触待确认）`,
         activity:`在「${loc}」参与本次见面；是否已经接触由现场实际行为决定`,
         scene:`${c.name}在「${loc}」进行本次见面，不能预先替 ${p.name} 决定出现、接近或搭话。`,
         source:'meeting',
