@@ -814,6 +814,18 @@ def queue_flush(db,p,c,force=False,manual_resume=False,recovery=None):
         try:
             txt=completion(prompt,log_meta={'mode':'chat','task_type':'chat','entryPoint':'chat-flush','profile':p,'character':c,'attempt':t_state['attempt'],'retry_of_task_id':t_state.get('last_task_id',''),'simulated_reply_at':datetime.fromtimestamp(simulated_at/1000,timezone.utc).isoformat() if simulated_at else '','parseFn':lambda raw:' / '.join(split_chat_bubbles(raw))})
             engine='live'
+            # Two-stage on-demand retrieval: if the character independently
+            # introduces a scene-specific recollection, fetch original evidence
+            # before committing any such message as a historical fact.
+            if not any('现场原文 #' in str(m.get('content') or '') for m in prompt) and needs_meeting_detail(txt):
+                evidence=recent_actual_meeting_context(db,p,c,txt,simulated_at)
+                if '现场原文 #' in evidence:
+                    try:
+                        sourced=compile_messages(db,p,c,'chat',latest=txt,through_rowid=last['rowid'] if last else None,pending_ids=sources,simulated_at=simulated_at)
+                        txt=completion(sourced,log_meta={'mode':'chat','task_type':'chat','entryPoint':'chat-meeting-detail-recall','profile':p,'character':c,
+                            'parseFn':lambda raw:' / '.join(split_chat_bubbles(raw))})
+                    except Exception:
+                        txt='那天的事我记得，不过有些细节我不想凭空说错。'
         except Exception as e:
             warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
     else:txt=demo_text(db,p,c,'chat')
