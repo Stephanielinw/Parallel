@@ -2239,10 +2239,10 @@
     if(!mMsgs.length)return null;
     const mid=mMsgs[0]?.meeting_id||'';
     const groups=mid?completedMeetingGroups(p.id,c.id,mid):[];
-    const expected=Math.floor(groups.length/MEETING_CHECKPOINT_INTERVAL);
+    const expected=Math.floor(groups.length/50);
     const checkpoints=expected?validMeetingCheckpoints(p.id,c.id,mid,groups):[];
     const reuse=expected>0&&checkpoints.length===expected;
-    const trailing=reuse?groups.slice(expected*MEETING_CHECKPOINT_INTERVAL).flat():mMsgs;
+    const trailing=reuse?groups.slice(expected*50).flat():mMsgs;
     const chunks=meetingSummaryChunks(trailing,p,c);
     const opts={json_mode:true,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true,temperature:0.25};
     const instruction='你是见面记录的事实归档员。只能总结提供的实际对话，不得补写未出现的事件、亲吻、去过的地点、感情承诺或人物心理。严格按时间顺序，保留开场、中段、结尾的关键事件；优先记录已发生的行动与对话，忽略描写性赘述。若记录跨越午夜，必须体现前一晚和第二天。只输出 JSON 对象：{"summary":"120至240字的中文纪实梗概"}。';
