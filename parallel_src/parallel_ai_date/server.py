@@ -1172,7 +1172,7 @@ def get_current_surveillance_slot(db,p,c,at=0):
             'start':('00:00' if m_state.get('meeting_started_at') and chat_clock_label(m_state['meeting_started_at'])[:10]!=date else fmt_hhmm(m_state.get('meeting_started_at') or None)),
             'end':now_hhmm,
             'location':loc,
-            'status':'线下见面进行中',
+            'status':f"与 {p['name']} 见面中（接触待确认）",
             'activity':f"在「{loc}」进行本次见面，首次接触由现场实际行动决定",
             'scene':f"实时画面：{c['name']}位于「{loc}」，当前场景以实际互动为准；不能默认已经见到或接触 {p['name']}。",
             'source':'meeting',
