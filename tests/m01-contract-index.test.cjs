@@ -10,9 +10,9 @@ const index = JSON.parse(read(indexPath));
 const doc = read(docPath);
 const workflow = read('.github/workflows/pages.yml');
 
-assert.equal(index.version, 'M01-2026-11-22');
+assert.equal(index.version, 'M02-2026-11-22');
 assert.equal(index.repository, 'Stephanielinw/Parallel');
-assert.equal(index.contractKind, 'documented-current-behavior-and-open-gaps');
+assert.equal(index.contractKind, 'documented-behavior-regression-with-explicit-device-gap');
 assert(Array.isArray(index.contracts) && index.contracts.length >= 18);
 assert(doc.includes('**发布约束**'), 'documentation must state that M01 changes no runtime contracts');
 
@@ -22,7 +22,7 @@ const requiredAreas = [
   '跨模块', '客户端'
 ];
 const ids = new Set(), areas = new Set();
-let covered = 0, gaps = 0, linked = 0;
+let covered = 0, partial = 0, gaps = 0, linked = 0;
 for (const c of index.contracts) {
   assert(/^C-\d{2}$/.test(c.id), 'stable contract ID required');
   assert(!ids.has(c.id), 'duplicate contract ID '+c.id);
@@ -34,7 +34,7 @@ for (const c of index.contracts) {
   assert(Array.isArray(c.scenarios) && c.scenarios.length >= 1, c.id+' needs reproducible scenario(s)');
   assert(c.scenarios.every(x => typeof x==='string' && x.trim().length>=4), c.id+' vague scenario');
   assert(Array.isArray(c.tests), c.id+' must include test file array');
-  assert(['covered','gap'].includes(c.status), c.id+' unsupported status');
+  assert(['covered','partial','gap'].includes(c.status), c.id+' unsupported status');
   assert(doc.includes(c.id), c.id+' missing from human-readable contract table');
   if (c.status === 'covered') {
     covered++;
@@ -45,6 +45,17 @@ for (const c of index.contracts) {
       assert(workflow.includes('node '+filename), c.id+' test is NOT running in CI: '+filename);
       linked++;
     }
+  } else if(c.status==='partial'){
+    partial++;
+    assert(c.id==='C-18','only the real-device Safari contract is partially covered');
+    assert.deepEqual(c.tests,['e2e/m02-safari-smoke.spec.ts']);
+    assert(fs.existsSync(path.join(root,c.tests[0])),'WebKit regression file missing');
+    assert(workflow.includes('npx playwright test -c playwright.m02.config.ts'),
+      'WebKit test must be an actual GitHub Actions release gate');
+    assert(workflow.includes('npx playwright install --with-deps webkit'),
+      'WebKit browser binary must actually be installed on CI');
+    assert(/物理|iPhone/.test(c.note),'must not claim physical-device testing');
+    linked++;
   } else {
     gaps++;
     assert(c.tests.length === 0, c.id+' unresolved contract must not claim test coverage');
@@ -56,12 +67,11 @@ for (const c of index.contracts) {
 }
 for (const area of requiredAreas) assert(areas.has(area),'missing core area '+area);
 assert.equal(index.contracts.length, ids.size);
-assert(gaps>=3 && covered>=15, 'new gaps may be added; do not silently mark all contracts covered');
-for (const id of ['C-11','C-17','C-18']) {
-  assert.equal(index.contracts.find(c=>c.id===id).status,'gap',
-    'no diary evidence, complete lifecycle or real Safari E2E guarantee yet');
-}
-// M01 is documentation and safety checks only. No running engine or schema
-// is changed; these automated links cannot replace M02 real behavior tests.
-console.log('M01 contract index verified: '+index.contracts.length+' contracts ('+covered+
-  ' test-linked, '+gaps+' transparently open gaps), '+linked+' CI evidence links.');
+assert(covered>=17 && partial===1 && gaps>=0,
+  'do not claim complete device coverage or silently lose contract links');
+for(const id of ['C-11','C-17'])
+  assert.equal(index.contracts.find(c=>c.id===id).status,'covered',id+' needs checked-in CI regression tests');
+assert.equal(index.contracts.find(c=>c.id==='C-18').status,'partial',
+  'WebKit automation alone does not prove physical Safari/PWA reliability');
+console.log('M02 contract index verified: '+index.contracts.length+' contracts ('+covered+
+  ' CI-linked, '+partial+' WebKit-only partial, '+gaps+' open), '+linked+' CI evidence links.');
