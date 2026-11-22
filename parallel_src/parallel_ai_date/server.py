@@ -3662,7 +3662,7 @@ class Handler(BaseHTTPRequestHandler):
                                     else:break
                             if m_msgs:
                                 mid=m_state.get('active_meeting_id') or ('meet_'+m_msgs[0]['id'])
-                                ai_sum='';ai_loc=loc_input or m_state.get('meeting_location','')
+                                ai_sum='';ai_loc=m_state.get('meeting_location','') # ignore stale location from legacy finale clients
                                 if data.get('finalizeMeeting') is True and public_connection()['mode']=='live':
                                     try:
                                         parsed=summarize_complete_meeting(p,c,m_msgs,ai_loc,db=db)
