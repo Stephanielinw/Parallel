@@ -1,5 +1,7 @@
 # Parallel Maintenance Mode — M01 核心功能契约
 
+> **M02 验收状态更新（2026-11-22）**：以下正文保留 M01 当时的缺口记录作为历史快照。M02 已新增 C-11、C-17 的合成回归测试，C-18 加入真实 WebKit 引擎自动化，但 **未在物理 iPhone Safari/PWA 实测**，因此仍是部分覆盖。最新可机器核对的状态以 [M01-contract-index.json](./M01-contract-index.json) 为准，改动细节见 [M02-regression-and-webkit.md](./M02-regression-and-webkit.md)。M00 手机真实存档备份仍须单独确认。
+
 > **版本**：M01-2026-11-22 · 基于 `main` 提交 `6131b21753895a3397c43944cdbb0cc8cb03eee5` · **只描述规则和测试，不修改运行逻辑**。
 >
 > **机器可读索引**：[`M01-contract-index.json`](./M01-contract-index.json)（每项含 ID、预期行为、禁止行为、测试场景、已有 CI 测试或缺口）。这里的 **covered** 只表示已有相关自动测试，并非 100% 覆盖或真实 iPhone 验证。
