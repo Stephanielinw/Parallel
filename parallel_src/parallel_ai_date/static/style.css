@@ -638,3 +638,21 @@ html,body,#root{width:100%;height:100%;min-height:0;margin:0;overflow:hidden;ove
 .token-request-footer>span{flex:1;min-width:170px;overflow-wrap:anywhere}
 .token-request-footer .btn{font-size:10px;padding:7px 10px}
 @media(max-width:580px){.token-request-values b{font-size:14px}.token-request-footer .btn{width:100%}}
+
+
+/* Tap a chat bubble to open its context action sheet. */
+.bubble-tappable{cursor:pointer;transition:filter .16s ease,transform .16s ease}
+.bubble-tappable:hover{filter:brightness(.97)}
+.bubble-tappable:active{transform:scale(.987)}
+.bubble-tappable:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+.bubble-action-preview{white-space:pre-wrap;overflow-wrap:anywhere;max-height:120px;overflow:auto;background:var(--cream,#fbf7f1);border:1px solid #dfd2bb;border-radius:12px;padding:12px}
+.modal-actions:has(.bubble-option-btn){display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.modal-actions:has(.bubble-option-btn) .bubble-option-btn{min-width:0;white-space:normal;padding:11px 7px}
+.modal-actions:has(.bubble-option-btn) .btn[data-action="close-modal"]{grid-column:1/-1}
+.chat-quote-compose{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 12px 0;padding:9px 11px;border-left:3px solid var(--ink);border-radius:9px;background:var(--butter,#fff1c6);font-size:12px}
+.chat-quote-compose>div{min-width:0;display:flex;flex-direction:column;gap:3px}
+.chat-quote-compose span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:min(68vw,420px)}
+.chat-quote-compose button{background:none;border:0;cursor:pointer;display:flex;align-items:center}
+.chat-quote-compose button svg{width:20px;height:20px}
+.chat-quoted-content{font-size:11px;display:flex;flex-direction:column;gap:3px;margin-bottom:8px;padding:6px 8px;border-left:3px solid currentColor;background:rgba(125,125,125,.09);border-radius:5px;opacity:.86}
+.chat-quoted-content>span{display:block;overflow-wrap:anywhere;white-space:pre-wrap}
