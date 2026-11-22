@@ -814,6 +814,18 @@ def queue_flush(db,p,c,force=False,manual_resume=False,recovery=None):
         try:
             txt=completion(prompt,log_meta={'mode':'chat','task_type':'chat','entryPoint':'chat-flush','profile':p,'character':c,'attempt':t_state['attempt'],'retry_of_task_id':t_state.get('last_task_id',''),'simulated_reply_at':datetime.fromtimestamp(simulated_at/1000,timezone.utc).isoformat() if simulated_at else '','parseFn':lambda raw:' / '.join(split_chat_bubbles(raw))})
             engine='live'
+            # Two-stage on-demand retrieval: if the character independently
+            # introduces a scene-specific recollection, fetch original evidence
+            # before committing any such message as a historical fact.
+            if not any('现场原文 #' in str(m.get('content') or '') for m in prompt) and needs_meeting_detail(txt):
+                evidence=recent_actual_meeting_context(db,p,c,txt,simulated_at)
+                if '现场原文 #' in evidence:
+                    try:
+                        sourced=compile_messages(db,p,c,'chat',latest=txt,through_rowid=last['rowid'] if last else None,pending_ids=sources,simulated_at=simulated_at)
+                        txt=completion(sourced,log_meta={'mode':'chat','task_type':'chat','entryPoint':'chat-meeting-detail-recall','profile':p,'character':c,
+                            'parseFn':lambda raw:' / '.join(split_chat_bubbles(raw))})
+                    except Exception:
+                        txt='那天的事我记得，不过有些细节我不想凭空说错。'
         except Exception as e:
             warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
     else:txt=demo_text(db,p,c,'chat')
@@ -1160,9 +1172,9 @@ def get_current_surveillance_slot(db,p,c,at=0):
             'start':('00:00' if m_state.get('meeting_started_at') and chat_clock_label(m_state['meeting_started_at'])[:10]!=date else fmt_hhmm(m_state.get('meeting_started_at') or None)),
             'end':now_hhmm,
             'location':loc,
-            'status':f"正在与 {p['name']} 线下见面",
-            'activity':f"与 {p['name']} 在「{loc}」面对面相处互动",
-            'scene':f"实时画面：{c['name']}正与 {p['name']} 在「{loc}」面对面交谈，注意力完全放在对方身上。",
+            'status':f"与 {p['name']} 见面中（接触待确认）",
+            'activity':f"在「{loc}」进行本次见面，首次接触由现场实际行动决定",
+            'scene':f"实时画面：{c['name']}位于「{loc}」，当前场景以实际互动为准；不能默认已经见到或接触 {p['name']}。",
             'source':'meeting',
             'isCurrent':True
         }
@@ -1180,8 +1192,16 @@ def sync_surveillance_on_meeting_start(db,p,c,loc,meeting_id=''):
     rec['live_override']={'start':fmt_hhmm(started),'started_at':started,
                           'location':loc or state.get('meeting_location') or '约定的见面地点',
                           'meeting_id':meeting_id or state.get('active_meeting_id','')}
-    # Planned future activities are NOT actual events. Keep them as alternatives
-    # but do not write them into the observed timeline while the meeting is live.
+    # A real encounter cancels every unobserved future plan immediately.
+    # The live interval is rendered from its start timestamp and the scene location.
+    cut=hhmm_to_min(fmt_hhmm())
+    retained=[]
+    for slot in rec.get('slots',[]):
+        begin,end=hhmm_to_min(slot['start']),hhmm_to_min(slot['end'])
+        if begin>=cut:continue
+        retained.append(dict(slot,end=min_to_hhmm(cut)) if end>cut else slot)
+    rec['slots']=retained
+    for key in ('post_meeting_anchor','post_meeting_location','post_meeting_id'):rec.pop(key,None)
     rec['updated_at']=utc()
 
 def sync_surveillance_on_meeting_end(db,p,c,meeting_rec):
@@ -1414,6 +1434,30 @@ def sync_surveillance_from_chat(db,p,c,ai_text='',at=0):
     else:slots[idx]=observed
     rec['updated_at']=utc()
 
+def appointment_planning_evidence(db,p,c,date_str):
+    """Candidate SMS evidence only. The planner must confirm both parties agreed."""
+    rows=db.execute("SELECT sender,text,created_at,engine FROM messages WHERE profile_id=? AND character_id=? AND mode='chat' ORDER BY julianday(created_at),rowid",(p['id'],c['id'])).fetchall()
+    relevant=re.compile(r'约|见面|见你|碰面|接你|接我|见面|咖啡|电影|吃饭|晚饭|午饭|烧烤|火锅|约会|见(?:一面|一见)|meet|date|dinner|lunch|movie|coffee|tomorrow|明天|后天|周末|星期|下周',re.I)
+    dated=re.compile(r'点半?|[0-2]?\d:\d\d|明天|后天|今天|今晚|周末|星期|下周|月\d{1,2}日|\d{1,2}号|约好|定好|确定|不见不散|meet|tomorrow',re.I)
+    dates=[]
+    for i,row in enumerate(rows):
+        if row['engine']=='recalled':continue
+        try:
+            dt=datetime.fromisoformat(str(row['created_at']).replace('Z','+00:00')).astimezone().date()
+            if not (datetime.strptime(date_str,'%Y-%m-%d').date()-timedelta(days=30)<=dt<=datetime.strptime(date_str,'%Y-%m-%d').date()):continue
+        except (TypeError,ValueError):continue
+        if relevant.search(row['text']) and dated.search(row['text']):dates.append(i)
+    selected=set()
+    for i in dates[-12:]:
+        for j in range(max(0,i-2),min(len(rows),i+4)):
+            if rows[j]['engine']!='recalled':selected.add(j)
+    lines=[]
+    for i in sorted(selected)[-28:]:
+        x=rows[i]
+        lines.append(f"[{chat_clock_label(x['created_at'])}] {p['name'] if x['sender']=='user' else c['name']}：{str(x['text'])[:130]}")
+    return '\n'.join(lines)[-3500:]
+
+
 def ensure_live_surveillance(db,p,c,force=False,target_date=''):
     today=local_date_str()
     d_str=target_date if (target_date and re.match(r'^\d{4}-\d{2}-\d{2}$',str(target_date))) else today
@@ -1431,12 +1475,14 @@ def ensure_live_surveillance(db,p,c,force=False,target_date=''):
         return rec
     if rec.get('engine')=='live' and not force:return rec
     try:
+        appointment_evidence=appointment_planning_evidence(db,p,c,d_str)
         recent_rows=db.execute('SELECT sender,text,created_at FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,id DESC LIMIT 6',(p['id'],c['id'])).fetchall()
         recent_chat='\n'.join(f"[{'我方' if x['sender']=='user' else c['name']}] {str(x['text'] or '')[:70]}" for x in reversed(recent_rows))
         meet_rows=db.execute('SELECT location,time,summary FROM meetings WHERE profile_id=? AND character_id=? ORDER BY started_at DESC LIMIT 2',(p['id'],c['id'])).fetchall()
         recent_meet='；'.join(f"{m['time']}在{m['location']}：{str(m['summary'] or '')[:50]}" for m in meet_rows)
         sys_prompt=f"你是 {c['name']}（来自《{c['source']}》· {c['version']}，背景：{c['canon']}）。请生成你在 {d_str} 从 00:00 到 23:59 的 7 个连续时间段作息与行踪表（用于角色专属空间的实时生活监控）。现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。必须严格贴合你的原作身份、独立职业习惯以及与 {p['name']} 的近期互动（近期聊天：{recent_chat or '刚建立匹配'}；近期见面：{recent_meet or '暂无'}）。禁止使用任何 emoji 表情符号。只输出 JSON 对象，格式为：{{\"slots\":[{{\"start\":\"00:00\",\"end\":\"06:30\",\"location\":\"具体地点（15字内）\",\"status\":\"四字状态\",\"activity\":\"正在做的事（38字内）\",\"scene\":\"监控镜头下的细腻画面感描写（55字内）\"}}]}}，7个时间段首尾相连覆盖全天。"
-        out=completion([{'role':'system','content':sys_prompt},{'role':'user','content':f'请生成 {d_str} 全天 7 个时段的作息与实时监控画面 JSON。'}],json_mode=True,log_meta={'mode':'surveillance','entryPoint':'surveillance','profile':p,'character':c})
+        sys_prompt+='\n已确认的约会优先于普通日程；根据带时间戳的手机往来判断双方是否真的达成约定。只有明确互相同意且安排属于目标日期时才预留时间（含合理出发交通），尚未落实的提议不是约定。时间未定时留出弹性，不得自行编造具体时刻。约定不等于已发生，后续可以取消或变更。'
+        out=completion([{'role':'system','content':sys_prompt},{'role':'user','content':f'目标日期：{d_str}。下列仅是可能涉及约定的聊天证据（带发送日期，注意“明天”的相对时间；如双方未确定则忽略）：\n{appointment_evidence or "无已知约定证据"}\n请生成全天 7 个时段的作息与实时监控画面 JSON。'}],json_mode=True,log_meta={'mode':'surveillance','entryPoint':'surveillance','profile':p,'character':c})
         parsed=parse_json(out,{})
         if isinstance(parsed.get('slots'),list) and len(parsed['slots'])>=5:
             cleaned=[]
@@ -2544,6 +2590,13 @@ def is_post_history_system_preset(entry):
     grp=str(entry.get('group') or infer_preset_group(nm))
     return grp=='COT' or ('COT' in nm) or ('连续性检查' in nm) or ('动笔前' in nm) or ('自检' in nm)
 
+def needs_meeting_detail(text):
+    """Detail recall is opt-in, not a 3k-character transcript on every SMS."""
+    body=str(text or '')
+    past=re.search(r'上次|上回|那次|那天|那晚|那会儿|当时|见面时|约会时|那下午|那时候|还记得|你记得|我记得|我们之前|昨天我们|那一晚',body)
+    specific=re.search(r'具体|细节|说了什么|说过什么|怎么做|怎么回事|为什么|哪里|哪个|什么时候|如何|睡|醒|吻|亲|抱|当时|那会儿|发生|去了|做的时候',body)
+    return bool((past and specific) or re.search(r'做的时候|睡着的时候|醒来的时候|我们在床上|在一起的那天下午',body))
+
 def recent_actual_meeting_context(db,p,c,query='',at=0):
     """A recent real encounter is continuity, even when the next SMS changes topic.
     These are attributed archive excerpts, not a guessed summary or another role's data.
@@ -2553,19 +2606,30 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
     state=MEETING_STATE.get((p['id'],c['id']),{})
     rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
     active=state.get('active_meeting_id') if rel and rel['mode']=='meeting' else ''
-    meeting=None
+    candidates=[]
     for row in rows:
         if row['id']==active:continue
         try:
             ended=datetime.fromisoformat(str(row['ended_at']).replace('Z','+00:00'))
             if ended.tzinfo is None:ended=ended.replace(tzinfo=timezone.utc)
-            age=(now-ended).total_seconds()
-            if 0<=age<=72*3600:meeting=dict(row);break
+            if (now-ended).total_seconds()>=0:candidates.append(dict(row))
         except (ValueError,TypeError,OverflowError):continue
-    if not meeting:return ''
+    if not candidates:return ''
+    detail=needs_meeting_detail(query)
+    terms=[t for t in extract_query_terms(query) if len(str(t))>=2]
+    if detail and len(candidates)>1:
+        candidates.sort(key=lambda m:sum(1 for t in terms if str(t).lower() in (str(m.get('ai_summary') or '')+' '+str(m.get('summary') or '')+' '+str(m.get('entries') or '')).lower()),reverse=True)
+    meeting=candidates[0]
+    summary=str(meeting.get('ai_summary') or meeting.get('summary') or '').strip()[:500]
+    overview=("\n\n【过去真实见面的事实小结 · 默认记忆】\n"
+              +str(meeting.get('started_at',''))[:16]+" 至 "+str(meeting.get('ended_at',''))[:16]
+              +"，与 "+p['name']+" 的这场见面："+(summary or '见面原文已归档，小结等待重建。')
+              +"\n这是已发生的经历，原定计划不等于实际完成；无法从小结确认的具体细节不能编造。"
+              +"只有有必要提及具体现场细节时才参考下列可核对的原文。")
+    if not detail:return overview
     entries=[e for e in parse_json(meeting.get('entries'),[]) if isinstance(e,dict) and e.get('sender') in ('user','ai')
         and str(e.get('text') or '').strip() and not (e['sender']=='user' and re.search(r'心想|心里|内心独白|默念|梦见|如果|假如',str(e['text'])))]
-    if not entries:return ''
+    if not entries:return overview
     terms=[t for t in extract_query_terms(query) if len(str(t))>=2]
     salient=re.compile(r'本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见')
     n=len(entries)
@@ -2607,8 +2671,8 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
         line=f"[{p['name'] if e['sender']=='user' else c['name']} · 现场原文 #{i+1}] {excerpt}"
         if used+len(line)>3400:continue
         used+=len(line);parts.append(line)
-    if not parts:return ''
-    return ("\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下只属于你与 "+p['name']+
+    if not parts:return overview
+    return (overview+"\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下只属于你与 "+p['name']+
         " 的这一场见面，不属于任何其他角色实例；发生时间 "+str(meeting.get('started_at',''))[:16]+" 至 "+str(meeting.get('ended_at',''))[:16]+"。\n"+
         "\n".join(parts)+
         "\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。"

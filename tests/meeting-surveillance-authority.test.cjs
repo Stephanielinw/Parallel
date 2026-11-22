@@ -41,6 +41,8 @@ function start(){
  assert.equal(surv.current.source,'meeting');
  assert(surv.unlockedSlots.some(x=>x.source==='meeting'&&x.location==='Lin 的家'));
  assert(!surv.unlockedSlots.some(x=>x.source==='schedule'&&x.start>='09:29'),'future schedule cannot masquerade as actual during the live meeting');
+ const afterStart=JSON.parse(app.exportData()).data.surveillance[p.id+'|'+pair.characterId].byDate['2026-11-21'];
+ assert(!afterStart.slots.some(s=>s.source==='schedule'&&s.start>='09:29'),'starting meeting invalidates all future planned rows in the store');
  const before=calls.length;
  await app.request('/surveillance',{...pair,date:'2026-11-21',refresh:true});
  assert.equal(calls.length,before,'refresh while meeting must not re-roll a contradictory full day');

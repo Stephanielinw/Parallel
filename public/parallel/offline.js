@@ -977,6 +977,20 @@
     }
     return queueInfo(pid,cid);
   };
+  async function verifyGeneratedMeetingDetail(p,c,messages,draft,options={}){
+    // Regular chat uses the concise recap. Only a drafted recollection requiring
+    // precise facts triggers a second grounded generation before persistence.
+    if(!draft||!needsMeetingDetail(draft)||messages[0]?.content?.includes('现场原文 #'))return draft;
+    const source=recentActualMeetingContext(p,c,draft,options.simulatedAt||Date.now());
+    if(!source.includes('现场原文 #'))return draft;
+    const checked=messages.map((m,i)=>i===0?{...m,content:m.content+'\n【补充事实核对：角色想自主提及见面中的具体经历】'+source+'\n请重新生成同一轮回复，保留自然口吻，只能使用可核对的具体事实，不要让人物解释系统或引文。'}:m);
+    try{
+      return await llm(checked,{...options,mode:'chat',entry_point:'chat_meeting_detail_recall'});
+    }catch{
+      // A failed lookup must not publish an unsupported, confident recollection.
+      return '那天的事我记得，不过有些细节我不想凭空说错。';
+    }
+  }
   async function flushQueue(p,c,force,retryOpts={}){
     const key=pairKey(p.id,c.id),q=db.queue[key];
     const tKey=taskKeyOf(p.id,c.id,'chat');
@@ -1053,6 +1067,11 @@
           simulatedAt,
           background:Boolean(retryOpts.background),
           signal:abortCtrl?.signal
+        });
+        txt=await verifyGeneratedMeetingDetail(p,c,msgs,txt,{
+          profile:p,character:c,simulatedAt,
+          task_id:taskId,retry_of_task_id:retryOfTaskId,attempt,
+          background:Boolean(retryOpts.background),signal:abortCtrl?.signal
         });
         engine='live';
       }catch(e){
@@ -1507,9 +1526,9 @@
         start:r.meeting_started_at&&localDateStr(r.meeting_started_at)!==localDateStr(at)?'00:00':fmtHHMM(r.meeting_started_at||at)||nowHHMM,
         end:nowHHMM,
         location:loc,
-        status:`正与 ${p.name} 当面见面中`,
-        activity:`在「${loc}」与 ${p.name} 面对面相处`,
-        scene:`${c.name}放下了原本的日常安排，此刻正身处「${loc}」与 ${p.name} 面对面互动。`,
+        status:`与 ${p.name} 见面中（接触待确认）`,
+        activity:`在「${loc}」参与本次见面；是否已经接触由现场实际行为决定`,
+        scene:`${c.name}在「${loc}」进行本次见面，不能预先替 ${p.name} 决定出现、接近或搭话。`,
         source:'meeting',
         meeting_id:r.active_meeting_id||'',
         actual_started_at:r.meeting_started_at||new Date(at).toISOString(),
@@ -1521,7 +1540,20 @@
     return {...verifiedSlotForDisplay(c,active),isCurrent:true,isMeetingLive:false};
   };
   // Meeting is a live wall-clock interval, not a guessed future schedule.
-  const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>getOrInitSurveillance(p,c,localDateStr());
+  const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>{
+    const rec=getOrInitSurveillance(p,c,localDateStr());
+    const cut=hhmmToMin(fmtHHMM(Date.now()));
+    // Invalidate all speculative future rows as soon as the real scene starts.
+    rec.slots=rec.slots.flatMap(slot=>{
+      const start=hhmmToMin(slot.start),end=hhmmToMin(slot.end);
+      if(start>=cut)return [];
+      return [end>cut?{...slot,end:minToHHMM(cut)}:slot];
+    });
+    rec.live_override={meeting_id:meetingId,location:loc,started_at:relation(p.id,c.id)?.meeting_started_at||stamp()};
+    delete rec.post_meeting_anchor;delete rec.post_meeting_location;delete rec.post_meeting_id;
+    rec.updated_at=stamp();
+    return rec;
+  };
   const syncSurveillanceOnMeetingEnd=(p,c,meetingRecord)=>{
     if(!meetingRecord)return null;
     const begin=Date.parse(meetingRecord.started_at),finish=Date.parse(meetingRecord.ended_at);
@@ -1704,6 +1736,22 @@
     else rec.slots.splice(idx,1,observed);
     rec.updated_at=stamp();
   };
+  const appointmentPlanningEvidence=(p,c,dateStr)=>{
+    const chat=messagesOf(p.id,c.id).filter(m=>m.mode==='chat'&&!m.recalled&&m.engine!=='recalled'&&!isChatArtifact(m));
+    const target=new Date(dateStr+'T12:00:00').getTime();
+    const relevant=/约|见面|见你|碰面|接你|接我|咖啡|电影|吃饭|晚饭|午饭|烧烤|火锅|约会|见(?:一面|一见)|meet|date|dinner|lunch|movie|coffee|tomorrow|明天|后天|周末|星期|下周/i;
+    const dated=/点半?|[0-2]?\d:\d\d|明天|后天|今天|今晚|周末|星期|下周|月\d{1,2}日|\d{1,2}号|约好|定好|确定|不见不散|meet|tomorrow/i;
+    const matches=[];
+    chat.forEach((m,i)=>{
+      const when=Date.parse(m.created_at);
+      if(Number.isFinite(when)&&when<=target+12*3600000&&target-when<=31*86400000&&relevant.test(m.text)&&dated.test(m.text))matches.push(i);
+    });
+    const selected=new Set();
+    for(const i of matches.slice(-12))for(let j=Math.max(0,i-2);j<Math.min(chat.length,i+4);j++)selected.add(j);
+    return [...selected].sort((a,b)=>a-b).slice(-28).map(i=>{
+      const m=chat[i];return '['+chatClockLabel(m.created_at)+'] '+(m.sender==='user'?p.name:c.name)+'：'+String(m.text||'').slice(0,130);
+    }).join('\n').slice(-3500);
+  };
   async function ensureLiveSurveillance(p,c,forceRefresh=false,targetDate=''){
     const today=localDateStr();
     const dStr=(targetDate&&/^\d{4}-\d{2}-\d{2}$/.test(targetDate))?targetDate:today;
@@ -1723,13 +1771,15 @@
     }
     if(rec.engine==='live'&&!forceRefresh)return rec;
     try{
+      const appointmentEvidence=appointmentPlanningEvidence(p,c,dStr);
       const relSummary=relationshipBaselineSummary(p.id,c.id,p.name);
       const sys=`你是日程与世界线生成引擎。请为角色 ${c.name}（来源：${c.source} · ${c.version}，背景：${c.canon}）生成 ${dStr} 从 00:00 到 23:59 的完整一日生活足迹监控表（共 8 到 9 个连续时间段，无缝覆盖全天）。现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。
 要求：
 1. 严密贴合 ${c.name} 的原作职业、性格与独立生活习惯，角色有自己的工作、同伴与日常，不要整天围着 ${p.name} 转（当前关系：${relSummary}）。
 2. 每个时间段包含：start ("HH:MM"), end ("HH:MM"), location (具体地点，不超过14字), status (简短状态标签，4-6字), activity (正在做的事，不超过16字), scene (极具画面感的第三人称现场微描写，35-70字，描写环境光影、小动作或神态，严禁使用任何 emoji)。
 3. 只输出 JSON 对象，格式严格为：{"slots":[{"start":"00:00","end":"07:00","location":"...","status":"...","activity":"...","scene":"..."}]}`;
-      const out=await llm([{role:'system',content:sys},{role:'user',content:`请生成 ${c.name} 在 ${dStr} 的全天足迹 JSON。`}],{json_mode:true,profile:p,character:c,mode:'surveillance',entry_point:'surveillance',background:!forceRefresh});
+      const appointmentRules='\n已确认的约会优先于普通日程。根据以下带日期的短信往来判断双方是否明确同意，只有已经相互确认、日期匹配的安排才预留相应时间和往返交通；单方面建议、模糊邀约、已经取消的约定不能写成真实计划。必须区分发送日的“明天”与目标日。约好不代表已经发生，实际见面会覆盖计划。';
+      const out=await llm([{role:'system',content:sys+appointmentRules},{role:'user',content:`目标日期 ${dStr}；可供核对的邀约上下文（不一定已经确认）：\n${appointmentEvidence||'无可核对的约会证据'}\n请生成 ${c.name} 的全天足迹 JSON。`}],{json_mode:true,profile:p,character:c,mode:'surveillance',entry_point:'surveillance',background:!forceRefresh});
       const parsed=JSON.parse(out);
       if(Array.isArray(parsed?.slots)&&parsed.slots.length>=5){
         const preserved=rec.slots.filter(s=>['meeting','chat_update','meeting_shift'].includes(s.source));
@@ -2850,16 +2900,32 @@
   }
   // Derived only from this profile/character's archived original meeting turns.
   // A poor fallback summary or unrelated SMS topic must not hide a recent encounter.
+  const needsMeetingDetail=text=>{
+    const s=String(text||'');
+    const past=/上次|上回|那次|那天|那晚|那会儿|当时|见面时|约会时|那下午|那时候|还记得|你记得|我记得|我们之前|昨天我们|那一晚/.test(s);
+    const specific=/具体|细节|说了什么|说过什么|怎么做|怎么回事|为什么|哪里|哪个|什么时候|如何|睡|醒|吻|亲|抱|当时|那会儿|发生|去了|做的时候/.test(s);
+    return (past&&specific)||/做的时候|睡着的时候|醒来的时候|我们在床上|在一起的那天下午/.test(s);
+  };
   function recentActualMeetingContext(p,c,query='',at=Date.now()){
     const rel=relation(p.id,c.id),active=rel?.mode==='meeting'?rel.active_meeting_id:'';
     const candidates=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&m.id!==active)
-      .filter(m=>{const end=Date.parse(m.finished_at||m.ended_at||'');return Number.isFinite(end)&&end<=at&&at-end<=72*3600000;})
+      .filter(m=>{const end=Date.parse(m.finished_at||m.ended_at||'');return Number.isFinite(end)&&end<=at;})
       .sort((a,b)=>Date.parse(b.finished_at||b.ended_at)-Date.parse(a.finished_at||a.ended_at));
-    const meeting=candidates[0];if(!meeting)return '';
+    if(!candidates.length)return '';
+    const detail=needsMeetingDetail(query);
+    const terms=extractQueryTerms(query).filter(t=>t.length>=2);
+    if(detail&&candidates.length>1)candidates.sort((a,b)=>{
+      const score=m=>terms.reduce((n,t)=>n+(JSON.stringify([m.ai_summary,m.summary,m.entries]).toLowerCase().includes(String(t).toLowerCase())?1:0),0);
+      return score(b)-score(a)||Date.parse(b.finished_at||b.ended_at)-Date.parse(a.finished_at||a.ended_at);
+    });
+    const meeting=candidates[0];
+    const summary=String(meeting.ai_summary||meeting.summary||'').trim().slice(0,500);
+    const overview='\n\n【过去真实见面的事实小结 · 默认记忆】\n'+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'，与 '+p.name+' 的这场见面：'+(summary||'见面原文已归档，小结等待重建。')+'\n这是已经发生的事情，原来的计划不代表已经完成；小结不足以证明的细节不能自行编造。只有确实需要具体细节时才查看引用的现场原文。';
+    if(!detail)return overview;
     const entries=(Array.isArray(meeting.entries)?meeting.entries:[]).filter(m=>
       ['user','ai'].includes(m?.sender)&&String(m.text||'').trim()&&
       !(m.sender==='user'&&/(?:心想|心里|内心独白|默念|梦见|如果|假如)/.test(String(m.text))));
-    if(!entries.length)return '';
+    if(!entries.length)return overview;
     const queryTerms=extractQueryTerms(query).filter(t=>t.length>=2);
     const important=/(?:本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见)/;
     const n=entries.length;
@@ -2897,8 +2963,8 @@
       if(used+line.length>3400)continue;
       used+=line.length;lines.push(line);
     }
-    if(!lines.length)return '';
-    return '\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'。\n'+
+    if(!lines.length)return overview;
+    return overview+'\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'。\n'+
       lines.join('\n')+'\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。见面发生的这段时间不能被描述成角色一整天都在巡逻、值班、开车或完成其他无记录的事务；未被证实的生活安排保持未知。私人内心不可当作角色亲眼所见；没有展示的情节保持不确定。';
   }
   // A generated slot can mix versions of a character. Do not promote that
@@ -3825,6 +3891,10 @@
           retry_of_task_id:retryOfTaskId,
           attempt,
           signal:abortCtrl?.signal
+        });
+        if(mode==='chat')txt=await verifyGeneratedMeetingDetail(p,c,compiled,txt,{
+          profile:p,character:c,task_id:taskId,
+          retry_of_task_id:retryOfTaskId,attempt,signal:abortCtrl?.signal
         });
         engine='live';
       }catch(e){

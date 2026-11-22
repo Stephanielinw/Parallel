@@ -38,7 +38,7 @@ d.messages=[
  {id:'user-latest',profile_id:p.id,character_id:cid,mode:'chat',sender:'user',engine:'human',text:'今天舒服吗……做的时候',created_at:new Clock(at-60000).toISOString()}
 ];
 d.meetings=[{id:'meeting-119',profile_id:p.id,character_id:cid,location:'日落大道',started_at:new Clock(begin).toISOString(),ended_at:new Clock(finish).toISOString(),finished_at:new Clock(finish).toISOString(),
- summary:'Lin探头进来了、Lin说下次见，共互动119回合',ai_summary:'',message_ids:scene.map(x=>x.id),
+ summary:'Lin探头进来了、Lin说下次见，共互动119回合',ai_summary:'原本约好了电影，后来两人在家里亲密相处，相拥睡了两个小时，最终电影并没有看。Leon把Lin送到日落大道下车告别。',message_ids:scene.map(x=>x.id),
  location_history:[{at:new Clock(finish).toISOString(),location:'日落大道',source:'scene'}],
  entries:scene.map(x=>({id:x.id,sender:x.sender,speaker:x.sender==='user'?p.name:'Leon',text:x.text,created_at:x.created_at}))}];
 d.surveillance={[key]:{byDate:{'2026-11-21':{date:'2026-11-21',profile_id:p.id,character_id:cid,engine:'live',slots:[{id:'unsafe',start:'00:00',end:'23:59',location:'特工安全公寓',status:'特工工作',activity:'DSO加密终端与政府机密文件',scene:'他在华盛顿特区处理事务',source:'schedule'}]}}}};
@@ -50,7 +50,9 @@ assert(text.includes('电影并没有看'),'actual canceled film must reach chat
 assert(text.includes('亲密相处'),'actual intimacy must reach chat system');
 assert(text.includes('相拥睡了两个小时'),'actual afternoon sleep must survive salience crowd-out');
 const wash=app.buildPromptPreview(p.id,cid,'chat',{latestText:'你也洗香香',simulatedAt:at});
-assert(wash[0].content.includes('相拥睡了两个小时'),'real shared sleep must survive unrelated washing conversation');
+assert(wash[0].content.includes('相拥睡了两个小时'),'a good meeting recap must preserve shared sleep without raw transcript');
+assert(!wash[0].content.includes('现场原文 #'),'ordinary SMS must not receive meeting transcript excerpts');
+assert(prompt[0].content.includes('现场原文 #'),'a specific intimate question must retrieve source excerpts');
 assert(text.includes('日落大道下车'),'actual drop-off must reach chat system');
 assert(!text.includes('特工安全公寓'),'invalid RE6-era safe house must be blocked');
 assert(!text.includes('DSO加密终端'),'old agent job must not be injected into RE2 prompt');
