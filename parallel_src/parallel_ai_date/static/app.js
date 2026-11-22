@@ -1338,7 +1338,7 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
         <div class="surv-live-scene">${esc(cur.scene||`${c.name}正在当下所在的位置处理日常事务。`)}</div>
         <div class="surv-live-actions">
           <span class="caption">${liveUncertain?'此处仅是推演地点或最后确认位置，并非已证实的当前地点；请先通过聊天确认见面地点。':(state.chatMode==='meeting'?'地点变化后，请在面对面小说页面顶部的「见面地点」栏修改，监控会同步。':'如果在聊天中直接点「进入见面」，将默认前往该实时地点')}</span>
-          ${state.chatMode==='chat'&&!liveUncertain?`<button type="button" class="btn primary tiny-btn" data-action="surv-enter-meeting" data-loc="${esc(cur.location||'')}">${I('map')} 前往此处与 TA 见面</button>`:`<span class="pill">当前正在线下见面中</span><button type="button" class="btn soft tiny-btn" data-action="surv-close-meeting">结束本次见面</button>`}
+          ${state.chatMode==='chat'?(liveUncertain?'<span class="pill">当前地点未确认 · 请先在聊天中约定</span>':`<button type="button" class="btn primary tiny-btn" data-action="surv-enter-meeting" data-loc="${esc(cur.location||'')}">${I('map')} 前往此处与 TA 见面</button>`):`<span class="pill">当前正在线下见面中</span><button type="button" class="btn soft tiny-btn" data-action="surv-close-meeting">结束本次见面</button>`}
         </div>
       </div>`:''}
       <div class="surv-section-head">
