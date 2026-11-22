@@ -1507,9 +1507,9 @@
         start:r.meeting_started_at&&localDateStr(r.meeting_started_at)!==localDateStr(at)?'00:00':fmtHHMM(r.meeting_started_at||at)||nowHHMM,
         end:nowHHMM,
         location:loc,
-        status:`正与 ${p.name} 当面见面中`,
-        activity:`在「${loc}」与 ${p.name} 面对面相处`,
-        scene:`${c.name}放下了原本的日常安排，此刻正身处「${loc}」与 ${p.name} 面对面互动。`,
+        status:'线下见面进行中',
+        activity:`在「${loc}」参与本次见面；是否已经接触由现场实际行为决定`,
+        scene:`${c.name}在「${loc}」进行本次见面，不能预先替 ${p.name} 决定出现、接近或搭话。`,
         source:'meeting',
         meeting_id:r.active_meeting_id||'',
         actual_started_at:r.meeting_started_at||new Date(at).toISOString(),
@@ -1521,7 +1521,20 @@
     return {...verifiedSlotForDisplay(c,active),isCurrent:true,isMeetingLive:false};
   };
   // Meeting is a live wall-clock interval, not a guessed future schedule.
-  const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>getOrInitSurveillance(p,c,localDateStr());
+  const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>{
+    const rec=getOrInitSurveillance(p,c,localDateStr());
+    const cut=hhmmToMin(fmtHHMM(Date.now()));
+    // Invalidate all speculative future rows as soon as the real scene starts.
+    rec.slots=rec.slots.flatMap(slot=>{
+      const start=hhmmToMin(slot.start),end=hhmmToMin(slot.end);
+      if(start>=cut)return [];
+      return [end>cut?{...slot,end:minToHHMM(cut)}:slot];
+    });
+    rec.live_override={meeting_id:meetingId,location:loc,started_at:relation(p.id,c.id)?.meeting_started_at||stamp()};
+    delete rec.post_meeting_anchor;delete rec.post_meeting_location;delete rec.post_meeting_id;
+    rec.updated_at=stamp();
+    return rec;
+  };
   const syncSurveillanceOnMeetingEnd=(p,c,meetingRecord)=>{
     if(!meetingRecord)return null;
     const begin=Date.parse(meetingRecord.started_at),finish=Date.parse(meetingRecord.ended_at);
@@ -1704,6 +1717,22 @@
     else rec.slots.splice(idx,1,observed);
     rec.updated_at=stamp();
   };
+  const appointmentPlanningEvidence=(p,c,dateStr)=>{
+    const chat=messagesOf(p.id,c.id).filter(m=>m.mode==='chat'&&!m.recalled&&m.engine!=='recalled'&&!isChatArtifact(m));
+    const target=new Date(dateStr+'T12:00:00').getTime();
+    const relevant=/约|见面|见你|碰面|接你|接我|咖啡|电影|吃饭|晚饭|午饭|烧烤|火锅|约会|见(?:一面|一见)|meet|date|dinner|lunch|movie|coffee|tomorrow|明天|后天|周末|星期|下周/i;
+    const dated=/点半?|[0-2]?\d:\d\d|明天|后天|今天|今晚|周末|星期|下周|月\d{1,2}日|\d{1,2}号|约好|定好|确定|不见不散|meet|tomorrow/i;
+    const matches=[];
+    chat.forEach((m,i)=>{
+      const when=Date.parse(m.created_at);
+      if(Number.isFinite(when)&&when<=target+12*3600000&&target-when<=31*86400000&&relevant.test(m.text)&&dated.test(m.text))matches.push(i);
+    });
+    const selected=new Set();
+    for(const i of matches.slice(-12))for(let j=Math.max(0,i-2);j<Math.min(chat.length,i+4);j++)selected.add(j);
+    return [...selected].sort((a,b)=>a-b).slice(-28).map(i=>{
+      const m=chat[i];return '['+chatClockLabel(m.created_at)+'] '+(m.sender==='user'?p.name:c.name)+'：'+String(m.text||'').slice(0,130);
+    }).join('\n').slice(-3500);
+  };
   async function ensureLiveSurveillance(p,c,forceRefresh=false,targetDate=''){
     const today=localDateStr();
     const dStr=(targetDate&&/^\d{4}-\d{2}-\d{2}$/.test(targetDate))?targetDate:today;
@@ -1723,13 +1752,15 @@
     }
     if(rec.engine==='live'&&!forceRefresh)return rec;
     try{
+      const appointmentEvidence=appointmentPlanningEvidence(p,c,dStr);
       const relSummary=relationshipBaselineSummary(p.id,c.id,p.name);
       const sys=`你是日程与世界线生成引擎。请为角色 ${c.name}（来源：${c.source} · ${c.version}，背景：${c.canon}）生成 ${dStr} 从 00:00 到 23:59 的完整一日生活足迹监控表（共 8 到 9 个连续时间段，无缝覆盖全天）。现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。
 要求：
 1. 严密贴合 ${c.name} 的原作职业、性格与独立生活习惯，角色有自己的工作、同伴与日常，不要整天围着 ${p.name} 转（当前关系：${relSummary}）。
 2. 每个时间段包含：start ("HH:MM"), end ("HH:MM"), location (具体地点，不超过14字), status (简短状态标签，4-6字), activity (正在做的事，不超过16字), scene (极具画面感的第三人称现场微描写，35-70字，描写环境光影、小动作或神态，严禁使用任何 emoji)。
 3. 只输出 JSON 对象，格式严格为：{"slots":[{"start":"00:00","end":"07:00","location":"...","status":"...","activity":"...","scene":"..."}]}`;
-      const out=await llm([{role:'system',content:sys},{role:'user',content:`请生成 ${c.name} 在 ${dStr} 的全天足迹 JSON。`}],{json_mode:true,profile:p,character:c,mode:'surveillance',entry_point:'surveillance',background:!forceRefresh});
+      const appointmentRules='\n已确认的约会优先于普通日程。根据以下带日期的短信往来判断双方是否明确同意，只有已经相互确认、日期匹配的安排才预留相应时间和往返交通；单方面建议、模糊邀约、已经取消的约定不能写成真实计划。必须区分发送日的“明天”与目标日。约好不代表已经发生，实际见面会覆盖计划。';
+      const out=await llm([{role:'system',content:sys+appointmentRules},{role:'user',content:`目标日期 ${dStr}；可供核对的邀约上下文（不一定已经确认）：\n${appointmentEvidence||'无可核对的约会证据'}\n请生成 ${c.name} 的全天足迹 JSON。`}],{json_mode:true,profile:p,character:c,mode:'surveillance',entry_point:'surveillance',background:!forceRefresh});
       const parsed=JSON.parse(out);
       if(Array.isArray(parsed?.slots)&&parsed.slots.length>=5){
         const preserved=rec.slots.filter(s=>['meeting','chat_update','meeting_shift'].includes(s.source));
