@@ -2135,10 +2135,10 @@
         before.lastIndexOf('「')>before.lastIndexOf('」')||
         before.lastIndexOf('『')>before.lastIndexOf('』');
       const clause=before.slice(Math.max(before.lastIndexOf('。'),before.lastIndexOf('！'),before.lastIndexOf('？'),before.lastIndexOf('；'),before.lastIndexOf('，'))+1);
-      const escapedName=String(pName||'').replace(/[.*+?^${}()|[]\\]/g,'\\$&');
-      const otherActor=new RegExp('(?:'+escapedName+'|护士|保安|店员|路人|警卫|朋友|陌生人|门卫)[^，。！？]{0,6}$');
       const characterSubject=Boolean(cName&&clause.includes(cName))||/(?:他|她)[^，。！？]{0,12}(?:抱着|扶着|带着|牵着|领着|背着)/.test(clause);
-      return !insideQuote&&(!otherActor.test(clause)||characterSubject)&&
+      const otherActor=/(?:护士|保安|店员|路人|警卫|朋友|陌生人|门卫)[^，。！？]{0,6}$/.test(clause)||
+        Boolean(pName&&clause.slice(-12).includes(pName));
+      return !insideQuote&&(!otherActor||characterSubject)&&
         !SCENE_NOT_ARRIVED_RE.test(prefix)&&!/(?:准备|打算|想要|试图|正要|还没|没有|尚未|不要|别|禁止)/.test(prefix)&&!/[？?]/.test(after);
     }).map(m=>({place:m[1],evidence:m[0],pos:m.index||0}));
     // Indirect but physically completed: opened a door to the interior and
