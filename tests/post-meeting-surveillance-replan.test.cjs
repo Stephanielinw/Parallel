@@ -90,6 +90,8 @@ function makeEngine(failOnce=false){
   const changed=JSON.parse(a.engine.exportData());
   changed.data.messages.push(msg('chat-c','chat','user','晚上如果要加班就记得带好装备。','2026-11-22T21:06:00.000Z'));
   a.engine.importData(JSON.stringify(changed));
+  // JSON restore intentionally strips credentials; reattach the mock provider.
+  await a.engine.request('/settings',{base_url:'https://mock.example/v1',api_key:'fake',model:'mock',auto_translate:false});
   now=Date.parse('2026-11-22T13:26:00-08:00');
   await a.engine.request('/surveillance',pair);
   assert.equal(a.calls.length,2,'new SMS after cooldown updates remaining itinerary');
