@@ -58,7 +58,7 @@ engine.importData(JSON.stringify(pack));
  assert.equal(live.diary.engine,'live');
  assert.equal(calls.length,1,'first live diary generation uses one model call');
  const text=JSON.stringify(calls[0].messages);
- assert(text.includes('【已确认的现场足迹'),'AI must receive an observed-only section');
+ assert(text.includes('已确认的现场足迹'),'AI must receive an observed-only section');
  assert(text.includes('【已发生的线下见面'),'AI must receive original meeting evidence');
  assert(text.includes(scene),'meeting raw transcript must ground diary when summary is absent');
  assert(text.includes('【2026-11-22 计划与模型推演'),'predicted routes must be labeled unverified');
