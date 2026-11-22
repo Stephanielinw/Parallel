@@ -9,7 +9,17 @@ test('C-18: production bundle boots in mobile WebKit with matched browser script
   const errors:string[]=[];
   page.on('pageerror',error=>errors.push(String(error)));
   await page.goto('/Parallel/');
-  await expect.poll(()=>page.evaluate(()=>Boolean(window.ParallelOffline))).toBe(true);
+  try{
+    await expect.poll(()=>page.evaluate(()=>Boolean(window.ParallelOffline)),{timeout:6500}).toBe(true);
+  }catch{
+    const diagnostic=await page.evaluate(()=>({
+      href:location.href,title:document.title,
+      root:document.querySelector('#root')?.textContent?.slice(0,220),
+      scripts:[...document.querySelectorAll('script[src]')].map(x=>x.getAttribute('src')),
+      assets:performance.getEntriesByType('resource').filter(x=>x.name.includes('.js')).slice(-8).map(x=>x.name)
+    }));
+    throw new Error('WebKit startup diagnostic: '+JSON.stringify({diagnostic,errors}));
+  }
   await expect(page.locator('#mobile-nav [data-action="nav"]')).toHaveCount(4);
   const loaded=await page.evaluate(()=>{
     const urls=[...document.querySelectorAll<HTMLScriptElement>('script[src]')].map(x=>x.src);
@@ -29,7 +39,17 @@ test('C-18: long Unicode archive survives iPhone-size reload and opens a real th
   const errors:string[]=[];
   page.on('pageerror',e=>errors.push(String(e)));
   await page.goto('/Parallel/');
-  await expect.poll(()=>page.evaluate(()=>Boolean(window.ParallelOffline))).toBe(true);
+  try{
+    await expect.poll(()=>page.evaluate(()=>Boolean(window.ParallelOffline)),{timeout:6500}).toBe(true);
+  }catch{
+    const diagnostic=await page.evaluate(()=>({
+      href:location.href,title:document.title,
+      root:document.querySelector('#root')?.textContent?.slice(0,220),
+      scripts:[...document.querySelectorAll('script[src]')].map(x=>x.getAttribute('src')),
+      assets:performance.getEntriesByType('resource').filter(x=>x.name.includes('.js')).slice(-8).map(x=>x.name)
+    }));
+    throw new Error('WebKit startup diagnostic: '+JSON.stringify({diagnostic,errors}));
+  }
   await page.evaluate(()=>{
     const engine=window.ParallelOffline!;
     const pack=JSON.parse(engine.exportData());
@@ -77,7 +97,17 @@ test('C-18: long Unicode archive survives iPhone-size reload and opens a real th
     return data.meetings[0].entries[0].text;
   })).toBe('很长的历史也要记住。');
   await page.reload();
-  await expect.poll(()=>page.evaluate(()=>Boolean(window.ParallelOffline))).toBe(true);
+  try{
+    await expect.poll(()=>page.evaluate(()=>Boolean(window.ParallelOffline)),{timeout:6500}).toBe(true);
+  }catch{
+    const diagnostic=await page.evaluate(()=>({
+      href:location.href,title:document.title,
+      root:document.querySelector('#root')?.textContent?.slice(0,220),
+      scripts:[...document.querySelectorAll('script[src]')].map(x=>x.getAttribute('src')),
+      assets:performance.getEntriesByType('resource').filter(x=>x.name.includes('.js')).slice(-8).map(x=>x.name)
+    }));
+    throw new Error('WebKit startup diagnostic: '+JSON.stringify({diagnostic,errors}));
+  }
   const state=await page.evaluate(()=>{
     const d=JSON.parse(window.ParallelOffline!.exportData()).data;
     return {count:d.messages.length,tail:d.messages.at(-1)?.text,meeting:d.meetings[0]?.id,profile:d.profiles[0]?.name};
