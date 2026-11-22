@@ -50,6 +50,7 @@ jobs:
           node tests/meeting-reroll.test.cjs
           node tests/meeting-checkpoints.test.cjs
           node tests/browser-storage-quota-rescue.test.cjs
+          node tests/m00-backup-contract.test.cjs
           python3 parallel_src/parallel_ai_date/tests/test_meeting_checkpoints.py
           node tests/meeting-edit-refusal.test.cjs
           node tests/preset-mobile-groups.test.cjs
