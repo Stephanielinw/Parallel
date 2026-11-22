@@ -2746,6 +2746,7 @@
 
   // Keep exact source IDs/content beside every durable 50-exchange recap.
   const MEETING_CHECKPOINT_INTERVAL=50;
+  const meetingCheckpointJobs=new Map();
   function completedMeetingGroups(pid,cid,mid){
     const rows=messagesOf(pid,cid).filter(m=>m.mode==='meeting'&&m.meeting_id===mid&&!m.recalled&&m.engine!=='recalled'&&!isChatArtifact(m));
     const groups=[];
@@ -2820,7 +2821,7 @@
       participants,summary,keywords,details,key_dialogues:keyDialogues,message_ids:src.map(x=>x.id),
       source_signature:signature,created_at:stamp()};
   }
-  async function ensureMeetingCheckpoints(p,c,mid){
+  async function runMeetingCheckpoints(p,c,mid){
     if(!mid)return [];
     const groups=completedMeetingGroups(p.id,c.id,mid),total=Math.floor(groups.length/50),done=[];
     for(let index=1;index<=total;index++){
@@ -2851,6 +2852,16 @@
       save();done.push(cp);
     }
     return done;
+  }
+  async function ensureMeetingCheckpoints(p,c,mid){
+    if(!mid)return [];
+    const key=pairKey(p.id,c.id)+'|'+mid;
+    const prior=meetingCheckpointJobs.get(key);
+    if(prior)return await prior;
+    const job=runMeetingCheckpoints(p,c,mid);
+    meetingCheckpointJobs.set(key,job);
+    try{return await job;}
+    finally{if(meetingCheckpointJobs.get(key)===job)meetingCheckpointJobs.delete(key);}
   }
   function meetingCheckpointPromptContext(p,c,mid,query=''){
     const groups=completedMeetingGroups(p.id,c.id,mid),records=validMeetingCheckpoints(p.id,c.id,mid,groups);
