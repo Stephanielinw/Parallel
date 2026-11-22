@@ -2045,6 +2045,16 @@
     const home=/(?:正在|现在|已经|此刻|就|还|仍).{0,20}(?:在|到了|回到|走进|进入|来到)我(?:的)?家(?:里)?/;
     if(bedroom.test(t)||namedBedroom.test(t)||/\b(?:on my bed|in my bedroom)\b/i.test(t))return profileName+' 的卧室';
     if(home.test(t)||/(?:带|领|接|跟|陪).{0,12}(?:他|她|你|[A-Za-z]+)?.{0,8}(?:回|到)(?:了)?我(?:的)?家|(?:带|领|接|跟|陪).{0,12}(?:他|她|你|[A-Za-z]+)?.{0,8}回家了?|\b(?:at my place|in my home)\b/i.test(t))return profileName+' 的家';
+    // Only completed transport/arrival performed in this scene, never an
+    // itinerary or an intention to be somewhere later.
+    if(/(?:下车|下了车|停车|停下了车|送到了|已经到达|已经抵达)/.test(t)&&
+      !/(?:如果|假如|打算|准备|将要|计划|还没|没有|尚未|梦见|想象)/.test(t)){
+      const movement=t.match(/(?:在|到了?|到达|抵达(?:了)?|送(?:我|你)?到(?:了)?|送到(?:了)?|停车在)\s*([^，。！？；、\n]{2,32}?)(?:下(?:了)?车|停(?:了)?车|，|。|！|$)/);
+      if(movement){
+        const place=cleanScenePlace(movement[1]);
+        if(place&&!/^(?:我|你|他|她|这里|那里|这儿|那儿|家|路边|车里)$/.test(place)&&!/[我你他她]/.test(place))return place;
+      }
+    }
     return '';
   }
   function recoverPreMeetingPlace(p,c,began){
