@@ -21,7 +21,9 @@ const cid='re-game:leon:re2',key=p.id+'|'+cid;
 const begin=at-4*3600000,finish=at-25*60000;
 const scene=Array.from({length:119},(_,i)=>{
  const line=i===0?'我们最初约好看电影。':
-  i===59?'结果电影并没有看。我们在家里亲密相处，后来相拥睡了两个小时。':
+  i===59?'结果电影并没有看，后来改了行程。':
+  i===72?'我们在家里亲密相处，后来相拥睡了两个小时。':
+  i>=92&&i<116?'他们在告别前拥抱、接吻，Leon把外套搭在肩上。':
   i===76?'Leon替我盖好外套。虽然我们已经亲密相处，他还是舍不得我走。':
   i===117?'我在日落大道下车了，Leon送我来这里见朋友。':
   '第'+i+'回合，我们在室内面对面交谈。';
@@ -46,6 +48,9 @@ const text=prompt.map(x=>x.content).join('\n');
 assert(text.includes('最近一次真实线下见面'),'recent scene must be retrieved independent of phone keywords');
 assert(text.includes('电影并没有看'),'actual canceled film must reach chat system');
 assert(text.includes('亲密相处'),'actual intimacy must reach chat system');
+assert(text.includes('相拥睡了两个小时'),'actual afternoon sleep must survive salience crowd-out');
+const wash=app.buildPromptPreview(p.id,cid,'chat',{latestText:'你也洗香香',simulatedAt:at});
+assert(wash[0].content.includes('相拥睡了两个小时'),'real shared sleep must survive unrelated washing conversation');
 assert(text.includes('日落大道下车'),'actual drop-off must reach chat system');
 assert(!text.includes('特工安全公寓'),'invalid RE6-era safe house must be blocked');
 assert(!text.includes('DSO加密终端'),'old agent job must not be injected into RE2 prompt');
