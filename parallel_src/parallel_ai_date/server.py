@@ -2578,6 +2578,13 @@ def is_post_history_system_preset(entry):
     grp=str(entry.get('group') or infer_preset_group(nm))
     return grp=='COT' or ('COT' in nm) or ('连续性检查' in nm) or ('动笔前' in nm) or ('自检' in nm)
 
+def needs_meeting_detail(text):
+    """Detail recall is opt-in, not a 3k-character transcript on every SMS."""
+    body=str(text or '')
+    past=re.search(r'上次|上回|那次|那天|那晚|那会儿|当时|见面时|约会时|那下午|那时候|还记得|你记得|我记得|我们之前|昨天我们|那一晚',body)
+    specific=re.search(r'具体|细节|说了什么|说过什么|怎么做|怎么回事|为什么|哪里|哪个|什么时候|如何|睡|醒|吻|亲|抱|当时|那会儿|发生|去了|做的时候',body)
+    return bool((past and specific) or re.search(r'做的时候|睡着的时候|醒来的时候|我们在床上|在一起的那天下午',body))
+
 def recent_actual_meeting_context(db,p,c,query='',at=0):
     """A recent real encounter is continuity, even when the next SMS changes topic.
     These are attributed archive excerpts, not a guessed summary or another role's data.
@@ -2587,19 +2594,30 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
     state=MEETING_STATE.get((p['id'],c['id']),{})
     rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
     active=state.get('active_meeting_id') if rel and rel['mode']=='meeting' else ''
-    meeting=None
+    candidates=[]
     for row in rows:
         if row['id']==active:continue
         try:
             ended=datetime.fromisoformat(str(row['ended_at']).replace('Z','+00:00'))
             if ended.tzinfo is None:ended=ended.replace(tzinfo=timezone.utc)
-            age=(now-ended).total_seconds()
-            if 0<=age<=72*3600:meeting=dict(row);break
+            if (now-ended).total_seconds()>=0:candidates.append(dict(row))
         except (ValueError,TypeError,OverflowError):continue
-    if not meeting:return ''
+    if not candidates:return ''
+    detail=needs_meeting_detail(query)
+    terms=[t for t in extract_query_terms(query) if len(str(t))>=2]
+    if detail and len(candidates)>1:
+        candidates.sort(key=lambda m:sum(1 for t in terms if str(t).lower() in (str(m.get('ai_summary') or '')+' '+str(m.get('summary') or '')+' '+str(m.get('entries') or '')).lower()),reverse=True)
+    meeting=candidates[0]
+    summary=str(meeting.get('ai_summary') or meeting.get('summary') or '').strip()[:500]
+    overview=("\n\n【过去真实见面的事实小结 · 默认记忆】\n"
+              +str(meeting.get('started_at',''))[:16]+" 至 "+str(meeting.get('ended_at',''))[:16]
+              +"，与 "+p['name']+" 的这场见面："+(summary or '见面原文已归档，小结等待重建。')
+              +"\n这是已发生的经历，原定计划不等于实际完成；无法从小结确认的具体细节不能编造。"
+              +"只有有必要提及具体现场细节时才参考下列可核对的原文。")
+    if not detail:return overview
     entries=[e for e in parse_json(meeting.get('entries'),[]) if isinstance(e,dict) and e.get('sender') in ('user','ai')
         and str(e.get('text') or '').strip() and not (e['sender']=='user' and re.search(r'心想|心里|内心独白|默念|梦见|如果|假如',str(e['text'])))]
-    if not entries:return ''
+    if not entries:return overview
     terms=[t for t in extract_query_terms(query) if len(str(t))>=2]
     salient=re.compile(r'本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见')
     n=len(entries)
@@ -2641,8 +2659,8 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
         line=f"[{p['name'] if e['sender']=='user' else c['name']} · 现场原文 #{i+1}] {excerpt}"
         if used+len(line)>3400:continue
         used+=len(line);parts.append(line)
-    if not parts:return ''
-    return ("\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下只属于你与 "+p['name']+
+    if not parts:return overview
+    return (overview+"\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下只属于你与 "+p['name']+
         " 的这一场见面，不属于任何其他角色实例；发生时间 "+str(meeting.get('started_at',''))[:16]+" 至 "+str(meeting.get('ended_at',''))[:16]+"。\n"+
         "\n".join(parts)+
         "\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。"
