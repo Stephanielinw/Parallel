@@ -70,6 +70,7 @@ function makeEngine(failOnce=false){
   // Saved iPhone data from the reported broken state: 09:51 placeholder still
   // current at 13:05. A normal read, not just a manual refresh, must repair it.
   const a=makeEngine();
+  await a.engine.request('/settings',{base_url:'https://mock.example/v1',api_key:'fake',model:'mock',auto_translate:false});
   const actual=await a.engine.request('/surveillance',pair);
   assert.equal(a.calls.length,1,'open surveillance automatically triggers missing replan');
   const prompt=JSON.stringify(a.calls[0].messages);
@@ -97,6 +98,7 @@ function makeEngine(failOnce=false){
   // should repeated modal opens immediately burn tokens.
   now=Date.parse('2026-11-22T13:05:00-08:00');
   const b=makeEngine(true);
+  await b.engine.request('/settings',{base_url:'https://mock.example/v1',api_key:'fake',model:'mock',auto_translate:false});
   const failed=await b.engine.request('/surveillance',pair);
   assert.equal(b.calls.length,1);
   assert.equal(failed.current.is_unconfirmed,true,'legacy placeholder is labeled unconfirmed after a failed retry');
