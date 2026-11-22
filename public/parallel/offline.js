@@ -2358,6 +2358,7 @@
     }
     db.episodicMemories=(db.episodicMemories||[]).filter(mem=>!oldMemIds.has(mem.id)&&!(mem.owner_id===c.id&&mem.profile_id===p.id&&oldMemIds.has(mem.clarifies_id)));
     db.messages=db.messages.filter(m=>!(m.profile_id===p.id&&m.character_id===c.id&&ids.has(m.id)));
+    pruneMeetingCheckpoints(p.id,c.id);
     for(const msg of db.messages)if(msg.profile_id===p.id&&msg.character_id===c.id&&ids.has(msg.quote?.id))msg.quote=null;
     for(const id of ids)invalidateTranslation(id);
     const oldEventIds=new Set(removed.map(m=>m.id));
@@ -2770,9 +2771,23 @@
     }
     return valid.sort((x,y)=>x.block_index-y.block_index);
   }
+  function pruneMeetingCheckpoints(pid,cid,mid=''){
+    const groupsByMeeting=new Map(),removed=[];
+    db.meetingCheckpoints=(db.meetingCheckpoints||[]).filter(cp=>{
+      if(cp.profile_id!==pid||cp.character_id!==cid||(mid&&cp.meeting_id!==mid))return true;
+      if(!groupsByMeeting.has(cp.meeting_id))groupsByMeeting.set(cp.meeting_id,completedMeetingGroups(pid,cid,cp.meeting_id));
+      const full=groupsByMeeting.get(cp.meeting_id);
+      const part=full.slice((cp.block_index-1)*50,cp.block_index*50);
+      const valid=part.length===50&&cp.source_signature===meetingBlockSignature(part);
+      if(!valid)removed.push('meeting-checkpoint:'+cp.meeting_id+':'+cp.block_index);
+      return valid;
+    });
+    if(removed.length)db.episodicMemories=db.episodicMemories.filter(m=>m.profile_id!==pid||m.owner_id!==cid||!removed.includes(m.source_key));
+    return removed.length;
+  }
   function meetingCheckpointSource(groups,p,c){
     return groups.flat().map(m=>{
-      const body=String(m.text||'').replace(/\s+/g,' ').trim(),max=m.sender==='user'?180:240;
+      const body=String(m.text||'').replace(/\s+/g,' ').trim(),max=m.sender==='user'?300:480;
       const excerpt=body.length<=max?body:body.slice(0,Math.ceil(max*.65))+' … '+body.slice(-Math.floor(max*.35));
       return '['+m.id+' @ '+String(m.created_at||'').slice(0,19)+'] '+(m.sender==='user'?p.name:c.name)+'：'+excerpt;
     }).join('\n');
@@ -4226,6 +4241,7 @@
         const index=db.messages.findIndex(m=>m.id===old.id&&m.profile_id===p.id&&m.character_id===c.id);
         if(index<0)throw Error('原文不存在');
         db.messages[index]=replacement;invalidateTranslation(old.id);
+        pruneMeetingCheckpoints(p.id,c.id,mid);
         const invalid=new Set();
         for(const mem of db.episodicMemories){
           if(mem.profile_id!==p.id||mem.owner_id!==c.id)continue;
@@ -4926,6 +4942,7 @@
           targetMsg.text='[系统提示：对方撤回了一条消息（你没有看清具体内容）]';
           targetMsg.engine='recalled';
           targetMsg.recalled=true;
+          if(targetMsg.mode==='meeting')pruneMeetingCheckpoints(p.id,c.id,targetMsg.meeting_id);
           invalidateTranslation(mid);
           for(const mem of (db.episodicMemories||[])){
             if(mem.owner_id===c.id&&mem.profile_id===p.id&&(mem.raw_msg_ids||[]).includes(mid)){
@@ -4970,6 +4987,7 @@
             const removedIds=removed.map(m=>m.id),affected=new Set([mid,...removedIds]);
             targetMsg.text=rawTxt;targetMsg.edited_at=stamp();
             if(removedIds.length)db.messages=db.messages.filter(m=>!affected.has(m.id)||m.id===mid);
+            pruneMeetingCheckpoints(p.id,c.id,meetingId);
             for(const rid of affected)invalidateTranslation(rid);
             const staleMemIds=new Set();
             for(const mem of db.episodicMemories){
