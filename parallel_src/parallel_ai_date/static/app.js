@@ -1865,7 +1865,7 @@ async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
   if(mode==='meeting'&&!wasPaused)state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:now,engine:'human'});
   renderMessages();
   try{
-    const r=await api('/message',{profileId,characterId:id,text:txt,...(quote?{quoteMessageId:quote.id}:{}),...(mode==='meeting'?{location:state.meetingLocation}: {})});
+    const r=await api('/message',{profileId,characterId:id,text:txt,...(quote?{quoteMessageId:quote.id}:{}),});
     if(quote&&activeChatQuote===quote)activeChatQuote=null;
     if(isCurrentPair(profileId,id)&&hasCurrentThreadSnapshot()){
       if(r.queue)state.queue=r.queue;
@@ -1890,7 +1890,7 @@ async function continueReply(){if(state.chatBusy||state.flushBusy||state.queue?.
   if(state.chatMode==='chat'&&state.queue?.count){return flushChat(true)}
   state.chatBusy=true;const id=state.threadId,profileId=state.activeId,mode=state.chatMode;state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:new Date().toISOString(),engine:'human'});renderMessages();
   try{
-    const r=await api('/reply',{profileId,characterId:id,...(mode==='meeting'?{location:state.meetingLocation}: {})});
+    const r=await api('/reply',{profileId,characterId:id,});
     if(isCurrentPair(profileId,id)&&hasCurrentThreadSnapshot()&&r.taskState)state.taskState=r.taskState;
     if(r.apiError){
       state.chatBusy=false;
@@ -1966,7 +1966,7 @@ async function submitEditMessage(mid){
         state.messages.push({id:'typing',sender:'ai',mode:'meeting',text:'…',created_at:new Date().toISOString(),engine:'human'});
         renderMessages();
       }
-      const reply=await api('/reply',{profileId,characterId:id,location:state.meetingLocation});
+      const reply=await api('/reply',{profileId,characterId:id});
       if(isCurrentPair(profileId,id)&&state.tab==='messages'){
         await loadThreads(id);
         if(reply.apiError)showApiErrorModal(reply.apiError,reply.taskState,{type:'reply',profileId,characterId:id,mode:'meeting'});
@@ -1988,7 +1988,7 @@ async function regenerateMessage(mid){
   state.chatBusy=true;
   renderMessages();
   try{
-    const r=await api('/message-regenerate',{profileId,characterId:id,messageId:mid,...(mode==='meeting'?{location:state.meetingLocation}: {})});
+    const r=await api('/message-regenerate',{profileId,characterId:id,messageId:mid,});
     state.chatBusy=false;
     if(r.apiError){
       if(mode==='meeting'){toast(r.warning||'重 Roll 失败，原文已保留。');}
@@ -2054,10 +2054,10 @@ async function changeMode(){
   // A location blur can trigger a save just before the end-meeting click.
   // Serialize it so a late save cannot accidentally reopen a new meeting.
   if(state.meetingLocationSyncPromise)await state.meetingLocationSyncPromise.catch(()=>{});
-  const loc=$('meeting-location-input')?.value?.trim()||state.meetingLocation||'';
+  // The explicit location editor already persisted its correction via /mode.
   state.chatBusy=true;
   try{
-    await api('/mode',{profileId,characterId:id,mode:'chat',finalizeMeeting:true,location:loc});
+    await api('/mode',{profileId,characterId:id,mode:'chat',finalizeMeeting:true});
     state.chatBusy=false;
     if(state.tab==='messages'&&isCurrentPair(profileId,id))await loadThreads(id);else refreshInboxQuietly(profileId);
     toast('已结束见面：聊天页已生成本次见面卡片，点击卡片可查看完整记录');

@@ -2108,6 +2108,84 @@
     }
     return '';
   }
+
+  // A meeting monitor follows the character's *witnessed physical position*.
+  // A mention of another room, a plan to go there, or a sound from next door
+  // does not establish that the character arrived there.
+  const SCENE_INTERIOR_RE=/(?:卧室|房间|屋内|室内|寝室|宿舍|客厅|厨房|浴室|卫生间|洗手间|走廊|门厅|露台|阳台|庭院|花园|楼下|楼上|咖啡馆|咖啡店|餐厅|街道|车里|车内|车上|车厢|停车场|床沿|床边|床上)/;
+  const SCENE_MOVE_RE=/(?:走进|走入|进入|步入|迈入|踏进|回到|来到|抵达|到达|到了|进了|出了|走出|带进|抱进|抱回|推门进入|推开.{0,36}门.{0,30}(?:走进|进入|走入|床沿|床边|床上)|穿过.{0,35}(?:门|走廊)|在.{0,18}(?:床沿|床边|床上)(?:坐下|坐|躺下|停住|落下)|(?:坐|躺|落|放|陷|坐定|停住).{0,18}(?:床沿|床边|床上)|下了车|下车|停好车|到了家)/;
+  const SCENE_NOT_ARRIVED_RE=/(?:打算|准备|计划|想要|想去|还没|尚未|没有|如果|假如|也许|或许|可能|梦见|想象|本来要|即将|正要|试图|差点|朝.{0,14}走去|向.{0,14}走去|走向.{0,14}|通往.{0,16}(?:门|房|室|厅))/;
+  function meetingRoomName(current,room,pName){
+    const where=String(current||'').trim();
+    const base=where.replace(/(?:外廊露台|屋顶露台|露台|阳台|外廊|走廊|卧室|寝室|房间|客厅|厨房|浴室|卫生间|洗手间|门厅|庭院|花园|楼下|楼上)$/,'').trim();
+    const roomKind=/^(?:床沿|床边|床上|卧室|寝室)$/.test(room)?'卧室':/^(?:室内|屋内|房间)$/.test(room)?'室内':room;
+    if(where.includes('卧室')&&roomKind==='卧室')return where;
+    if(where===pName+' 的家'||where===pName+' 的卧室'||where.startsWith(pName+' 的'))return pName+' 的'+roomKind;
+    if(base&&base!==where&&base.length<=24)return base+roomKind;
+    return roomKind;
+  }
+  function sceneLocationFromCharacter(raw,current,pName,cName=''){
+    const text=String(raw||'');
+    if(!text||!SCENE_INTERIOR_RE.test(text)||!SCENE_MOVE_RE.test(text))return null;
+    const destination=/(?:走进|走入|进入|步入|迈入|踏进|回到|来到|抵达|到达|到了|进了|出了|走出|带进|抱进|抱回|推门进入)\s*[了的进到入过]?[\s「『“"]*(?:(?:这间|那间|自己|他们|她|他|我们|我|你|Lin|Carlos)\s*的?)?[\s「『“"]*((?:[\u4e00-\u9fff]{1,12}的)?(?:卧室|寝室|房间|客厅|厨房|浴室|卫生间|洗手间|室内|屋内|露台|阳台|庭院|花园|走廊|楼下|楼上|咖啡馆|咖啡店|餐厅|车里|车内|车上|停车场|街道))/g;
+    const seen=[...text.matchAll(destination)].filter(m=>{
+      const before=text.slice(0,m.index||0);
+      const prefix=before.slice(-22),after=text.slice(m.index,m.index+m[0].length+8);
+      const insideQuote=before.lastIndexOf('“')>before.lastIndexOf('”')||
+        before.lastIndexOf('「')>before.lastIndexOf('」')||
+        before.lastIndexOf('『')>before.lastIndexOf('』');
+      const clause=before.slice(Math.max(before.lastIndexOf('。'),before.lastIndexOf('！'),before.lastIndexOf('？'),before.lastIndexOf('；'),before.lastIndexOf('，'))+1);
+      const characterSubject=Boolean(cName&&clause.includes(cName))||/(?:他|她)[^，。！？]{0,12}(?:抱着|扶着|带着|牵着|领着|背着)/.test(clause);
+      const otherActor=/(?:护士|保安|店员|路人|警卫|朋友|陌生人|门卫)[^，。！？]{0,6}$/.test(clause)||
+        Boolean(pName&&clause.slice(-12).includes(pName));
+      return !insideQuote&&(!otherActor||characterSubject)&&
+        !SCENE_NOT_ARRIVED_RE.test(prefix)&&!/(?:准备|打算|想要|试图|正要|还没|没有|尚未|不要|别|禁止)/.test(prefix)&&!/[？?]/.test(after);
+    }).map(m=>({place:m[1],evidence:m[0],pos:m.index||0}));
+    // Indirect but physically completed: opened a door to the interior and
+    // arrived at the bed. Not merely "we should go to bed".
+    const bedtime=/(?:床沿|床边|床上|床铺|床垫|被褥)/g;
+    const bed=[...text.matchAll(bedtime)].filter(m=>{
+      const around=text.slice(Math.max(0,(m.index||0)-85),Math.min(text.length,(m.index||0)+60));
+      return /(?:推开|踹开|关上|走进|迈进|穿过|抱着|托抱|抱回|进入|到了|倒在|坐在|停住|陷进|落在|躺到|躺在)/.test(around)&&
+        !/(?:如果|假如|打算|准备|计划|想象|梦里|还没|尚未)/.test(around);
+    });
+    if(bed.length&&/露台|阳台|屋外|室外|走廊|门外/.test(String(current||''))&&
+       /(?:推开|走进|迈进|穿过|关上|抱回|进入|回到|通往室内)/.test(text)){
+      const item=bed.at(-1);
+      seen.push({place:'卧室',evidence:text.slice(Math.max(0,item.index-60),Math.min(text.length,item.index+50)),pos:item.index||0});
+    }
+    if(!seen.length)return null;
+    const last=seen.sort((a,b)=>a.pos-b.pos).at(-1);
+    let location=meetingRoomName(current,last.place,pName);
+    if(last.place.startsWith(pName+' 的'))location=last.place;
+    if(!location||isNonPlaceText(location)||location.length>40||location===current)return null;
+    return {location,evidence:last.evidence,kind:'scene'};
+  }
+  function isPotentialMeetingMovement(text){
+    const src=String(text||'');
+    // A generic verb such as “遇到了” is not a physical arrival; avoid
+    // wasting API calls and replacing the model payload with a classifier.
+    return SCENE_INTERIOR_RE.test(src)&&/(?:走进|走入|进入|步入|迈入|踏进|回到|来到|抵达|到达|进了|走出|带进|抱进|抱回|推门进入|推开.{0,36}门|穿过.{0,35}(?:门|走廊)|下了车|下车|停好车|(?:坐|躺|倒|抱|落|陷|放).{0,24}(?:床沿|床边|床上))/.test(src);
+  }
+  async function classifyMeetingMovement(p,c,characterText,current,options={}){
+    const deterministic=sceneLocationFromCharacter(characterText,current,p.name,c.name);
+    if(deterministic)return deterministic;
+    if(!isPotentialMeetingMovement(characterText)||pub().mode!=='live')return null;
+    // Only ambiguous physical scene shifts require an additional small model
+    // check. Normal stationary dialogue adds zero API calls.
+    try{
+      const raw=await llm([
+        {role:'system',content:'你是线下小说现场的地点事实核对员，不续写故事。追踪角色本人实际所在的地点。仅当本条正文已经明确完成物理移动且地点改变时才输出 changed:true。提议、将来时、假设、想象、路过提及、朝某处走去但未抵达、别人的位置，全部 changed:false。地点应是具体、简短且能与原场景关联的地点，例如从宿舍露台进入室内床边可归纳为宿舍卧室。必须把正文中实际证明“已到达”的连续原文短句逐字复制到 evidence；不能编造移动。只输出 JSON {"changed":false,"location":"","evidence":"","actor":"none"} 或 {"changed":true,"location":"新地点","evidence":"原文逐字连续片段","actor":"character"}。'},
+        {role:'user',content:'原先角色当前位置：'+current+'\n角色：'+c.name+'\n最新角色正文：\n'+String(characterText).slice(-8500)}
+      ],{json_mode:true,profile:p,character:c,mode:'surveillance',entry_point:'meeting_scene_location',background:true,temperature:0.1,signal:options.signal});
+      const parsed=JSON.parse(raw);
+      const location=cleanScenePlace(parsed?.location||''),evidence=String(parsed?.evidence||'').trim();
+      if(parsed?.changed!==true||parsed?.actor!=='character'||!location||location===current||
+         evidence.length<5||!String(characterText).includes(evidence)||SCENE_NOT_ARRIVED_RE.test(evidence))return null;
+      return {location,evidence,kind:'model'};
+    }catch{return null;}
+  }
+
   function recoverPreMeetingPlace(p,c,began){
     // Reconstruct the original stop from the player's pre-meeting plans.
     // A concrete named venue is evidence; an AI-generated schedule is not.
@@ -2122,6 +2200,11 @@
     }
     return '';
   }
+  function meetingSceneSignature(text){
+    let h=2166136261;
+    for(const ch of String(text||''))h=Math.imul(h^ch.charCodeAt(0),16777619)>>>0;
+    return h.toString(16);
+  }
   function activeMeetingLocationHistory(p,c){
     const r=relation(p.id,c.id);
     if(!r||r.mode!=='meeting')return [];
@@ -2134,15 +2217,28 @@
         (recoverPreMeetingPlace(p,c,began)||'约定的见面地点'));
     const events=[{at:new Date(began).toISOString(),location:startingLoc,source:'start'}];
     const manual=prior.filter(x=>['manual','resume'].includes(x.source)&&Number.isFinite(Date.parse(x.at))&&Date.parse(x.at)>=began&&!isNonPlaceText(x.location));
-    const userTurns=messagesOf(p.id,c.id).filter(m=>m.sender==='user'&&m.mode==='meeting'&&
-      (!r.active_meeting_id||!m.meeting_id||m.meeting_id===r.active_meeting_id)&&
+    const activeTurns=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&
+      (!r.active_meeting_id||!m.meeting_id||m.meeting_id===r.active_meeting_id)&&m.engine!=='recalled'&&!m.recalled&&
       Number.isFinite(Date.parse(m.created_at))&&Date.parse(m.created_at)>=began);
-    for(const m of userTurns){
-      const loc=meetingPlaceInPlayerTurn(m.text,p.name);
-      if(loc)events.push({at:m.created_at,location:loc,source:'scene'});
+    const allEvents=events.concat(manual);
+    const candidate=activeTurns.slice().sort((a,b)=>Date.parse(a.created_at)-Date.parse(b.created_at));
+    for(const m of candidate){
+      let loc='';
+      if(m.sender==='user')loc=meetingPlaceInPlayerTurn(m.text,p.name);
+      else if(m.sender==='ai'){
+        const current=allEvents.filter(e=>Date.parse(e.at)<=Date.parse(m.created_at)).sort((a,b)=>Date.parse(a.at)-Date.parse(b.at)).at(-1)?.location||startingLoc;
+        const evidence=(m.scene_location&&m.scene_location_signature===meetingSceneSignature(m.text))
+          ?{location:m.scene_location}:sceneLocationFromCharacter(m.text,current,p.name,c.name);
+        loc=evidence?.location||'';
+      }
+      const previous=allEvents.filter(e=>Date.parse(e.at)<=Date.parse(m.created_at))
+        .sort((a,b)=>Date.parse(a.at)-Date.parse(b.at)).at(-1)?.location||startingLoc;
+      if(loc&&!isNonPlaceText(loc)&&loc!==previous){
+        allEvents.push({at:m.created_at,location:loc,source:m.sender==='user'?'scene':'ai_scene',message_id:m.id});
+      }
     }
-    events.push(...manual);
-    const priority={start:0,scene:1,resume:2,manual:3};
+    events.length=0;events.push(...allEvents);
+    const priority={start:0,scene:1,ai_scene:2,resume:3,manual:4};
     events.sort((a,b)=>Date.parse(a.at)-Date.parse(b.at)||(priority[a.source]-priority[b.source]));
     const settled=[];
     for(const event of events){
@@ -3153,7 +3249,7 @@
     const interestsStr=(p.interests||[]).join('、')||'未填写';
     const intentStr=p.intent||'未填写';
     const curSurv=getCurrentSurveillanceSlot(p,c,options.simulatedAt||Date.now());
-    const meetingLoc=relation(p.id,c.id)?.meeting_location||curSurv?.location||'约定的街角咖啡馆';
+    const meetingLoc=curSurv?.location||relation(p.id,c.id)?.meeting_location||'约定的街角咖啡馆';
     let sys='你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n';
     sys+='现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。\n';
     if(mode==='meeting'){
@@ -3236,7 +3332,7 @@
       const postSystemParts=postPresets.filter(x=>x.role==='system').map(x=>macros(x.content));
       postSystemParts.push(meetingClockContext(relation(p.id,c.id),workingHistory,Date.now(),options.rerollAt||0));
       if(isMeetingOpening)postSystemParts.push(meetingOpeningDirection(p,c,meetingLoc));
-      postSystemParts.push(`【第四层 · 当前状态 (Current State)】当前见面地点：「${meetingLoc}」。请严格按照上方已启用的预设模块规则（含文风、视角、去油腻、连续性及正文篇幅要求）输出面对面小说正文；只决定 ${c.name} 自己与环境中合理的事，不要替 ${p.name} 说话、行动或决定心理，不要在正文开头添加任何时间或模式标签。`);
+      postSystemParts.push(`【第四层 · 当前状态 (Current State)】角色最后经现场实际行动确认的地点：「${meetingLoc}」。此定位是过去确认的状态，不是不可更改的固定舞台；如果本轮角色确实移至新地点，应按真实移动过程继续，并使后续监控更新。不能因目的地被提及、打算过去、角色猜测而假定已经到达。必须优先承接最新现场行动，不得让旧日程或旧地名覆盖新的实际位置。请严格按照上方已启用的预设模块规则（含文风、视角、去油腻、连续性及正文篇幅要求）输出面对面小说正文；只决定 ${c.name} 自己与环境中合理的事，不要替 ${p.name} 说话、行动或决定心理，不要在正文开头添加任何时间或模式标签。`);
       chat.push({role:'system',content:postSystemParts.join('\n\n')});
       for(const x of postPresets){
         if(x.role!=='system')chat.push({role:x.role,content:macros(x.content)});
@@ -4059,6 +4155,14 @@
         engine='error';
       }
     }else txt=demo(p,c,mode);
+    // Evaluate every successful meeting reply for physical location changes.
+    // The inexpensive local check runs every turn; a second model is queried
+    // only when text indicates an ambiguous completed spatial transition.
+    let sceneLocation=null;
+    if(mode==='meeting'&&engine!=='error'&&txt){
+      const known=activeMeetingLocationHistory(p,c).at(-1)?.location||r?.meeting_location||'约定的见面地点';
+      sceneLocation=await classifyMeetingMovement(p,c,cleanMeetingNovelText(txt),known,{signal:abortCtrl?.signal});
+    }
     inflightControllers.delete(tKey);
     const curRel=relation(p.id,c.id);
     const curTs=getTaskState(p.id,c.id,mode);
@@ -4095,6 +4199,20 @@
     const bubbleTexts=mode==='chat'?splitChatBubbles(txt):[cleanMeetingNovelText(txt)];
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai',mode,bTxt,engine));
     const reply=replies[replies.length-1]||null;
+    if(reply&&mode==='meeting'){
+      if(sceneLocation?.location){
+        reply.scene_location=sceneLocation.location;
+        reply.scene_location_evidence=sceneLocation.evidence;
+        reply.scene_location_kind=sceneLocation.kind;
+        reply.scene_location_signature=meetingSceneSignature(reply.text);
+      }
+      const history=activeMeetingLocationHistory(p,c);
+      const rec=getOrInitSurveillance(p,c,localDateStr(reply.created_at));
+      if(rec.live_override&&rec.live_override.meeting_id===activeMid){
+        rec.live_override.location=history.at(-1)?.location||rec.live_override.location;
+        rec.updated_at=stamp();
+      }
+    }
     if(reply){
       const combinedTxt=replies.map(m=>m.text).join(' / ');
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180));
@@ -4250,6 +4368,9 @@
       }else raw=demo(p,c,'meeting');
       const body=cleanMeetingNovelText(raw);
       if(!body||/^[\s.…。]+$/.test(body))throw Error('未返回有效正文');
+      const prev=activeMeetingLocationHistory(p,c).filter(e=>e.message_id!==old.id&&Date.parse(e.at)<=anchor).at(-1)?.location||
+        r.meeting_location||'约定的见面地点';
+      const sceneLoc=await classifyMeetingMovement(p,c,body,prev,{signal:controller?.signal});
       const live=relation(p.id,c.id),current=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid&&!m.recalled&&m.engine!=='recalled');
       if(meetingRerolls.get(key)!==roll||live?.status!=='matched'||live.mode!=='meeting'||live.active_meeting_id!==mid||episodeSignature(current)!==before||!archiveStoredCurrent()){
         return {ok:false,removedIds:[],replies:[],reply:null,warning:'见面状态或原文已变化，已丢弃迟到的重 Roll 结果。'};
@@ -4258,7 +4379,9 @@
       // has arrived, passed checks, and the original source is still current.
       const snapshot=JSON.stringify(db),id=uid();
       try{
-        const replacement={...old,id,text:body,engine,created_at:old.created_at,rerolled_at:stamp(),reroll_count:(Number(old.reroll_count)||0)+1};
+        const replacement={...old,id,text:body,engine,created_at:old.created_at,rerolled_at:stamp(),reroll_count:(Number(old.reroll_count)||0)+1,
+          scene_location:sceneLoc?.location||'',scene_location_evidence:sceneLoc?.evidence||'',
+          scene_location_kind:sceneLoc?.kind||'',scene_location_signature:sceneLoc?meetingSceneSignature(body):''};
         const index=db.messages.findIndex(m=>m.id===old.id&&m.profile_id===p.id&&m.character_id===c.id);
         if(index<0)throw Error('原文不存在');
         db.messages[index]=replacement;invalidateTranslation(old.id);
@@ -4274,7 +4397,9 @@
         db.events=db.events.filter(e=>!(e.profile_id===p.id&&e.character_id===c.id&&e.type==='ai_message'&&(e.message_id===old.id||(!e.message_id&&e.summary===c.name+' 回应 '+p.name+'：'+old.text.slice(0,180)&&Math.abs(Date.parse(e.created_at)-anchor)<10000))));
         event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+body.slice(0,180),anchor);db.events.at(-1).message_id=id;
         const oldDiary=db.diaries[key]?.byDate?.[localDateStr(anchor)];if(oldDiary)oldDiary.stale_after_recovery=true;
-        if(typeof location==='string'&&location.trim())live.meeting_location=location.trim().slice(0,40);
+        // Old cached UIs may send the original scene name on reroll; it is
+        // not an actual physical move and must not overwrite current reality.
+        activeMeetingLocationHistory(p,c);
         const updated=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid);
         upsertMeetingRecord(p,c,mid,updated,live.meeting_location||'');
         try{await ensureMeetingCheckpoints(p,c,mid);}
@@ -4784,7 +4909,7 @@
         if(Object.prototype.hasOwnProperty.call(data,'autoArrivalId'))return {mode:r.mode,autoRejected:true};
         const proposedLoc=String(data.location||data.meetingLocation||'').trim().slice(0,40);
         const locInput=isNonPlaceText(proposedLoc)?'':proposedLoc;
-        if(locInput){
+        if(locInput&&m==='meeting'){
           if(r.mode==='meeting')confirmActiveMeetingLocation(p,c,locInput);
           else r.meeting_location=locInput;
         }
@@ -4861,7 +4986,7 @@
             }
             if(mMsgs.length){
               const mid=activeMid||mMsgs[0].meeting_id||('meet_'+mMsgs[0].id);
-              let aiSum='',aiLoc=locInput||r.meeting_location||'';
+              let aiSum='',aiLoc=r.meeting_location||''; // scene authority, never stale finale UI payload
               if(data.finalizeMeeting===true&&pub().mode==='live'){
                 try{
                   const parsed=await summarizeCompleteMeeting(p,c,mMsgs,aiLoc);
@@ -5312,13 +5437,9 @@
       case '/message':case '/reply':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id),mode=r.mode;
         if(mode==='meeting'&&meetingRerolls.has(pairKey(p.id,c.id)))bodyErr('正在重 Roll，请等待当前一幕完成');
-        if(mode==='meeting'&&typeof data.location==='string'&&data.location.trim()){
-          const inputLoc=data.location.trim().slice(0,40);
-          // UI location may be passed through each generation unchanged. Only
-          // a genuine difference becomes a new manually confirmed movement.
-          const currentLoc=activeMeetingLocationHistory(p,c).at(-1)?.location;
-          if(inputLoc!==currentLoc&&!isNonPlaceText(inputLoc))confirmActiveMeetingLocation(p,c,inputLoc);
-        }
+        // /message and /reply may be called by older cached pages carrying
+        // a stale location field. Only the explicit /mode location editor
+        // is authorized to confirm a manual position change.
         let user=null;
         if(route==='/message'){
           const txt=String(data.text||'').trim();if(!txt||txt.length>4000)bodyErr('消息长度需在 1–4000 字之间');
