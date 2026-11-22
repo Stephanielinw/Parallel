@@ -2881,16 +2881,32 @@
   }
   // Derived only from this profile/character's archived original meeting turns.
   // A poor fallback summary or unrelated SMS topic must not hide a recent encounter.
+  const needsMeetingDetail=text=>{
+    const s=String(text||'');
+    const past=/上次|上回|那次|那天|那晚|那会儿|当时|见面时|约会时|那下午|那时候|还记得|你记得|我记得|我们之前|昨天我们|那一晚/.test(s);
+    const specific=/具体|细节|说了什么|说过什么|怎么做|怎么回事|为什么|哪里|哪个|什么时候|如何|睡|醒|吻|亲|抱|当时|那会儿|发生|去了|做的时候/.test(s);
+    return (past&&specific)||/做的时候|睡着的时候|醒来的时候|我们在床上|在一起的那天下午/.test(s);
+  };
   function recentActualMeetingContext(p,c,query='',at=Date.now()){
     const rel=relation(p.id,c.id),active=rel?.mode==='meeting'?rel.active_meeting_id:'';
     const candidates=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&m.id!==active)
-      .filter(m=>{const end=Date.parse(m.finished_at||m.ended_at||'');return Number.isFinite(end)&&end<=at&&at-end<=72*3600000;})
+      .filter(m=>{const end=Date.parse(m.finished_at||m.ended_at||'');return Number.isFinite(end)&&end<=at;})
       .sort((a,b)=>Date.parse(b.finished_at||b.ended_at)-Date.parse(a.finished_at||a.ended_at));
-    const meeting=candidates[0];if(!meeting)return '';
+    if(!candidates.length)return '';
+    const detail=needsMeetingDetail(query);
+    const terms=extractQueryTerms(query).filter(t=>t.length>=2);
+    if(detail&&candidates.length>1)candidates.sort((a,b)=>{
+      const score=m=>terms.reduce((n,t)=>n+(JSON.stringify([m.ai_summary,m.summary,m.entries]).toLowerCase().includes(String(t).toLowerCase())?1:0),0);
+      return score(b)-score(a)||Date.parse(b.finished_at||b.ended_at)-Date.parse(a.finished_at||a.ended_at);
+    });
+    const meeting=candidates[0];
+    const summary=String(meeting.ai_summary||meeting.summary||'').trim().slice(0,500);
+    const overview='\n\n【过去真实见面的事实小结 · 默认记忆】\n'+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'，与 '+p.name+' 的这场见面：'+(summary||'见面原文已归档，小结等待重建。')+'\n这是已经发生的事情，原来的计划不代表已经完成；小结不足以证明的细节不能自行编造。只有确实需要具体细节时才查看引用的现场原文。';
+    if(!detail)return overview;
     const entries=(Array.isArray(meeting.entries)?meeting.entries:[]).filter(m=>
       ['user','ai'].includes(m?.sender)&&String(m.text||'').trim()&&
       !(m.sender==='user'&&/(?:心想|心里|内心独白|默念|梦见|如果|假如)/.test(String(m.text))));
-    if(!entries.length)return '';
+    if(!entries.length)return overview;
     const queryTerms=extractQueryTerms(query).filter(t=>t.length>=2);
     const important=/(?:本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见)/;
     const n=entries.length;
@@ -2928,8 +2944,8 @@
       if(used+line.length>3400)continue;
       used+=line.length;lines.push(line);
     }
-    if(!lines.length)return '';
-    return '\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'。\n'+
+    if(!lines.length)return overview;
+    return overview+'\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'。\n'+
       lines.join('\n')+'\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。见面发生的这段时间不能被描述成角色一整天都在巡逻、值班、开车或完成其他无记录的事务；未被证实的生活安排保持未知。私人内心不可当作角色亲眼所见；没有展示的情节保持不确定。';
   }
   // A generated slot can mix versions of a character. Do not promote that
