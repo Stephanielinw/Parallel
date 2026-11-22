@@ -4892,7 +4892,7 @@
         if(Object.prototype.hasOwnProperty.call(data,'autoArrivalId'))return {mode:r.mode,autoRejected:true};
         const proposedLoc=String(data.location||data.meetingLocation||'').trim().slice(0,40);
         const locInput=isNonPlaceText(proposedLoc)?'':proposedLoc;
-        if(locInput){
+        if(locInput&&m==='meeting'){
           if(r.mode==='meeting')confirmActiveMeetingLocation(p,c,locInput);
           else r.meeting_location=locInput;
         }
@@ -4969,7 +4969,7 @@
             }
             if(mMsgs.length){
               const mid=activeMid||mMsgs[0].meeting_id||('meet_'+mMsgs[0].id);
-              let aiSum='',aiLoc=locInput||r.meeting_location||'';
+              let aiSum='',aiLoc=r.meeting_location||''; // scene authority, never stale finale UI payload
               if(data.finalizeMeeting===true&&pub().mode==='live'){
                 try{
                   const parsed=await summarizeCompleteMeeting(p,c,mMsgs,aiLoc);
