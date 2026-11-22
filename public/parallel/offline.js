@@ -4358,6 +4358,9 @@
       }else raw=demo(p,c,'meeting');
       const body=cleanMeetingNovelText(raw);
       if(!body||/^[\s.…。]+$/.test(body))throw Error('未返回有效正文');
+      const prev=activeMeetingLocationHistory(p,c).filter(e=>e.message_id!==old.id&&Date.parse(e.at)<=anchor).at(-1)?.location||
+        r.meeting_location||'约定的见面地点';
+      const sceneLoc=await classifyMeetingMovement(p,c,body,prev,{signal:controller?.signal});
       const live=relation(p.id,c.id),current=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid&&!m.recalled&&m.engine!=='recalled');
       if(meetingRerolls.get(key)!==roll||live?.status!=='matched'||live.mode!=='meeting'||live.active_meeting_id!==mid||episodeSignature(current)!==before||!archiveStoredCurrent()){
         return {ok:false,removedIds:[],replies:[],reply:null,warning:'见面状态或原文已变化，已丢弃迟到的重 Roll 结果。'};
@@ -4366,7 +4369,9 @@
       // has arrived, passed checks, and the original source is still current.
       const snapshot=JSON.stringify(db),id=uid();
       try{
-        const replacement={...old,id,text:body,engine,created_at:old.created_at,rerolled_at:stamp(),reroll_count:(Number(old.reroll_count)||0)+1};
+        const replacement={...old,id,text:body,engine,created_at:old.created_at,rerolled_at:stamp(),reroll_count:(Number(old.reroll_count)||0)+1,
+          scene_location:sceneLoc?.location||'',scene_location_evidence:sceneLoc?.evidence||'',
+          scene_location_kind:sceneLoc?.kind||'',scene_location_signature:sceneLoc?meetingSceneSignature(body):''};
         const index=db.messages.findIndex(m=>m.id===old.id&&m.profile_id===p.id&&m.character_id===c.id);
         if(index<0)throw Error('原文不存在');
         db.messages[index]=replacement;invalidateTranslation(old.id);
@@ -4382,7 +4387,9 @@
         db.events=db.events.filter(e=>!(e.profile_id===p.id&&e.character_id===c.id&&e.type==='ai_message'&&(e.message_id===old.id||(!e.message_id&&e.summary===c.name+' 回应 '+p.name+'：'+old.text.slice(0,180)&&Math.abs(Date.parse(e.created_at)-anchor)<10000))));
         event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+body.slice(0,180),anchor);db.events.at(-1).message_id=id;
         const oldDiary=db.diaries[key]?.byDate?.[localDateStr(anchor)];if(oldDiary)oldDiary.stale_after_recovery=true;
-        if(typeof location==='string'&&location.trim())live.meeting_location=location.trim().slice(0,40);
+        // Old cached UIs may send the original scene name on reroll; it is
+        // not an actual physical move and must not overwrite current reality.
+        activeMeetingLocationHistory(p,c);
         const updated=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid);
         upsertMeetingRecord(p,c,mid,updated,live.meeting_location||'');
         try{await ensureMeetingCheckpoints(p,c,mid);}
