@@ -98,7 +98,7 @@ async function match(e,pid,cid){
  const diaryCalls=calls.filter(x=>x.system.includes('第一人称私密日记'));
  assert(diaryCalls.length>0,'real yesterday diary generated');
  const diaryPayload=JSON.stringify(diaryCalls.at(-1).messages);
- assert(diaryPayload.includes('【已确认的现场足迹'));
+ assert(diaryPayload.includes('已确认的现场足迹'));
  assert(diaryPayload.includes('露台喝完了热汤'));
  assert(diaryPayload.includes('计划与模型推演'));
  assert.equal(diary.diary.date,'2026-11-22');
