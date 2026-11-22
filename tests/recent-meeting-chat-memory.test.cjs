@@ -18,7 +18,7 @@ vm.runInNewContext(offline,{window,localStorage:{getItem:k=>storage.get(k)||null
 const app=window.ParallelOffline;
 const p={id:'lin-profile',name:'Lin',age:25,gender:'female',interested_in:['all'],min_age:18,max_age:65,sources:[],interests:[],bio:'研究生',intent:'约会',avatar:'',role_character_id:'',created_at:new Clock().toISOString()};
 const cid='re-game:leon:re2',key=p.id+'|'+cid;
-const begin=at-4*3600000,finish=at-70*60000;
+const begin=at-4*3600000,finish=at-25*60000;
 const scene=Array.from({length:119},(_,i)=>{
  const line=i===0?'我们最初约好看电影。':
   i===59?'结果电影并没有看。我们在家里亲密相处，后来相拥睡了两个小时。':
