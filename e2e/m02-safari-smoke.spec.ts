@@ -88,6 +88,13 @@ test('C-18: long Unicode archive survives iPhone-size reload and opens a real th
   });
   await page.reload();
   await expect.poll(()=>page.evaluate(()=>window.ParallelOffline&&JSON.parse(window.ParallelOffline.exportData()).data.messages.length)).toBe(281);
+  // A new isolated mobile browser legitimately prompts for Demo vs Normal
+  // if no API key is configured. Exercise the real no-API choice instead of
+  // forcing a click through the blocking dialog.
+  const modeChoice=page.locator('#modal-overlay [data-action="choose-api-mode"][data-demo="no"]');
+  await modeChoice.waitFor({state:'visible',timeout:10000});
+  await modeChoice.click();
+  await expect(page.locator('#modal-overlay')).toHaveCount(0);
   await page.locator('#mobile-nav [data-action="nav"][data-tab="messages"]').click();
   await expect(page.locator('.thread-card')).toHaveCount(1);
   await page.locator('.thread-card').first().click();
