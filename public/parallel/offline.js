@@ -2087,7 +2087,9 @@
       const quote=dayMsgs.filter(m=>m.sender==='user').at(-1)?.text?.slice(0,28)||'近况';
       paras.push('今天在手机上和 '+p.name+' 交流过，谈到了「'+quote+'」。聊天中说过的计划未必就已经兑现。其他时间也要留给自己的生活。');
     }else{
-      paras.push('今天没有可确认的线下相处或短信互动。那些没被记录下来的日常不必强行写成已经发生的故事；先整理心绪，接着过自己的生活。');
+      paras.push(intimacy.stage==='deep_love'
+        ?'今天没有可确认的线下相处或短信互动，但安静下来时，我还是会想起 '+p.name+'。这份牵挂是真实的心绪，不代表今天已经见面或有过联系。自己的生活也仍要好好过下去。'
+        :'今天没有可确认的线下相处或短信互动。那些没被记录下来的日常不必强行写成已经发生的故事；先整理心绪，接着过自己的生活。');
     }
     return {
       id:'diary_'+c.id+'_'+dateStr,date:dateStr,profile_id:p.id,character_id:c.id,
