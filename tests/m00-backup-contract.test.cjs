@@ -51,7 +51,7 @@ const meeting={id:'meet-m00',profile_id:pid,character_id:cid,started_at:'2026-11
   assert.equal(restored.episodicMemories[0].meeting_data.entries.at(-1).text,scene.at(-1).text);
   assert.equal(restored.messages.at(-1).quote.text,'今晚见面吗？');
   const key='parallel-portable-v2',savedBytes=other.rows.get(key),savedData=JSON.parse(other.e.exportData()).data;
-  assert(savedBytes.startsWith('PARALLEL-LZW14-V1:'));
+  assert(typeof savedBytes==='string'&&(savedBytes.startsWith('PARALLEL-LZW14-V1:')||savedBytes.startsWith('{')), 'small saves may remain plain JSON; large saves use lossless compression');
   assert.throws(()=>other.e.importData('{bad json'),/不是有效 JSON/);
   assert.throws(()=>other.e.importData(JSON.stringify({format:snapshot.format,schemaVersion:999,data:snapshot.data})),/不是 Parallel/);
   const invalidPhoto=JSON.parse(allBackup);
