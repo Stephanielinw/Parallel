@@ -85,6 +85,6 @@ function start(store,decoder=true){
  await assert.rejects(()=>blocked.request('/hot-chat',{...pair,hotChat:true}),/浏览器本地空间不足或禁止保存/);
  // Even a browser without compression codecs should be able to read old JSON.
  const oldBrowser=start(localStore(legacy,limit,true),false);
- assert.equal((await oldBrowser.request('/thread?profileId='+profile.id+'&characterId='+pair.characterId)).messages.length,messages.length);
+ assert.equal((await oldBrowser.request('/thread?profileId='+profile.id+'&characterId='+pair.characterId)).messages.length,baseline.messages.length);
  console.log('Quota rescue: legacy migration, byte-for-byte Chinese/emoji archive, reload, read-only recovery, backup access and write-error visibility passed.');
 })().catch(e=>{console.error(e);process.exitCode=1});
