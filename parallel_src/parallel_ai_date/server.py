@@ -177,6 +177,8 @@ def init_db():
         message_cols={r['name'] for r in db.execute('PRAGMA table_info(messages)')}
         if 'meeting_id' not in message_cols:db.execute("ALTER TABLE messages ADD COLUMN meeting_id TEXT NOT NULL DEFAULT ''")
         if 'quote_json' not in message_cols:db.execute("ALTER TABLE messages ADD COLUMN quote_json TEXT NOT NULL DEFAULT ''")
+        for name in ('scene_location','scene_location_evidence','scene_location_signature'):
+            if name not in message_cols:db.execute("ALTER TABLE messages ADD COLUMN "+name+" TEXT NOT NULL DEFAULT ''")
         meeting_cols={r['name'] for r in db.execute('PRAGMA table_info(meetings)')}
         if 'location_history' not in meeting_cols:
             db.execute("ALTER TABLE meetings ADD COLUMN location_history TEXT NOT NULL DEFAULT '[]'")
@@ -1769,6 +1771,121 @@ def meeting_place_in_player_turn(raw,profile_name):
             place=clean_scene_place(movement.group(1))
             if place and not re.fullmatch(r'我|你|他|她|这里|那里|这儿|那儿|家|路边|车里',place) and not re.search(r'[我你他她]',place):return place
     return ''
+
+
+SCENE_INTERIOR_RE=re.compile(r'卧室|房间|屋内|室内|寝室|宿舍|客厅|厨房|浴室|卫生间|洗手间|走廊|门厅|露台|阳台|庭院|花园|楼下|楼上|咖啡馆|咖啡店|餐厅|街道|车里|车内|车上|车厢|停车场|床沿|床边|床上')
+SCENE_MOVE_RE=re.compile(r'走进|走入|进入|步入|迈入|踏进|回到|来到|抵达|到达|到了|进了|出了|走出|带进|抱进|抱回|推门进入|推开.{0,36}门.{0,30}(?:走进|进入|走入|床沿|床边|床上)|穿过.{0,35}(?:门|走廊)|在.{0,18}(?:床沿|床边|床上)(?:坐下|坐|躺下|停住|落下)|(?:坐|躺|落|放|陷|坐定|停住).{0,18}(?:床沿|床边|床上)|下了车|下车|停好车|到了家')
+SCENE_NOT_ARRIVED_RE=re.compile(r'打算|准备|计划|想要|想去|还没|尚未|没有|如果|假如|也许|或许|可能|梦见|想象|本来要|即将|正要|试图|差点|朝.{0,14}走去|向.{0,14}走去|走向.{0,14}|通往.{0,16}(?:门|房|室|厅)')
+SCENE_DESTINATION_RE=re.compile(r'(?:走进|走入|进入|步入|迈入|踏进|回到|来到|抵达|到达|到了|进了|出了|走出|带进|抱进|抱回|推门进入)\s*[了的进到入过]?[\s「『“"]*(?:(?:这间|那间|自己|他们|她|他|我们|我|你|Lin|Carlos)\s*的?)?[\s「『“"]*((?:[\u4e00-\u9fff]{1,12}的)?(?:卧室|寝室|房间|客厅|厨房|浴室|卫生间|洗手间|室内|屋内|露台|阳台|庭院|花园|走廊|楼下|楼上|咖啡馆|咖啡店|餐厅|车里|车内|车上|停车场|街道))')
+SCENE_BED_RE=re.compile(r'床沿|床边|床上|床铺|床垫|被褥')
+
+def meeting_room_name(current,room,p_name):
+    where=str(current or '').strip()
+    base=re.sub(r'(?:外廊露台|屋顶露台|露台|阳台|外廊|走廊|卧室|寝室|房间|客厅|厨房|浴室|卫生间|洗手间|门厅|庭院|花园|楼下|楼上)$','',where).strip()
+    kind='卧室' if room in ('床沿','床边','床上','卧室','寝室') else ('室内' if room in ('室内','屋内','房间') else room)
+    if '卧室' in where and kind=='卧室':return where
+    if where in (p_name+' 的家',p_name+' 的卧室') or where.startswith(p_name+' 的'):return p_name+' 的'+kind
+    if base and base!=where and len(base)<=24:return base+kind
+    return kind
+
+def scene_location_from_character(text,current,p_name):
+    text=str(text or '')
+    if not text or not SCENE_INTERIOR_RE.search(text) or not SCENE_MOVE_RE.search(text):return None
+    candidates=[]
+    for m in SCENE_DESTINATION_RE.finditer(text):
+        prev=text[max(0,m.start()-18):m.start()]
+        following=text[m.start():m.end()+8]
+        if SCENE_NOT_ARRIVED_RE.search(prev) or re.search(r'准备|打算|想要|试图|正要|还没|没有|尚未',prev) or re.search(r'[？?]',following):continue
+        candidates.append((m.start(),m.group(1),m.group(0)))
+    # Reaching the bed after crossing from the patio is a completed location
+    # change, even if no exact name for the interior was said.
+    if re.search(r'露台|阳台|屋外|室外|走廊|门外',str(current or '')) and re.search(r'推开|走进|迈进|穿过|关上|抱回|进入|回到|通往室内',text):
+        for match in SCENE_BED_RE.finditer(text):
+            around=text[max(0,match.start()-85):min(len(text),match.end()+60)]
+            if re.search(r'推开|踹开|关上|走进|迈进|穿过|抱着|托抱|抱回|进入|到了|倒在|坐在|停住|陷进|落在|躺到|躺在',around) and not re.search(r'如果|假如|打算|准备|计划|想象|梦里|还没|尚未',around):
+                candidates.append((match.start(),'卧室',around))
+    if not candidates:return None
+    _,room,evidence=max(candidates,key=lambda x:x[0])
+    location=room if room.startswith(p_name+' 的') else meeting_room_name(current,room,p_name)
+    if not location or len(location)>40 or location==current or SCENE_RULES['uncertain'].search(location):return None
+    return dict(location=location,evidence=evidence,kind='scene')
+
+def meeting_scene_signature(text):
+    return hashlib.sha256(str(text or '').encode('utf8')).hexdigest()
+
+def classify_meeting_scene_location(p,c,text,current):
+    deterministic=scene_location_from_character(text,current,p['name'])
+    if deterministic:return deterministic
+    if not SCENE_INTERIOR_RE.search(str(text or '')) or not SCENE_MOVE_RE.search(str(text or '')):return None
+    conn=load_connection()
+    if not all(conn.get(k) for k in ('base_url','api_key','model')):return None
+    try:
+        raw=completion([
+            {'role':'system','content':'你是线下小说现场的地点事实核对员，绝不续写故事。只追踪角色本人已经到达的实际位置：提议、计划、假设、回忆、旁人位置、打算或朝某处走去（尚未到达）一律 changed:false。地点必须以正文中的确凿行动为依据，不能补写。若从宿舍露台进入室内床边，可用宿舍卧室。只输出 JSON {"changed":false,"location":"","evidence":"","actor":"none"} 或 {"changed":true,"location":"新地点","evidence":"正文中逐字连续的短句","actor":"character"}。'},
+            {'role':'user','content':'原先角色所在地点：'+str(current)+'\n角色：'+c['name']+'\n最新现场正文：\n'+str(text)[-8500:]}
+        ],json_mode=True,max_tokens=384,temperature=0.1,
+          log_meta={'mode':'surveillance','entryPoint':'meeting_scene_location','profile':p,'character':c})
+        parsed=parse_json(raw,{})
+        location=clean_scene_place(parsed.get('location') or '')
+        evidence=str(parsed.get('evidence') or '').strip()
+        if parsed.get('changed') is not True or parsed.get('actor')!='character' or not location or location==current or len(evidence)<5 or evidence not in text or SCENE_NOT_ARRIVED_RE.search(evidence):return None
+        return dict(location=location,evidence=evidence,kind='model')
+    except Exception:return None
+
+def refresh_meeting_scene_history(db,p,c,exclude_message_id=''):
+    state=MEETING_STATE.get((p['id'],c['id']),{})
+    mid=state.get('active_meeting_id') or ''
+    if not mid:return []
+    initial_ts=str(state.get('meeting_started_at') or utc())
+    try:
+        began=datetime.fromisoformat(initial_ts.replace('Z','+00:00')).timestamp()
+    except (ValueError,TypeError):
+        began=time.time()
+    prior=state.get('meeting_location_history') or []
+    first=next((x for x in prior if x.get('source')=='start' and x.get('location')),None)
+    original=first.get('location') if first else (state.get('meeting_location') or '约定的见面地点')
+    events=[dict(at=initial_ts,location=original,source='start')]
+    events.extend(dict(x) for x in prior if x.get('source') in ('manual','resume') and x.get('location'))
+    rows=db.execute("SELECT id,sender,text,engine,created_at,scene_location,scene_location_signature FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' AND meeting_id=? ORDER BY julianday(created_at),rowid",
+        (p['id'],c['id'],mid)).fetchall()
+    for row in rows:
+        m=dict(row)
+        if m['engine']=='recalled' or m['id']==exclude_message_id:continue
+        try:
+            moment=datetime.fromisoformat(m['created_at'].replace('Z','+00:00')).timestamp()
+        except (ValueError,TypeError):continue
+        if moment<began:continue
+        preceding=sorted((x for x in events if datetime.fromisoformat(x['at'].replace('Z','+00:00')).timestamp()<=moment),key=lambda x:x['at'])
+        location_before=preceding[-1]['location'] if preceding else original
+        if m['sender']=='user':
+            location=meeting_place_in_player_turn(m['text'],p['name'])
+        else:
+            recognized=(dict(location=m['scene_location']) if m['scene_location'] and m['scene_location_signature']==meeting_scene_signature(m['text'])
+                else scene_location_from_character(m['text'],location_before,p['name']))
+            location=recognized['location'] if recognized else ''
+        if location and location!=location_before:
+            events.append(dict(at=m['created_at'],location=location,source='scene' if m['sender']=='user' else 'ai_scene',message_id=m['id']))
+    priority={'start':0,'scene':1,'ai_scene':2,'resume':3,'manual':4}
+    events.sort(key=lambda x:(x['at'],priority.get(x.get('source'),2)))
+    compact=[]
+    for e in events:
+        if compact and compact[-1]['location']==e['location']:
+            if e.get('source')=='manual':compact[-1]['source']='manual'
+        else:compact.append(e)
+    state['meeting_location_history']=compact
+    state['meeting_location']=compact[-1]['location'] if compact else original
+    return compact
+
+def sync_live_meeting_scene_location(db,p,c):
+    state=MEETING_STATE.get((p['id'],c['id']),{})
+    history=refresh_meeting_scene_history(db,p,c)
+    if not history:return
+    rec=get_or_init_surveillance(db,p,c)
+    old=rec.get('live_override')
+    if old and old.get('meeting_id')==state.get('active_meeting_id'):
+        old['location']=history[-1]['location']
+        rec['updated_at']=utc()
+
 
 def infer_meeting_location(db,pid,cid,custom_loc=''):
     clean_custom=str(custom_loc or '').strip()
