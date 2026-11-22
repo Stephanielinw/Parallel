@@ -2870,18 +2870,36 @@
       const hits=queryTerms.reduce((n,t)=>n+(body.toLowerCase().includes(t.toLowerCase())?1:0),0);
       return {i,score:hits*7+(important.test(body)?5:0)+(e.sender==='user'?1:0)};
     }).sort((a,b)=>b.score-a.score||b.i-a.i);
+    // Preserve on-scene milestones independently of the SMS query or repeated
+    // high-scoring kisses/farewells; never turn plans into historical facts.
+    const milestones=[
+      /(?:睡着|睡了|睡醒|醒来|午睡|入睡|相拥而眠|睡过去)/,
+      /(?:没有(?:去|看|做)|没(?:去|看|做)|取消|改成|改为)/,
+      /(?:回家|到家|家里|卧室|床上)/,
+      /(?:下车|送.{0,12}(?:到|回)|告别|再见)/
+    ];
+    const focused=new Map();
+    for(const pattern of milestones){
+      const candidate=ranked.find(x=>pattern.test(String(entries[x.i].text)));
+      if(candidate){selected.add(candidate.i);focused.set(candidate.i,pattern);}
+    }
     for(const item of ranked){if(selected.size>=13)break;if(item.score>0)selected.add(item.i);}
     const lines=[];let used=0;
     for(const i of [...selected].sort((a,b)=>a-b)){
       const e=entries[i],whole=String(e.text).replace(/\s+/g,' ').trim();
-      const excerpt=whole.length>205?whole.slice(0,115)+' … '+whole.slice(-85):whole;
+      const focus=focused.get(i)?.exec(whole);
+      let excerpt=whole.length>205?whole.slice(0,115)+' … '+whole.slice(-85):whole;
+      if(whole.length>205&&focus){
+        const start=Math.max(0,Math.min(focus.index-90,whole.length-205));
+        excerpt=(start?'… ':'')+whole.slice(start,start+205)+(start+205<whole.length?' …':'');
+      }
       const line='['+(e.sender==='user'?p.name:c.name)+' · 现场原文 #'+(i+1)+'] '+excerpt;
-      if(used+line.length>3000)continue;
+      if(used+line.length>3400)continue;
       used+=line.length;lines.push(line);
     }
     if(!lines.length)return '';
     return '\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'。\n'+
-      lines.join('\n')+'\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。私人内心不可当作角色亲眼所见；没有展示的情节保持不确定。';
+      lines.join('\n')+'\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。见面发生的这段时间不能被描述成角色一整天都在巡逻、值班、开车或完成其他无记录的事务；未被证实的生活安排保持未知。私人内心不可当作角色亲眼所见；没有展示的情节保持不确定。';
   }
   // A generated slot can mix versions of a character. Do not promote that
   // speculation to observed identity or pass it to a paid chat request.
