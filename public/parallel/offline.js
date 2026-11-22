@@ -2237,10 +2237,20 @@
   }
   async function summarizeCompleteMeeting(p,c,mMsgs,location){
     if(!mMsgs.length)return null;
-    const chunks=meetingSummaryChunks(mMsgs,p,c);
+    const mid=mMsgs[0]?.meeting_id||'';
+    const groups=mid?completedMeetingGroups(p.id,c.id,mid):[];
+    const expected=Math.floor(groups.length/MEETING_CHECKPOINT_INTERVAL);
+    const checkpoints=expected?validMeetingCheckpoints(p.id,c.id,mid,groups):[];
+    const reuse=expected>0&&checkpoints.length===expected;
+    const trailing=reuse?groups.slice(expected*MEETING_CHECKPOINT_INTERVAL).flat():mMsgs;
+    const chunks=meetingSummaryChunks(trailing,p,c);
     const opts={json_mode:true,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true,temperature:0.25};
     const instruction='你是见面记录的事实归档员。只能总结提供的实际对话，不得补写未出现的事件、亲吻、去过的地点、感情承诺或人物心理。严格按时间顺序，保留开场、中段、结尾的关键事件；优先记录已发生的行动与对话，忽略描写性赘述。若记录跨越午夜，必须体现前一晚和第二天。只输出 JSON 对象：{"summary":"120至240字的中文纪实梗概"}。';
-    const partSummaries=[];
+    const partSummaries=reuse?checkpoints.map(cp=>
+      '第'+cp.round_start+'–'+cp.round_end+'组（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary+
+      '；具体事件：'+cp.details.join('；')+
+      '；关键对话：'+cp.key_dialogues.map(x=>x.speaker+'「'+x.quote+'」').join('；')
+    ):[];
     for(let i=0;i<chunks.length;i++){
       const data=await llm([
         {role:'system',content:instruction+'这是第 '+(i+1)+'/'+chunks.length+' 段连续记录，仅总结本段确实发生的事件，保留重要转折。'},
@@ -2251,7 +2261,7 @@
       if(!part)throw Error('见面分段摘要为空，原始记录保持不变');
       partSummaries.push(part);
     }
-    if(partSummaries.length===1)return {summary:partSummaries[0]};
+    if(partSummaries.length===1)return {summary:reuse?checkpoints[0].summary:partSummaries[0]};
     const final=await llm([
       {role:'system',content:instruction+'以下是同一场见面按时间顺序整理的 '+partSummaries.length+' 段事实小结。合并为整场见面梗概，不得只概括最后一段，也不得增加分段摘要中没有的情节。'},
       {role:'user',content:'见面时间：'+String(mMsgs[0].created_at||'')+' 至 '+String(mMsgs[mMsgs.length-1].created_at||'')+'；记录地点（不一定是初见地点）：'+location+'。\n'+partSummaries.map((x,i)=>'第'+(i+1)+'/'+partSummaries.length+'段：'+x).join('\n')}
