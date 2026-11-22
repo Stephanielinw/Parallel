@@ -1168,7 +1168,7 @@ def get_current_surveillance_slot(db,p,c,at=0):
     slots=rec.get('slots') or []
     idx=active_slot_index(slots,now_m)
     active=slots[idx] if idx>=0 else (slots[-1] if slots else None)
-    return dict(active,isCurrent=True) if active else {
+    return dict(verified_surveillance_slot(c,active),isCurrent=True) if active else {
         'start':'00:00','end':'23:59','location':f"{c['name']}的常去街角",'status':'日常活动','activity':'正在处理日常事务','scene':f"{c['name']}正在日常活动中。",'source':'schedule','isCurrent':True
     }
 
@@ -1281,6 +1281,7 @@ def replan_remaining_day_after_meeting(db,p,c,meeting_rec,from_dt=None):
             if not re.fullmatch(r'\d{2}:\d{2}',end_str):continue
             end=min(1439,hhmm_to_min(end_str))
             if end<=cursor:continue
+            if incompatible_character_slot(c,row):continue
             planned.append({
                 'id':'slot_replanned_'+mid+'_'+str(cursor),'start':min_to_hhmm(cursor),
                 'end':min_to_hhmm(end),'location':str(row.get('location') or place)[:28],
@@ -1397,7 +1398,7 @@ def sync_surveillance_from_chat(db,p,c,ai_text='',at=0):
     if not txt or (rel and rel['mode']=='meeting'):return
     locations=[location_from_report(part) for part in re.split(r'\s+/\s+|\|\|\||\n',txt)]
     new_loc=next((x for x in reversed(locations) if x),'')
-    if not new_loc:return
+    if not new_loc or incompatible_character_slot(c,{'location':new_loc}):return
     date=datetime.fromtimestamp(at/1000).astimezone().strftime('%Y-%m-%d') if at else local_date_str()
     rec=get_or_init_surveillance(db,p,c,date)
     now_hhmm=fmt_hhmm(at or None)
@@ -1451,7 +1452,7 @@ def ensure_live_surveillance(db,p,c,force=False,target_date=''):
                 })
             if len(cleaned)>=5:
                 preserved=[s for s in rec.get('slots',[]) if s.get('source') in ('meeting','chat_update','meeting_shift')]
-                rec['slots']=overlay_actual_slots(cleaned,preserved)
+                rec['slots']=overlay_actual_slots([verified_surveillance_slot(c,slot) for slot in cleaned],preserved)
                 rec['engine']='live'
                 rec['updated_at']=utc()
     except Exception:
@@ -1481,7 +1482,8 @@ def build_surveillance_payload(db,p,c,requested_date=''):
             prev.append(dict(s,end=current['start']) if hhmm_to_min(s['end'])>cut else s)
         slots=prev+[dict(current,id='live_meeting_'+str(m_state.get('active_meeting_id','')),
                          meeting_id=m_state.get('active_meeting_id',''))]
-    for s in slots:
+    for stored_slot in slots:
+        s=verified_surveillance_slot(c,stored_slot)
         start_m=hhmm_to_min(s['start'])
         end_m=hhmm_to_min(s['end'])
         if (not is_today) or start_m<=now_m:
@@ -1491,7 +1493,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
                 state='current' if is_cur else 'past'
             ))
     if is_today and not unlocked and slots:
-        unlocked.append(dict(slots[0],isCurrent=True,state='current'))
+        unlocked.append(dict(verified_surveillance_slot(c,slots[0]),isCurrent=True,state='current'))
     return {
         'date':rec['date'],
         'today':today,
@@ -1693,7 +1695,9 @@ def proposal_location(raw):
     en=SCENE_RULES['proposalEn'].search(text)
     if en:return clean_scene_place(en.group(1),True)
     zh=SCENE_RULES['proposalZh'].search(text)
-    return clean_scene_place(zh.group(1)) if zh else ''
+    if zh:return clean_scene_place(zh.group(1))
+    pickup=re.search(r'(?:来|到|去|在)\s*([^，。！？；、\n「」『』“”"]{2,30}?)\s*接(?:上)?(?:我|你)',text)
+    return clean_scene_place(pickup.group(1)) if pickup else ''
 
 def current_plan_rows(db,pid,cid):
     cutoff=db.execute("SELECT MAX(created_at) FROM events WHERE profile_id=? AND character_id=? AND type IN ('matched','unmatched','return','meeting')",(pid,cid)).fetchone()[0] or ''
@@ -1710,6 +1714,12 @@ def meeting_place_in_player_turn(raw,profile_name):
         return profile_name+' 的家'
     if re.search(r'\b(?:on my bed|in my bedroom)\b',text,re.I):return profile_name+' 的卧室'
     if re.search(r'\b(?:at my place|in my home)\b',text,re.I):return profile_name+' 的家'
+    # Explicit player-witnessed drop-off, not the earlier plan to travel there.
+    if re.search(r'下车|下了车|停车|停下了车|送到了|已经到达|已经抵达',text) and not re.search(r'如果|假如|打算|准备|将要|计划|还没|没有|尚未|梦见|想象',text):
+        movement=re.search(r'(?:在|到了?|到达|抵达(?:了)?|送(?:我|你)?到(?:了)?|送到(?:了)?|停车在)\s*([^，。！？；、\n]{2,32}?)(?:下(?:了)?车|停(?:了)?车|，|。|！|$)',text)
+        if movement:
+            place=clean_scene_place(movement.group(1))
+            if place and not re.fullmatch(r'我|你|他|她|这里|那里|这儿|那儿|家|路边|车里',place) and not re.search(r'[我你他她]',place):return place
     return ''
 
 def infer_meeting_location(db,pid,cid,custom_loc=''):
@@ -2523,6 +2533,66 @@ def is_post_history_system_preset(entry):
     grp=str(entry.get('group') or infer_preset_group(nm))
     return grp=='COT' or ('COT' in nm) or ('连续性检查' in nm) or ('动笔前' in nm) or ('自检' in nm)
 
+def recent_actual_meeting_context(db,p,c,query='',at=0):
+    """A recent real encounter is continuity, even when the next SMS changes topic.
+    These are attributed archive excerpts, not a guessed summary or another role's data.
+    """
+    now=datetime.fromtimestamp(at/1000,timezone.utc) if at else datetime.now(timezone.utc)
+    rows=db.execute('SELECT * FROM meetings WHERE profile_id=? AND character_id=? ORDER BY ended_at DESC LIMIT 8',(p['id'],c['id'])).fetchall()
+    state=MEETING_STATE.get((p['id'],c['id']),{})
+    rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
+    active=state.get('active_meeting_id') if rel and rel['mode']=='meeting' else ''
+    meeting=None
+    for row in rows:
+        if row['id']==active:continue
+        try:
+            ended=datetime.fromisoformat(str(row['ended_at']).replace('Z','+00:00'))
+            if ended.tzinfo is None:ended=ended.replace(tzinfo=timezone.utc)
+            age=(now-ended).total_seconds()
+            if 0<=age<=72*3600:meeting=dict(row);break
+        except (ValueError,TypeError,OverflowError):continue
+    if not meeting:return ''
+    entries=[e for e in parse_json(meeting.get('entries'),[]) if isinstance(e,dict) and e.get('sender') in ('user','ai')
+        and str(e.get('text') or '').strip() and not (e['sender']=='user' and re.search(r'心想|心里|内心独白|默念|梦见|如果|假如',str(e['text'])))]
+    if not entries:return ''
+    terms=[t for t in extract_query_terms(query) if len(str(t))>=2]
+    salient=re.compile(r'本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见')
+    n=len(entries)
+    anchors={0,n//4,n//2,n*3//4,max(0,n-3),max(0,n-2),n-1}
+    candidates=[]
+    for i,e in enumerate(entries):
+        body=str(e['text'])
+        hits=sum(1 for t in terms if str(t).lower() in body.lower())
+        candidates.append((hits*7+(5 if salient.search(body) else 0)+(1 if e['sender']=='user' else 0),i))
+    for score,i in sorted(candidates,key=lambda x:(x[0],x[1]),reverse=True):
+        if len(anchors)>=13:break
+        if score>0:anchors.add(i)
+    parts=[];used=0
+    for i in sorted(anchors):
+        e=entries[i]
+        whole=re.sub(r'\s+',' ',str(e['text'])).strip()
+        excerpt=whole[:115]+' … '+whole[-85:] if len(whole)>205 else whole
+        line=f"[{p['name'] if e['sender']=='user' else c['name']} · 现场原文 #{i+1}] {excerpt}"
+        if used+len(line)>3000:continue
+        used+=len(line);parts.append(line)
+    if not parts:return ''
+    return ("\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下只属于你与 "+p['name']+
+        " 的这一场见面，不属于任何其他角色实例；发生时间 "+str(meeting.get('started_at',''))[:16]+" 至 "+str(meeting.get('ended_at',''))[:16]+"。\n"+
+        "\n".join(parts)+
+        "\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。"
+        "若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。"
+        "私人内心不可当作角色亲眼所见；没有展示的情节保持不确定。")
+
+def incompatible_character_slot(c,slot):
+    if not c or not slot:return False
+    body=' '.join(str(slot.get(key) or '') for key in ('location','status','activity','scene'))
+    return c.get('id')=='re-game:leon:re2' and bool(re.search(r'\bDSO\b|特工|联邦调查|华盛顿特区|安全公寓|防窃听|总统护卫|加密终端|政府机密',body,re.I))
+
+def verified_surveillance_slot(c,slot):
+    if not incompatible_character_slot(c,slot):return slot
+    return dict(slot,location='地点未确认',status='日程待核实',activity='原日程与本角色时期冲突，不作为已发生事实',
+        scene=c['name']+'的此时位置尚无有效证据。',source='unverified')
+
 def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_ids=None,trigger_opening=False,is_continue=False,exclude_ids=None,simulated_at=0):
     ordered=[preset_row_dict(r) for r in db.execute('SELECT * FROM presets WHERE mode=? AND enabled=1 ORDER BY sort_order,id',(mode,)).fetchall()]
     macros=lambda t:expand_preset_macros(t,p,c)
@@ -2567,6 +2637,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             system+="\n关系阶段提示：你们刚通过交友软件匹配不久，请保持角色自然的社交边界、幽默感或分寸，不要过度自来熟，也不要像客服一样生硬盘问或长篇解释个人设定。"
     if mode=='meeting' and cur_surv:
         system+=f"\n\n【此刻你的真实位置与状态（实时监控同步）】\n当前时段：{cur_surv['start']}–{cur_surv['end']}｜你所在地点：{cur_surv['location']}｜状态：{cur_surv['status']}｜正在做的事：{cur_surv['activity']}。当对方问你在哪、在干什么或提出见面时，请自然地与你此刻的真实位置和状态保持一致。"
+    if mode=='chat':system+=recent_actual_meeting_context(db,p,c,query_seed,simulated_at)
     if recalled:
         system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n"+"\n".join(format_episodic_entry(e) for e in recalled)
     else:
@@ -2630,7 +2701,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             recent=now_ms()-int(datetime.fromisoformat(bundled_rows[0]['created_at'].replace('Z','+00:00')).timestamp()*1000)<3600000
             batch_hint=f"\n【连续消息提示】对方{'刚刚连续发来了' if recent else '此前陆续发来了'}最后 {len(bundled_rows)} 条消息（见下方对话末尾）。你现在拿起手机一并读完，请把握这几条消息之间的递进关系、调侃或话锋转折，像真人聊天一样自然连贯地回应整体意思，不必逐条机械拆解作答。"
     wake_hint='原日程为睡眠，但你正在阅读并准备发送手机消息，应视作已暂时醒来；不要声称自己仍在熟睡。' if is_sleeping_slot(cur_surv) else ''
-    surv_hint=f"\n【此刻你的真实位置与状态（实时监控同步）】日常状态参考：「{cur_surv['location']}」·「{cur_surv['activity']}」。{wake_hint}实际互动优先于预设日程，不必主动汇报行踪或生硬解释日程。" if cur_surv else ''
+    surv_hint=f"\n【个人日程草案（不是已发生的事实）】可参考：「{cur_surv['location']}」·「{cur_surv['activity']}」。{wake_hint}如果与真实见面原文或实际行动冲突，必须以亲历现场为准；不得把预定行程当作已经完成的生活经历。" if cur_surv and cur_surv.get('source')!='unverified' else ''
     conn_cfg=load_connection()
     lang_hint='\n'+build_character_language_directive(conn_cfg.get('character_language_pref','natural'),conn_cfg.get('character_language_custom',''))
     system+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+surv_hint+batch_hint+lang_hint
