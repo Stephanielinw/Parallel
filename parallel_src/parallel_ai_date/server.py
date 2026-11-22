@@ -1170,6 +1170,7 @@ def get_current_surveillance_slot(db,p,c,at=0):
     rel=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
     m_state=MEETING_STATE.get((p['id'],c['id']),{})
     if rel and rel['mode']=='meeting':
+        if m_state.get('active_meeting_id'):refresh_meeting_scene_history(db,p,c)
         loc=m_state.get('meeting_location') or '约定的街角咖啡馆'
         return {
             'start':('00:00' if m_state.get('meeting_started_at') and chat_clock_label(m_state['meeting_started_at'])[:10]!=date else fmt_hhmm(m_state.get('meeting_started_at') or None)),
@@ -2488,27 +2489,41 @@ def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0,quote_id=''):
     clean_txt = (clean_meeting_novel_text(txt) if mode=='meeting' else (clean_chat_bubble_text(txt) or '…')) if (sender=='ai' and engine not in ('error','recalled')) else str(txt or '')
     meeting_id=MEETING_STATE.get((pid,cid),{}).get('active_meeting_id','') if mode=='meeting' else ''
     quote=chat_quote_snapshot(db,pid,cid,quote_id) if sender=='user' and mode=='chat' and quote_id else None
-    item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc(),meeting_id=meeting_id,quote_json=js(quote) if quote else '')
-    db.execute('INSERT INTO messages (id,profile_id,character_id,sender,mode,text,engine,created_at,meeting_id,quote_json) VALUES (?,?,?,?,?,?,?,?,?,?)',tuple(item.values()))
+    item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,
+              created_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc(),
+              meeting_id=meeting_id,quote_json=js(quote) if quote else '',
+              scene_location='',scene_location_evidence='',scene_location_signature='')
+    db.execute('''INSERT INTO messages
+        (id,profile_id,character_id,sender,mode,text,engine,created_at,meeting_id,quote_json,scene_location,scene_location_evidence,scene_location_signature)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',tuple(item.values()))
     item['quote']=quote
-    if sender=='ai' and mode=='meeting' and meeting_id and engine in ('live','demo'):
-        try:
-            p=profile_get(db,pid)
-            c=BY_ID.get(cid)
-            if c:ensure_meeting_checkpoints(db,p,c,meeting_id)
-        except Exception as error:
-            # Keep the scene reply even when paid archive generation fails. The
-            # previous raw-history window stays in use until a valid checkpoint exists.
-            log_event(db,pid,cid,'meeting_checkpoint_failed','阶段归档待重试：'+str(error)[:140])
-    if sender=='user' and mode=='meeting' and not at and meeting_id:
+    if mode=='meeting' and meeting_id and not at:
         p=profile_get(db,pid);c=BY_ID.get(cid)
+        if c and sender=='ai' and engine in ('live','demo'):
+            # Exclude the newly generated reply when obtaining the previously
+            # confirmed character position; do not let the answer prove itself.
+            earlier=refresh_meeting_scene_history(db,p,c,exclude_message_id=item['id'])
+            previous=earlier[-1]['location'] if earlier else MEETING_STATE.get((pid,cid),{}).get('meeting_location','')
+            found=classify_meeting_scene_location(p,c,clean_txt,previous)
+            if found:
+                item['scene_location']=found['location']
+                item['scene_location_evidence']=found['evidence']
+                item['scene_location_signature']=meeting_scene_signature(clean_txt)
+                db.execute('UPDATE messages SET scene_location=?,scene_location_evidence=?,scene_location_signature=? WHERE id=?',
+                    (item['scene_location'],item['scene_location_evidence'],item['scene_location_signature'],item['id']))
         if c:
-            place=meeting_place_in_player_turn(clean_txt,p['name'])
-            m_state=MEETING_STATE.get((pid,cid),{})
-            if place and m_state.get('meeting_location')!=place:
-                m_state['meeting_location']=place
-                m_state.setdefault('meeting_location_history',[]).append({'at':item['created_at'],'location':place,'source':'scene'})
-                sync_surveillance_on_meeting_start(db,p,c,place,meeting_id)
+            # Both user moves and written AI movement must immediately update
+            # the monitor before the next prompt. Neither is a new day plan.
+            sync_live_meeting_scene_location(db,p,c)
+            if sender=='ai' and engine in ('live','demo'):
+                try:
+                    ensure_meeting_checkpoints(db,p,c,meeting_id)
+                except Exception as error:
+                    log_event(db,pid,cid,'meeting_checkpoint_failed','阶段归档待重试：'+str(error)[:140])
+                # Persist the full witnessed scene itinerary for resume/restart.
+                rows=[dict(x) for x in db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' AND meeting_id=? ORDER BY julianday(created_at),rowid",
+                    (pid,cid,meeting_id)).fetchall()]
+                if rows:upsert_meeting_record(db,p,c,meeting_id,rows,MEETING_STATE.get((pid,cid),{}).get('meeting_location',''))
     if sender=='ai' and mode=='chat' and engine in ('live','demo') and not _is_chat_artifact(item):reconcile_phone_activity(db,pid,cid,at)
     if at:
         date=datetime.fromtimestamp(at/1000).astimezone().strftime('%Y-%m-%d')
@@ -3051,7 +3066,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         messages.extend(prior_turns)
         post_sys_parts=[macros(x['content']) for x in post_presets if x['role']=='system']
         non_sys_post_presets=[x for x in post_presets if x['role']!='system']
-        meeting_state_line=f"【第四层 · 当前状态 (Current State)】当前为线下见面小说模式（地点：{meet_loc}）。请严格遵循上方导入的面对面小说预设中的文风、叙事视角、人物边界、篇幅区间与创作铁律，不要替 {p['name']} 说话、行动或决定内心感受，不要在正文开头添加任何时间或模式标签，直接输出小说正文。"
+        meeting_state_line=f"【第四层 · 当前状态 (Current State)】角色最近经现场实际行动确认的地点为「{meet_loc}」，这是此前的事实锚点而非固定舞台。若本轮实际移至新地点，按物理过程继续，后续监控将以新地点为准；绝不能因为提议、路过提及或计划前往就当作已经到达。任何旧行程或旧地名都不可覆盖更新的现场行动。请严格遵循上方导入的面对面小说预设中的文风、叙事视角、人物边界、篇幅区间与创作铁律，不要替 {p['name']} 说话、行动或决定内心感受，不要在正文开头添加任何时间或模式标签，直接输出小说正文。"
         if post_sys_parts:
             messages.append({'role':'system','content':'\n\n'.join(post_sys_parts)+'\n\n'+meeting_state_line})
         else:
@@ -3522,7 +3537,7 @@ class Handler(BaseHTTPRequestHandler):
                     # Reject automatic transitions from cached legacy clients.
                     if 'autoArrivalId' in data:return self.respond({'mode':r['mode'],'autoRejected':True})
                     loc_input=str(data.get('location') or data.get('meetingLocation') or '').strip()[:40]
-                    if loc_input and r['mode']=='meeting' and m_state.get('active_meeting_id'):
+                    if mode=='meeting' and loc_input and r['mode']=='meeting' and m_state.get('active_meeting_id'):
                         if m_state.get('meeting_location')!=loc_input:
                             m_state.setdefault('meeting_location_history',[]).append({'at':utc(),'location':loc_input,'source':'manual'})
                         m_state['meeting_location']=loc_input
