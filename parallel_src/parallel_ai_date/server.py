@@ -1827,6 +1827,7 @@ SCENE_MOVE_RE=re.compile(r'走进|走入|进入|步入|迈入|踏进|回到|来�
 SCENE_NOT_ARRIVED_RE=re.compile(r'打算|准备|计划|想要|想去|还没|尚未|没有|如果|假如|也许|或许|可能|梦见|想象|本来要|即将|正要|试图|差点|朝.{0,14}走去|向.{0,14}走去|走向.{0,14}|通往.{0,16}(?:门|房|室|厅)')
 SCENE_DESTINATION_RE=re.compile(r'(?:走进|走入|进入|步入|迈入|踏进|回到|来到|抵达|到达|到了|进了|出了|走出|带进|抱进|抱回|推门进入)\s*[了的进到入过]?[\s「『“"]*(?:(?:这间|那间|自己|他们|她|他|我们|我|你|Lin|Carlos)\s*的?)?[\s「『“"]*((?:[\u4e00-\u9fff]{1,12}的)?(?:卧室|寝室|房间|客厅|厨房|浴室|卫生间|洗手间|室内|屋内|露台|阳台|庭院|花园|走廊|楼下|楼上|咖啡馆|咖啡店|餐厅|车里|车内|车上|停车场|街道))')
 SCENE_BED_RE=re.compile(r'床沿|床边|床上|床铺|床垫|被褥')
+SCENE_POTENTIAL_MOVE_RE=re.compile(r'走进|走入|进入|步入|迈入|踏进|回到|来到|抵达|到达|进了|走出|带进|抱进|抱回|推门进入|推开.{0,36}门|穿过.{0,35}(?:门|走廊)|下了车|下车|停好车|(?:坐|躺|倒|抱|落|陷|放).{0,24}(?:床沿|床边|床上)')
 
 def meeting_room_name(current,room,p_name):
     where=str(current or '').strip()
@@ -1873,7 +1874,7 @@ def meeting_scene_signature(text):
 def classify_meeting_scene_location(p,c,text,current):
     deterministic=scene_location_from_character(text,current,p['name'],c['name'])
     if deterministic:return deterministic
-    if not SCENE_INTERIOR_RE.search(str(text or '')) or not SCENE_MOVE_RE.search(str(text or '')):return None
+    if not SCENE_INTERIOR_RE.search(str(text or '')) or not SCENE_POTENTIAL_MOVE_RE.search(str(text or '')):return None
     conn=load_connection()
     if not all(conn.get(k) for k in ('base_url','api_key','model')):return None
     try:
