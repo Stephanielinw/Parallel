@@ -70,6 +70,15 @@ test('C-18: long Unicode archive survives iPhone-size reload and opens a real th
       text:'M02长记录 '+i+'：电影、热汤、卷毛与表情 🐕‍🦺 汉字的安全保存。'.repeat(4),
       created_at:new Date(Date.parse('2026-11-20T12:00:00Z')+i*60_000).toISOString()
     }));
+    // The archive card must reference a real original meeting message.
+    // Orphan cards without source messages are intentionally pruned by
+    // ensureMeetingRecords; the test must not inject an impossible state.
+    pack.data.messages.push({
+      id:'archive-only',profile_id:pid,character_id:cid,
+      mode:'meeting',meeting_id:'m02-webkit-meeting',
+      sender:'ai',engine:'live',text:'很长的历史也要记住。',
+      created_at:'2026-11-22T17:30:00Z'
+    });
     pack.data.messages.push({
       id:'m02-webkit-last',profile_id:pid,character_id:cid,
       mode:'chat',sender:'user',engine:'human',
@@ -81,13 +90,13 @@ test('C-18: long Unicode archive survives iPhone-size reload and opens a real th
       started_at:'2026-11-22T16:00:00Z',ended_at:'2026-11-22T17:51:00Z',
       finished_at:'2026-11-22T17:51:00Z',location:'宿舍露台',
       summary:'在露台见过面。',ai_summary:'在露台见过面。',
-      message_ids:[],entries:[{id:'archive-only',sender:'ai',text:'很长的历史也要记住。',created_at:'2026-11-22T17:30:00Z'}]
+      message_ids:['archive-only'],entries:[{id:'archive-only',sender:'ai',text:'很长的历史也要记住。',created_at:'2026-11-22T17:30:00Z'}]
     }];
     engine.importData(JSON.stringify(pack));
     localStorage.setItem('parallel-active-profile',pid);
   });
   await page.reload();
-  await expect.poll(()=>page.evaluate(()=>window.ParallelOffline&&JSON.parse(window.ParallelOffline.exportData()).data.messages.length)).toBe(281);
+  await expect.poll(()=>page.evaluate(()=>window.ParallelOffline&&JSON.parse(window.ParallelOffline.exportData()).data.messages.length)).toBe(282);
   // A new isolated mobile browser legitimately prompts for Demo vs Normal
   // if no API key is configured. Exercise the real no-API choice instead of
   // forcing a click through the blocking dialog.
@@ -119,7 +128,7 @@ test('C-18: long Unicode archive survives iPhone-size reload and opens a real th
     const d=JSON.parse(window.ParallelOffline!.exportData()).data;
     return {count:d.messages.length,tail:d.messages.at(-1)?.text,meeting:d.meetings[0]?.id,profile:d.profiles[0]?.name};
   });
-  expect(state).toEqual({count:281,tail:'WebKit 刷新后的消息没有消失 🐕‍🦺',
+  expect(state).toEqual({count:282,tail:'WebKit 刷新后的消息没有消失 🐕‍🦺',
     meeting:'m02-webkit-meeting',profile:'M02 Test Profile'});
   expect(errors).toEqual([]);
 });
