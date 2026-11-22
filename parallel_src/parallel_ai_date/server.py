@@ -1970,6 +1970,8 @@ def forget_thread_messages(db,p,c,message_ids,whole_meeting_ids=None):
         if any(str(m['text'])[:40] and str(m['text'])[:40] in str(row['summary']) and abs((datetime.fromisoformat(row['created_at'])-datetime.fromisoformat(m['created_at'])).total_seconds())<2 for m in removed):
             db.execute('DELETE FROM events WHERE id=?',(row['id'],))
     for mid in affected:
+        # Purge stale checkpoints before updating the remaining transcript.
+        valid_meeting_checkpoints(db,p['id'],c['id'],mid)
         remains=[dict(x) for x in db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' AND meeting_id=? ORDER BY julianday(created_at),rowid",(p['id'],c['id'],mid)).fetchall()]
         if remains:
             before=db.execute('SELECT location FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone()
@@ -2196,6 +2198,8 @@ def valid_meeting_checkpoints(db,pid,cid,mid,groups=None):
         if len(part)!=50 or cp['source_signature']!=meeting_block_signature(part):
             db.execute("DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?",
                 (cid,pid,f"meeting-checkpoint:{mid}:{cp['block_index']}"))
+            db.execute("DELETE FROM meeting_checkpoints WHERE profile_id=? AND character_id=? AND meeting_id=? AND block_index=?",
+                (pid,cid,mid,cp['block_index']))
             continue
         for key in ('participants','keywords','key_dialogues','details','message_ids'):
             cp[key]=parse_json(cp[key],[])
@@ -2206,7 +2210,7 @@ def meeting_checkpoint_source(groups,p,c):
     parts=[]
     for m in (x for g in groups for x in g):
         body=re.sub(r'\s+',' ',str(m.get('text') or '')).strip()
-        limit=180 if m['sender']=='user' else 240
+        limit=300 if m['sender']=='user' else 480
         sample=body if len(body)<=limit else body[:int(limit*.65)]+' … '+body[-int(limit*.35):]
         parts.append(f"[{m['id']} @ {str(m['created_at'])[:19]}] {p['name'] if m['sender']=='user' else c['name']}：{sample}")
     return '\n'.join(parts)
