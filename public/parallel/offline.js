@@ -64,7 +64,68 @@
     return validTokenBudget(explicit)||main;
   }
   const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],meetingCheckpoints:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},discoverSessions:{},queue:{},taskStates:{},bgErrors:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},translations:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,task_max_tokens:{},auto_portraits:false,proactive_mode:'daily',auto_translate:true,character_language_pref:'natural',character_language_custom:''}});
-  let db;let storageAvailable=true;let mainStoreReadable=true;let lastSavedRaw=null;
+  let db;let storageAvailable=true;let mainStoreReadable=true;let lastSavedRaw=null;let lastSavedDataRaw=null;
+
+  // Lossless compact storage: the exported backup remains ordinary JSON.
+  // The old plain JSON key is migrated in-place only after round-trip
+  // verification. DOMStorage writes are atomic: an unsuccessful write leaves
+  // the prior original key untouched.
+  const STORAGE_COMPRESSED_PREFIX='PARALLEL-LZW14-V1:';
+  function compressStoredJson(value){
+    const bytes=new TextEncoder().encode(value),dictionary=new Map();
+    let prev=bytes[0],next=257,parts=[],part=[];
+    const emit=code=>{
+      part.push(String.fromCharCode(code+32));
+      if(part.length>=8192){parts.push(part.join(''));part=[];}
+    };
+    for(let i=1;i<bytes.length;i++){
+      const byte=bytes[i],key=prev*256+byte,found=dictionary.get(key);
+      if(found!==undefined){prev=found;continue;}
+      emit(prev);
+      if(next>=16384){emit(256);dictionary.clear();next=257;}
+      else dictionary.set(key,next++);
+      prev=byte;
+    }
+    if(bytes.length)emit(prev);
+    if(part.length)parts.push(part.join(''));
+    return STORAGE_COMPRESSED_PREFIX+parts.join('');
+  }
+  function decompressStoredJson(value){
+    if(!value||!value.startsWith(STORAGE_COMPRESSED_PREFIX))return value;
+    if(typeof TextDecoder!=='function')throw Error('当前浏览器缺少读取压缩存档所需的 TextDecoder');
+    const dictionary=new Array(16384);
+    let next=257,previous='',buffer=new Uint8Array(Math.max(8192,Math.min(32*1024*1024,value.length*3))),used=0;
+    const append=entry=>{
+      if(used+entry.length>100*1024*1024)throw Error('压缩存档的解压长度异常');
+      if(used+entry.length>buffer.length){
+        let size=buffer.length;
+        while(size<used+entry.length)size*=2;
+        const grown=new Uint8Array(size);grown.set(buffer);buffer=grown;
+      }
+      for(let i=0;i<entry.length;i++)buffer[used++]=entry.charCodeAt(i);
+    };
+    for(let i=STORAGE_COMPRESSED_PREFIX.length;i<value.length;i++){
+      const code=value.charCodeAt(i)-32;
+      if(code===256){dictionary.fill(undefined);next=257;previous='';continue;}
+      if(code<0||code>=16384)throw Error('压缩存档包含无效编码');
+      const entry=code<256?String.fromCharCode(code):
+        (dictionary[code]||(code===next&&previous?previous+previous[0]:null));
+      if(!entry)throw Error('压缩存档的编码链不完整');
+      append(entry);
+      if(previous&&next<16384)dictionary[next++]=previous+entry[0];
+      previous=entry;
+    }
+    return new TextDecoder('utf-8',{fatal:true}).decode(buffer.subarray(0,used));
+  }
+  function encodeStoredJson(value){
+    if(typeof TextEncoder!=='function'||typeof TextDecoder!=='function'||value.length<20000)return value;
+    const compact=compressStoredJson(value);
+    if(compact.length>=value.length*.9)return value;
+    // Verify before replacing the sole authoritative browser copy.
+    if(decompressStoredJson(compact)!==value)throw Error('压缩存档校验未通过；已保留原始存档');
+    return compact;
+  }
+
   const LEGACY_ERROR_BUBBLE_RE=/^(?:（模型连接失败，历史已保存。请检查终端设置，再尝试角色回复。）|（模型连接失败，请检查终端设置后重试。）)$/;
   const PROXY_ERROR_SIGNATURE_RE=/(?:所有\s*API\s*密钥均请求失败|具体错误请查看轮询日志|所有(?:渠道|密钥|节点|令牌|账号)(?:均|都)?(?:请求|调用|连接)?失败[\s\S]{0,80}(?:轮询日志|配额|额度|重试|失败))/i;
   const PROXY_HEADER_ERROR_RE=/^\s*(?:\[\s*(?:API|Upstream|Proxy|Gateway|OpenAI|Gemini|Claude|Anthropic|DeepSeek|OneAPI|NewAPI)\s*(?:Error|Exception|Fault)\s*\]|【\s*(?:API|接口|反代|上游|网关|系统)(?:错误|报错|异常|请求失败)\s*】)\s*[:：\-]?/i;
@@ -382,7 +443,9 @@
   try {
     const raw=localStorage.getItem(STORE_KEY);
     lastSavedRaw=raw;
-    db=raw?JSON.parse(raw):empty();
+    const decoded=raw?decompressStoredJson(raw):'';
+    lastSavedDataRaw=decoded||null;
+    db=raw?JSON.parse(decoded):empty();
     if(!db||!Array.isArray(db.profiles))throw Error('broken');
     legacySystemLogs=Array.isArray(db.systemLogs)?db.systemLogs:[];
     delete db.systemLogs;
@@ -390,7 +453,13 @@
   }catch(err){db=empty();storageAvailable=false;mainStoreReadable=false;}
   const save=()=>{
     if(!mainStoreReadable)throw Error('无法安全读取原存档，已停止覆盖；请先导出备份。');
-    try{const raw=JSON.stringify(db);localStorage.setItem(STORE_KEY,raw);lastSavedRaw=raw;storageAvailable=true;}
+    try{
+      const raw=JSON.stringify(db);
+      if(raw===lastSavedDataRaw&&lastSavedRaw&&lastSavedRaw.startsWith(STORAGE_COMPRESSED_PREFIX)&&localStorage.getItem(STORE_KEY)===lastSavedRaw){storageAvailable=true;return;}
+      const stored=encodeStoredJson(raw);
+      localStorage.setItem(STORE_KEY,stored);
+      lastSavedRaw=stored;lastSavedDataRaw=raw;storageAvailable=true;
+    }
     catch(err){storageAvailable=false;throw Error('浏览器本地空间不足或禁止保存。请先导出备份并释放空间。后续保存会继续尝试，不会静默跳过。');}
   };
   // Diagnostics never share the authoritative save or its failure state.
@@ -4422,7 +4491,7 @@
   async function request(path,data){
     const [route,qs='']=path.split('?'), params=new URLSearchParams(qs);data=data||{};
     switch(route){
-      case '/bootstrap':episodeStore();save();return {profiles:db.profiles.slice(),sources:[...new Set([...SOURCES,...Array.from(byId.values(),c=>c.source)])].sort(),settings:pub(),catalog_size:byId.size};
+      case '/bootstrap':episodeStore();try{save();}catch{}return {profiles:db.profiles.slice(),sources:[...new Set([...SOURCES,...Array.from(byId.values(),c=>c.source)])].sort(),settings:pub(),catalog_size:byId.size};
       case '/health':return {ok:true,name:'Parallel Portable',version:'0.5.1'};
       case '/identify':return {matches:idMatches(params.get('name')||'',params.get('source')||''),verified:'mixed-catalog'};
       case '/settings':{
@@ -4656,7 +4725,9 @@
         const ts=getTaskState(p.id,c.id,r.mode||'chat')||getTaskState(p.id,c.id,'chat');
         const threadMsgs=messagesOf(p.id,c.id);
         const translations=getMatchedTranslationsForThread(p.id,c.id,threadMsgs);
-        save();
+        // Opening a conversation is a read. Even if quota is exhausted,
+        // returning the existing transcript must not depend on a write.
+        try{save();}catch{}
         return {
           character:char(c,p.id),
           profile:p,
