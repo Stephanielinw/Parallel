@@ -1964,27 +1964,43 @@ def infer_meeting_location(db,pid,cid,custom_loc=''):
     return '约定的街角咖啡馆'
 
 def meeting_summary_chunks(m_msgs,p,c):
-    """Every turn contributes a short chronological excerpt, instead of only the final ten."""
-    chunks=[]
-    chunk=''
+    """Keep every chronological message, with manageable JSON-generation windows."""
+    chunks=[];chunk=''
     for m in m_msgs:
         original=re.sub(r'\s+',' ',str(m.get('text') or '')).strip()
-        maximum=220 if m.get('sender')=='user' else 200
-        if len(original)>maximum:
-            left=int(maximum*.55)
-            right=int(maximum*.45)
-            excerpt=original[:left]+' … '+original[-right:]
-        else:
-            excerpt=original
+        maximum=240
+        excerpt=original if len(original)<=maximum else original[:int(maximum*.6)]+' … '+original[-int(maximum*.4):]
         timestamp=str(m.get('created_at') or '')[:19].replace('T',' ')
-        name=p['name'] if m.get('sender')=='user' else c['name']
-        line=f'[{timestamp}] {name}：{excerpt}\n'
-        if chunk and len(chunk)+len(line)>9000:
-            chunks.append(chunk)
-            chunk=''
+        line=f"[{timestamp}] {p['name'] if m.get('sender')=='user' else c['name']}：{excerpt}\n"
+        if chunk and len(chunk)+len(line)>4200:
+            chunks.append(chunk);chunk=''
         chunk+=line
     if chunk:chunks.append(chunk)
     return chunks
+
+def reliable_meeting_summary_json(messages,p,c):
+    """Retry a broken structured reply once; never turn partial JSON into memory."""
+    previous=None
+    for attempt in range(2):
+        try:
+            req=messages if not attempt else [
+                dict(messages[0],content=messages[0]['content']+'\n上一轮的结构化回复可能不完整，请只返回完整 JSON 对象 {"summary":"纪实梗概"}，无需其他文字。'),
+                *messages[1:]
+            ]
+            response=completion(req,json_mode=True,min_output_tokens=3072 if attempt else 2048,temperature=0.25,
+                log_meta={'mode':'meeting_summary','entryPoint':'meeting_finalize','profile':p,'character':c})
+            result=parse_json(response,{})
+            summary=str(result.get('summary') or '').strip()
+            if len(summary)<6:raise ValueError('结构化见面小结为空或内容过少')
+            return summary
+        except Exception as error:
+            previous=error
+            data=getattr(error,'api_error',None) or {}
+            code=str(data.get('error_code') or '') if isinstance(data,dict) else ''
+            msg=str(error)
+            retryable=isinstance(error,(ValueError,json.JSONDecodeError)) or code in ('INVALID_STRUCTURED_JSON','OUTPUT_TRUNCATED','EMPTY_CONTENT') or 'JSON' in msg
+            if attempt or not retryable:raise
+    raise previous
 
 def summarize_complete_meeting(p,c,m_msgs,location,db=None):
     if not m_msgs:return None
@@ -1996,42 +2012,31 @@ def summarize_complete_meeting(p,c,m_msgs,location,db=None):
     trailing=[m for g in groups[expected*MEETING_CHECKPOINT_INTERVAL:] for m in g] if reuse else m_msgs
     chunks=meeting_summary_chunks(trailing,p,c)
     instruction=(
-        '你是见面记录的事实归档员。只能总结提供的实际对话，不得补写未出现的事件、亲吻、去过的地点、'
-        '感情承诺或人物心理。严格按时间顺序，保留开场、中段、结尾的关键事件；优先记录已发生的行动与对话，'
-        '忽略描写性赘述。若记录跨越午夜，必须体现前一晚和第二天。'
-        '只输出 JSON 对象：{"summary":"120至240字的中文纪实梗概"}。'
+        '你是小说见面剧情的事实归档员。生成下次能准确接续故事的纪实梗概，不是首尾对话摘抄。'
+        '严格顺序总结实际发生的行动、人物之间的重要原话、感情与态度变化、场景转换、物品去向、'
+        '确认或取消的约定以及未解决的事情。不要脑补不存在的行为和心理，区分玩笑、提议和正式承诺。'
+        '亲密场景概括互动即可，不要反复记录露骨身体细节。跨午夜保留睡前和次日醒来后的变化。'
+        '只输出 JSON 对象，唯一字段 summary。'
     )
-    notes=([f"第{(cp['block_index']-1)*50+1}–{cp['block_index']*50}组（{cp['started_at']}至{cp['ended_at']}）：{cp['summary']}；具体事件：{'；'.join(cp['details'])}；关键对话：{'；'.join(q['speaker']+'「'+q['quote']+'」' for q in cp['key_dialogues'])}" for cp in checkpoints] if reuse else [])
+    notes=([f"第{cp['block_index']*50-49}–{cp['block_index']*50}组（{cp['started_at']}至{cp['ended_at']}）：{cp['summary']}；具体事件：{'；'.join(cp['details'])}；关键对话：{'；'.join(q['speaker']+'「'+q['quote']+'」' for q in cp['key_dialogues'])}" for cp in checkpoints] if reuse else [])
     for idx,chunk in enumerate(chunks):
-        msg=completion([
-            {'role':'system','content':instruction+f'这是第 {idx+1}/{len(chunks)} 段连续记录，仅总结本段确实发生的事件，保留重要转折。'},
-            {'role':'user','content':f'记录地点（不一定是初见地点）：{location}；整场消息总数：{len(m_msgs)}。\n'+chunk}
-        ],json_mode=True,max_tokens=1024,temperature=0.25,log_meta={'mode':'meeting_summary','entryPoint':'meeting_finalize','profile':p,'character':c})
-        part=str(parse_json(msg,{}).get('summary') or '').strip()
-        if not part:raise ValueError('见面分段摘要为空；保留原始见面记录')
+        part=reliable_meeting_summary_json([
+            {'role':'system','content':instruction+f'这是第 {idx+1}/{len(chunks)} 段连续记录。建议用160–260字记录本段的关键事实和转折；禁止只拼贴起止两句。'},
+            {'role':'user','content':f'最后地点线索（未必是本段位置）：{location}；整场消息总数：{len(m_msgs)}。\n'+chunk}
+        ],p,c)
         notes.append(part)
-    if len(notes)==1:return {'summary':checkpoints[0]['summary'] if reuse else notes[0]}
-    merged=completion([
-        {'role':'system','content':instruction+f'以下是同一场见面按时间顺序整理的 {len(notes)} 段事实小结。合并为整场见面梗概，不得只概括最后一段，也不得增加分段摘要中没有的情节。'},
-        {'role':'user','content':f"见面时间：{m_msgs[0].get('created_at','')} 至 {m_msgs[-1].get('created_at','')}；记录地点（不一定是初见地点）：{location}。\n"+'\n'.join(f'第{i+1}/{len(notes)}段：{note}' for i,note in enumerate(notes))}
-    ],json_mode=True,max_tokens=1024,temperature=0.25,log_meta={'mode':'meeting_summary','entryPoint':'meeting_finalize','profile':p,'character':c})
-    summary=str(parse_json(merged,{}).get('summary') or '').strip()
-    if not summary:raise ValueError('整场见面梗概为空；保留原始见面记录')
-    return {'summary':summary}
+    if len(notes)==1:return {'summary':notes[0]}
+    final=reliable_meeting_summary_json([
+        {'role':'system','content':instruction+f'以下是同一场见面按时序的 {len(notes)} 段事实小结。合并为整场见面梗概（建议350–600字），保留关键对话、感情转折、重要行动、地点移动、后续约定和未解决问题，不得漏掉早期重要事件。绝对不要只说从哪开始到哪结束。'},
+        {'role':'user','content':f"见面时间：{m_msgs[0].get('created_at','')} 至 {m_msgs[-1].get('created_at','')}；最后已知地点：{location}。\n"+'\n'.join(f'第{i+1}/{len(notes)}段：{note}' for i,note in enumerate(notes))}
+    ],p,c)
+    return {'summary':final}
 
 def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary=''):
     if ai_summary and len(str(ai_summary).strip())>=6:
-        return strip_protocol_tags(str(ai_summary),preserve_paragraphs=False)[:320]
-    u_turns=[m for m in m_msgs if m['sender']=='user' and m.get('engine')!='recalled']
-    a_turns=[m for m in m_msgs if m['sender']=='ai' and m.get('engine')!='recalled']
-    if u_turns:
-        first_u=re.sub(r'\s+',' ',str(u_turns[0].get('text',''))).strip()[:38]
-        last_u=re.sub(r'\s+',' ',str(u_turns[-1].get('text',''))).strip()[:34] if len(u_turns)>1 else ''
-        return f"{p['name']}「{first_u}」{('、再到「'+last_u+'」') if last_u else ''}，与 {c['name']} 面对面互动了 {len(m_msgs)} 个回合。"
-    if a_turns:
-        snippet=re.sub(r'\s+',' ',clean_meeting_novel_text(a_turns[0]['text']))[:48]
-        return f"{snippet}…（共 {len(m_msgs)} 段面对面互动）"
-    return f"在「{loc}」见了一面。"
+        return strip_protocol_tags(str(ai_summary),preserve_paragraphs=False)[:850]
+    # Never advertise a concatenation of first and last messages as real memory.
+    return '本次见面原文已完整保存，剧情小结尚未生成成功；可点击「重新整理整场梗概」补全。'
 
 def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
     if not m_msgs:return None
@@ -2709,7 +2714,7 @@ def classify_http_status_error(status,detail_msg='',retry_after=0):
     if s==529:return _res('HTTP_529','服务商过载 (HTTP 529)',f"上游模型服务商当前负载过高 (Overloaded){suffix}。建议等待片刻后再重试。")
     return _res(f'HTTP_{s}',f'接口请求异常 (HTTP {s})',f"模型接口返回异常状态码 HTTP {s}{suffix}。请检查终端设置或查看系统日志。")
 
-def completion(messages,*,json_mode=False,max_tokens=None,temperature=None,log_meta=None):
+def completion(messages,*,json_mode=False,max_tokens=None,min_output_tokens=None,temperature=None,log_meta=None):
     settings=load_connection();base=settings.get('base_url');key=settings.get('api_key');model=settings.get('model')
     if not all((base,key,model)):raise RuntimeError('尚未配置可用的 API 地址、密钥及模型')
     meta=log_meta or {}
@@ -2719,6 +2724,8 @@ def completion(messages,*,json_mode=False,max_tokens=None,temperature=None,log_m
     attempt=int(meta.get('attempt') or 1)
     retry_of_task_id=meta.get('retry_of_task_id') or ''
     max_tok=resolve_task_max_tokens(settings,req_mode,meta.get('entryPoint',req_mode),max_tokens)
+    if req_mode=='meeting_summary' and min_output_tokens:
+        max_tok=min(4096,max(max_tok,int(min_output_tokens)))
     temp=float(temperature if temperature is not None else settings.get('temperature',0.85))
     top_p_val=float(settings.get('top_p',1))
     payload={'model':model,'messages':messages,'temperature':temp,'top_p':top_p_val,'max_tokens':max_tok}
@@ -3388,7 +3395,7 @@ class Handler(BaseHTTPRequestHandler):
                     m_msgs=[dict(row) for row in all_rows if row['id'] in wanted]
                     if not m_msgs:raise ValueError('原始见面记录不可用，无法重新整理')
                     original=[(m['id'],m['text']) for m in m_msgs]
-                    summary=summarize_complete_meeting(p,c,m_msgs,rec['location'] or '')
+                    summary=summarize_complete_meeting(p,c,m_msgs,rec['location'] or '',db=db)
                     after=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode=? ORDER BY rowid',(p['id'],cid,'meeting')).fetchall()
                     latest=[dict(row) for row in after if row['id'] in wanted]
                     if [(m['id'],m['text']) for m in latest]!=original:
@@ -3675,7 +3682,7 @@ class Handler(BaseHTTPRequestHandler):
                                 if data.get('finalizeMeeting') is True and public_connection()['mode']=='live':
                                     try:
                                         parsed=summarize_complete_meeting(p,c,m_msgs,ai_loc,db=db)
-                                        if parsed and parsed.get('summary'):ai_sum=str(parsed['summary']).strip()[:320]
+                                        if parsed and parsed.get('summary'):ai_sum=str(parsed['summary']).strip()[:850]
                                     except Exception:pass
                                 meeting_record=upsert_meeting_record(db,p,c,mid,m_msgs,ai_loc,ai_sum)
                                 if meeting_record:
