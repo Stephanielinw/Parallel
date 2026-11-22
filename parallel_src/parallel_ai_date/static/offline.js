@@ -2221,7 +2221,9 @@
           ?{location:m.scene_location}:sceneLocationFromCharacter(m.text,current,p.name);
         loc=evidence?.location||'';
       }
-      if(loc&&!isNonPlaceText(loc)&&loc!==allEvents.at(-1)?.location){
+      const previous=allEvents.filter(e=>Date.parse(e.at)<=Date.parse(m.created_at))
+        .sort((a,b)=>Date.parse(a.at)-Date.parse(b.at)).at(-1)?.location||startingLoc;
+      if(loc&&!isNonPlaceText(loc)&&loc!==previous){
         allEvents.push({at:m.created_at,location:loc,source:m.sender==='user'?'scene':'ai_scene',message_id:m.id});
       }
     }
@@ -3237,7 +3239,7 @@
     const interestsStr=(p.interests||[]).join('、')||'未填写';
     const intentStr=p.intent||'未填写';
     const curSurv=getCurrentSurveillanceSlot(p,c,options.simulatedAt||Date.now());
-    const meetingLoc=relation(p.id,c.id)?.meeting_location||curSurv?.location||'约定的街角咖啡馆';
+    const meetingLoc=curSurv?.location||relation(p.id,c.id)?.meeting_location||'约定的街角咖啡馆';
     let sys='你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n';
     sys+='现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。\n';
     if(mode==='meeting'){
@@ -3320,7 +3322,7 @@
       const postSystemParts=postPresets.filter(x=>x.role==='system').map(x=>macros(x.content));
       postSystemParts.push(meetingClockContext(relation(p.id,c.id),workingHistory,Date.now(),options.rerollAt||0));
       if(isMeetingOpening)postSystemParts.push(meetingOpeningDirection(p,c,meetingLoc));
-      postSystemParts.push(`【第四层 · 当前状态 (Current State)】当前见面地点：「${meetingLoc}」。请严格按照上方已启用的预设模块规则（含文风、视角、去油腻、连续性及正文篇幅要求）输出面对面小说正文；只决定 ${c.name} 自己与环境中合理的事，不要替 ${p.name} 说话、行动或决定心理，不要在正文开头添加任何时间或模式标签。`);
+      postSystemParts.push(`【第四层 · 当前状态 (Current State)】角色最后经现场实际行动确认的地点：「${meetingLoc}」。此定位是过去确认的状态，不是不可更改的固定舞台；如果本轮角色确实移至新地点，应按真实移动过程继续，并使后续监控更新。不能因目的地被提及、打算过去、角色猜测而假定已经到达。必须优先承接最新现场行动，不得让旧日程或旧地名覆盖新的实际位置。请严格按照上方已启用的预设模块规则（含文风、视角、去油腻、连续性及正文篇幅要求）输出面对面小说正文；只决定 ${c.name} 自己与环境中合理的事，不要替 ${p.name} 说话、行动或决定心理，不要在正文开头添加任何时间或模式标签。`);
       chat.push({role:'system',content:postSystemParts.join('\n\n')});
       for(const x of postPresets){
         if(x.role!=='system')chat.push({role:x.role,content:macros(x.content)});
@@ -4143,6 +4145,14 @@
         engine='error';
       }
     }else txt=demo(p,c,mode);
+    // Evaluate every successful meeting reply for physical location changes.
+    // The inexpensive local check runs every turn; a second model is queried
+    // only when text indicates an ambiguous completed spatial transition.
+    let sceneLocation=null;
+    if(mode==='meeting'&&engine!=='error'&&txt){
+      const known=activeMeetingLocationHistory(p,c).at(-1)?.location||r?.meeting_location||'约定的见面地点';
+      sceneLocation=await classifyMeetingMovement(p,c,cleanMeetingNovelText(txt),known,{signal:abortCtrl?.signal});
+    }
     inflightControllers.delete(tKey);
     const curRel=relation(p.id,c.id);
     const curTs=getTaskState(p.id,c.id,mode);
@@ -4179,6 +4189,20 @@
     const bubbleTexts=mode==='chat'?splitChatBubbles(txt):[cleanMeetingNovelText(txt)];
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai',mode,bTxt,engine));
     const reply=replies[replies.length-1]||null;
+    if(reply&&mode==='meeting'){
+      if(sceneLocation?.location){
+        reply.scene_location=sceneLocation.location;
+        reply.scene_location_evidence=sceneLocation.evidence;
+        reply.scene_location_kind=sceneLocation.kind;
+        reply.scene_location_signature=meetingSceneSignature(reply.text);
+      }
+      const history=activeMeetingLocationHistory(p,c);
+      const rec=getOrInitSurveillance(p,c,localDateStr(reply.created_at));
+      if(rec.live_override&&rec.live_override.meeting_id===activeMid){
+        rec.live_override.location=history.at(-1)?.location||rec.live_override.location;
+        rec.updated_at=stamp();
+      }
+    }
     if(reply){
       const combinedTxt=replies.map(m=>m.text).join(' / ');
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180));
