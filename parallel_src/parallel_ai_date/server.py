@@ -167,6 +167,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS episodic_memories (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, profile_id TEXT NOT NULL, source_type TEXT NOT NULL, source_key TEXT NOT NULL, knowledge_mode TEXT NOT NULL DEFAULT 'stated', summary TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', importance INTEGER NOT NULL DEFAULT 2, emotional_weight INTEGER NOT NULL DEFAULT 2, unresolved INTEGER NOT NULL DEFAULT 0, clarifies_id TEXT NOT NULL DEFAULT '', disputed INTEGER NOT NULL DEFAULT 0, raw_msg_ids TEXT NOT NULL DEFAULT '[]', event_at TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(owner_id, profile_id, source_key));
         CREATE INDEX IF NOT EXISTS episodic_owner_profile ON episodic_memories(owner_id, profile_id, event_at);
         CREATE TABLE IF NOT EXISTS meetings (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, character_id TEXT NOT NULL, location TEXT NOT NULL DEFAULT '', time TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, ended_at TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', ai_summary TEXT NOT NULL DEFAULT '', message_ids TEXT NOT NULL DEFAULT '[]', entries TEXT NOT NULL DEFAULT '[]');
+        CREATE TABLE IF NOT EXISTS meeting_checkpoints (profile_id TEXT NOT NULL,character_id TEXT NOT NULL,meeting_id TEXT NOT NULL,block_index INTEGER NOT NULL,source_signature TEXT NOT NULL,started_at TEXT NOT NULL,ended_at TEXT NOT NULL,participants TEXT NOT NULL DEFAULT '[]',summary TEXT NOT NULL,keywords TEXT NOT NULL DEFAULT '[]',key_dialogues TEXT NOT NULL DEFAULT '[]',details TEXT NOT NULL DEFAULT '[]',message_ids TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL,PRIMARY KEY(profile_id,character_id,meeting_id,block_index));
         CREATE TABLE IF NOT EXISTS message_translations (message_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, character_id TEXT NOT NULL, content_version TEXT NOT NULL, target_lang TEXT NOT NULL DEFAULT 'zh-CN', translated_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'ready', error_code TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT '', provider_model TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS msg_translations_thread ON message_translations(profile_id, character_id);
         ''')
@@ -1810,16 +1811,22 @@ def meeting_summary_chunks(m_msgs,p,c):
     if chunk:chunks.append(chunk)
     return chunks
 
-def summarize_complete_meeting(p,c,m_msgs,location):
+def summarize_complete_meeting(p,c,m_msgs,location,db=None):
     if not m_msgs:return None
-    chunks=meeting_summary_chunks(m_msgs,p,c)
+    mid=m_msgs[0].get('meeting_id') or ''
+    groups=completed_meeting_groups(db,p['id'],c['id'],mid) if db is not None and mid else []
+    expected=len(groups)//MEETING_CHECKPOINT_INTERVAL
+    checkpoints=valid_meeting_checkpoints(db,p['id'],c['id'],mid,groups) if expected else []
+    reuse=bool(expected and len(checkpoints)==expected)
+    trailing=[m for g in groups[expected*MEETING_CHECKPOINT_INTERVAL:] for m in g] if reuse else m_msgs
+    chunks=meeting_summary_chunks(trailing,p,c)
     instruction=(
         '你是见面记录的事实归档员。只能总结提供的实际对话，不得补写未出现的事件、亲吻、去过的地点、'
         '感情承诺或人物心理。严格按时间顺序，保留开场、中段、结尾的关键事件；优先记录已发生的行动与对话，'
         '忽略描写性赘述。若记录跨越午夜，必须体现前一晚和第二天。'
         '只输出 JSON 对象：{"summary":"120至240字的中文纪实梗概"}。'
     )
-    notes=[]
+    notes=([f"第{(cp['block_index']-1)*50+1}–{cp['block_index']*50}组（{cp['started_at']}至{cp['ended_at']}）：{cp['summary']}；具体事件：{'；'.join(cp['details'])}；关键对话：{'；'.join(q['speaker']+'「'+q['quote']+'」' for q in cp['key_dialogues'])}" for cp in checkpoints] if reuse else [])
     for idx,chunk in enumerate(chunks):
         msg=completion([
             {'role':'system','content':instruction+f'这是第 {idx+1}/{len(chunks)} 段连续记录，仅总结本段确实发生的事件，保留重要转折。'},
@@ -1828,7 +1835,7 @@ def summarize_complete_meeting(p,c,m_msgs,location):
         part=str(parse_json(msg,{}).get('summary') or '').strip()
         if not part:raise ValueError('见面分段摘要为空；保留原始见面记录')
         notes.append(part)
-    if len(notes)==1:return {'summary':notes[0]}
+    if len(notes)==1:return {'summary':checkpoints[0]['summary'] if reuse else notes[0]}
     merged=completion([
         {'role':'system','content':instruction+f'以下是同一场见面按时间顺序整理的 {len(notes)} 段事实小结。合并为整场见面梗概，不得只概括最后一段，也不得增加分段摘要中没有的情节。'},
         {'role':'user','content':f"见面时间：{m_msgs[0].get('created_at','')} 至 {m_msgs[-1].get('created_at','')}；记录地点（不一定是初见地点）：{location}。\n"+'\n'.join(f'第{i+1}/{len(notes)}段：{note}' for i,note in enumerate(notes))}
@@ -1969,6 +1976,8 @@ def forget_thread_messages(db,p,c,message_ids,whole_meeting_ids=None):
         if any(str(m['text'])[:40] and str(m['text'])[:40] in str(row['summary']) and abs((datetime.fromisoformat(row['created_at'])-datetime.fromisoformat(m['created_at'])).total_seconds())<2 for m in removed):
             db.execute('DELETE FROM events WHERE id=?',(row['id'],))
     for mid in affected:
+        # Purge stale checkpoints before updating the remaining transcript.
+        valid_meeting_checkpoints(db,p['id'],c['id'],mid)
         remains=[dict(x) for x in db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' AND meeting_id=? ORDER BY julianday(created_at),rowid",(p['id'],c['id'],mid)).fetchall()]
         if remains:
             before=db.execute('SELECT location FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone()
@@ -2163,7 +2172,141 @@ def relationship_baseline_summary(db,pid,cid,p_name):
         parts.append(f"匹配记录：{recent_ms}")
     return '；'.join(parts)+'。'
 
-def select_turn_window(rows,mode,protected_ids=None):
+
+MEETING_CHECKPOINT_INTERVAL=50
+
+def completed_meeting_groups(db,pid,cid,mid):
+    rows=[dict(x) for x in db.execute(
+        "SELECT id,sender,mode,text,engine,created_at,meeting_id FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' AND meeting_id=? ORDER BY julianday(created_at),rowid",
+        (pid,cid,mid)).fetchall() if x['engine']!='recalled']
+    groups=[]
+    for row in rows:
+        last=groups[-1] if groups else None
+        if row['sender']=='user':
+            if not last or any(m['sender']=='ai' for m in last):groups.append([row])
+            else:last.append(row)
+        elif row['sender']=='ai':
+            if last:last.append(row)
+            else:groups.append([row])
+    return [g for g in groups if any(m['sender']=='user' for m in g) and any(m['sender']=='ai' for m in g)]
+
+def meeting_block_signature(groups):
+    body=''.join(str(m['id'])+'\0'+str(m.get('text') or '')+'\1' for g in groups for m in g)
+    return f"{len(body)}:{hashlib.sha256(body.encode('utf8')).hexdigest()}"
+
+def valid_meeting_checkpoints(db,pid,cid,mid,groups=None):
+    groups=completed_meeting_groups(db,pid,cid,mid) if groups is None else groups
+    rows=db.execute('SELECT * FROM meeting_checkpoints WHERE profile_id=? AND character_id=? AND meeting_id=? ORDER BY block_index',(pid,cid,mid)).fetchall()
+    valid=[]
+    for row in rows:
+        cp=dict(row)
+        part=groups[(cp['block_index']-1)*50:cp['block_index']*50]
+        if len(part)!=50 or cp['source_signature']!=meeting_block_signature(part):
+            db.execute("DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?",
+                (cid,pid,f"meeting-checkpoint:{mid}:{cp['block_index']}"))
+            db.execute("DELETE FROM meeting_checkpoints WHERE profile_id=? AND character_id=? AND meeting_id=? AND block_index=?",
+                (pid,cid,mid,cp['block_index']))
+            continue
+        for key in ('participants','keywords','key_dialogues','details','message_ids'):
+            cp[key]=parse_json(cp[key],[])
+        valid.append(cp)
+    return valid
+
+def meeting_checkpoint_source(groups,p,c):
+    parts=[]
+    for m in (x for g in groups for x in g):
+        body=re.sub(r'\s+',' ',str(m.get('text') or '')).strip()
+        limit=300 if m['sender']=='user' else 480
+        sample=body if len(body)<=limit else body[:int(limit*.65)]+' … '+body[-int(limit*.35):]
+        parts.append(f"[{m['id']} @ {str(m['created_at'])[:19]}] {p['name'] if m['sender']=='user' else c['name']}：{sample}")
+    return '\n'.join(parts)
+
+def normalize_meeting_checkpoint(data,p,c,mid,index,block,signature):
+    messages=[m for g in block for m in g]
+    by_id={m['id']:m for m in messages}
+    clean=lambda x:strip_protocol_tags(str(x or ''),preserve_paragraphs=False).strip()
+    summary=clean(data.get('summary'))[:560]
+    if len(summary)<12:raise ValueError('见面阶段小结缺少有效纪实内容')
+    keywords=[clean(x)[:22] for x in (data.get('keywords') if isinstance(data.get('keywords'),list) else []) if len(clean(x))>=2][:14]
+    details=[clean(x)[:160] for x in (data.get('details') if isinstance(data.get('details'),list) else []) if clean(x)][:18]
+    dialogues=[]
+    for x in (data.get('key_dialogues') if isinstance(data.get('key_dialogues'),list) else []):
+        if not isinstance(x,dict):continue
+        m=by_id.get(str(x.get('message_id') or ''))
+        quote=clean(x.get('quote'))[:150]
+        if m and quote and quote in str(m['text']):
+            dialogues.append({'message_id':m['id'],'speaker':p['name'] if m['sender']=='user' else c['name'],'quote':quote})
+    participants=[]
+    for who in [p['name'],c['name']]+(data.get('participants') if isinstance(data.get('participants'),list) else []):
+        name=clean(who)[:40]
+        if name and name not in participants:participants.append(name)
+    return dict(profile_id=p['id'],character_id=c['id'],meeting_id=mid,block_index=index,
+        round_start=(index-1)*50+1,round_end=index*50,
+        started_at=messages[0]['created_at'],ended_at=messages[-1]['created_at'],
+        participants=participants[:12],summary=summary,keywords=keywords,details=details,key_dialogues=dialogues[:10],
+        message_ids=[m['id'] for m in messages],source_signature=signature,created_at=utc())
+
+def ensure_meeting_checkpoints(db,p,c,mid):
+    if not mid:return []
+    groups=completed_meeting_groups(db,p['id'],c['id'],mid)
+    result=[]
+    for index in range(1,len(groups)//50+1):
+        block=groups[(index-1)*50:index*50]
+        signature=meeting_block_signature(block)
+        row=db.execute('SELECT source_signature FROM meeting_checkpoints WHERE profile_id=? AND character_id=? AND meeting_id=? AND block_index=?',(p['id'],c['id'],mid,index)).fetchone()
+        if row and row['source_signature']==signature:continue
+        conn=load_connection()
+        if all(conn.get(x) for x in ('base_url','api_key','model')):
+            response=completion([
+                {'role':'system','content':'你是小说见面记录的事实档案员，只整理已发生的内容。按时间顺序保留人物、地点移动、重要动作与状态、承诺与取消及因果，不得虚构。只输出 JSON：{"summary":"300至500字时序纪实","participants":["真实在场人物"],"keywords":["2至14个可检索的具体事件词组"],"key_dialogues":[{"message_id":"原文消息ID","quote":"原文准确连续片段"}],"details":["5至18条具体事实"]}。关键对话必须逐字摘录、标明ID。'},
+                {'role':'user','content':f"见面第{index}段共50组完整往返，人物：{p['name']}、{c['name']}。各行带来源ID和时间。\n"+meeting_checkpoint_source(block,p,c)}
+            ],json_mode=True,max_tokens=2400,temperature=0.25,log_meta={'mode':'archive','entryPoint':'meeting_checkpoint','profile':p,'character':c})
+            data=parse_json(response,{})
+        else:
+            first,last=block[0][0],block[-1][-1]
+            data={'summary':f"与 {p['name']} 在场持续互动50组。开始于「{str(first['text'])[:80]}」，结束于「{str(last['text'])[:80]}」。离线临时纪要，详细事实须核查原文。",
+                  'keywords':extract_memory_tags(' '.join(str(g[0]['text']) for g in block),10),'details':[],'key_dialogues':[]}
+        latest=completed_meeting_groups(db,p['id'],c['id'],mid)[(index-1)*50:index*50]
+        if len(latest)!=50 or meeting_block_signature(latest)!=signature:raise ValueError('归档期间见面原文已被修改')
+        cp=normalize_meeting_checkpoint(data,p,c,mid,index,latest,signature)
+        keys=['profile_id','character_id','meeting_id','block_index','source_signature','started_at','ended_at','participants','summary','keywords','key_dialogues','details','message_ids','created_at']
+        vals=[js(cp[k]) if k in ('participants','keywords','key_dialogues','details','message_ids') else cp[k] for k in keys]
+        db.execute('INSERT OR REPLACE INTO meeting_checkpoints ('+','.join(keys)+') VALUES ('+','.join('?' for _ in keys)+')',vals)
+        append_episodic_memory(db,owner_id=c['id'],profile_id=p['id'],source_type='meeting_checkpoint',
+            source_key=f"meeting-checkpoint:{mid}:{index}",knowledge_mode='experienced',
+            summary=f"和 {p['name']} 的第{cp['round_start']}–{cp['round_end']}组见面：{cp['summary']}",
+            tags=['见面']+cp['keywords'],importance=4,emotional_weight=3,
+            raw_msg_ids=cp['message_ids'],event_at=cp['ended_at'])
+        result.append(cp)
+    return result
+
+def meeting_checkpoint_prompt_context(db,p,c,mid,query=''):
+    groups=completed_meeting_groups(db,p['id'],c['id'],mid)
+    checkpoints=valid_meeting_checkpoints(db,p['id'],c['id'],mid,groups)
+    if not checkpoints:return ''
+    summaries=[]
+    for cp in checkpoints:
+        dialogues='；'.join(x['speaker']+'「'+x['quote']+'」' for x in cp['key_dialogues'])
+        summaries.append(f"第{(cp['block_index']-1)*50+1}–{cp['block_index']*50}组｜{cp['started_at']} 至 {cp['ended_at']}｜人物：{'、'.join(cp['participants'])}\n小结：{cp['summary']}\n关键词：{'、'.join(cp['keywords'])}\n关键对话：{dialogues}\n具体内容：{'；'.join(cp['details'])}")
+    query=str(query or '').lower()
+    ignored={'我们','你们','他们','自己','这个','那个','见面','现在','刚才','今天','昨天'}
+    excerpts=[]
+    matched=[(cp,[kw for kw in cp['keywords'] if len(kw)>=2 and kw not in ignored and kw.lower() in query]) for cp in checkpoints]
+    for cp,hits in [(cp,hits) for cp,hits in matched if hits][-3:]:
+        offset=(cp['block_index']-1)*50
+        segment=groups[offset:offset+50]
+        candidates=[]
+        for i,g in enumerate(segment):
+            score=sum(1 for m in g for kw in hits if kw.lower() in str(m.get('text') or '').lower())
+            if score:candidates.append((score,i))
+        for _,i in sorted(sorted(candidates,reverse=True)[:2],key=lambda x:x[1]):
+            nearby=segment[max(0,i-1):min(50,i+2)]
+            excerpts.append(f"第{offset+i+1}组附近原文（{'、'.join(hits)}）：\n"+meeting_checkpoint_source(nearby,p,c)[:2600])
+    return ("\n\n【本次见面 · 已归档的全部50组阶段小结】\n"+"\n\n".join(summaries)+
+            "\n以上为过去亲历事实，最新5组对话决定当下位置和动作，不得让旧场景覆盖当前现场。"+
+            ("\n\n【关键词命中的历史现场原文 · 带来源消息ID】\n"+"\n\n".join(excerpts) if excerpts else ''))
+
+def select_turn_window(rows,mode,protected_ids=None,meeting_max_groups=10):
     if not rows:return []
     groups=[]
     for row in rows:
@@ -2171,7 +2314,7 @@ def select_turn_window(rows,mode,protected_ids=None):
         else:groups[-1].append(row)
     protected=set(protected_ids or [])
     protected_start=next((i for i,g in enumerate(groups) if any(m['id'] in protected for m in g)),-1)
-    budget,max_groups=(36000,10) if mode=='meeting' else (12000,12)
+    budget,max_groups=((float('inf'),5) if meeting_max_groups==5 else (36000,10)) if mode=='meeting' else (12000,12)
     cost=0;start=len(groups)-1
     for i in range(len(groups)-1,-1,-1):
         next_cost=sum(len(str(m.get('text') or ''))+40 for m in groups[i])
@@ -2196,7 +2339,8 @@ def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids
         m_state=MEETING_STATE.get((pid,cid),{})
         active_mid=m_state.get('active_meeting_id','')
         if active_mid:
-            return select_turn_window([m for m in chron if m['mode']=='meeting' and m.get('meeting_id')==active_mid],mode,protected_ids)
+            checkpointed=bool(valid_meeting_checkpoints(db,pid,cid,active_mid))
+            return select_turn_window([m for m in chron if m['mode']=='meeting' and m.get('meeting_id')==active_mid],mode,protected_ids,5 if checkpointed else 10)
         started_after=m_state.get('started_after_rowid')
         if started_after is not None:
             return select_turn_window([m for m in chron if m['mode']=='meeting' and int(m.get('rowid',0))>int(started_after)],mode,protected_ids)
@@ -2230,6 +2374,15 @@ def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0,quote_id=''):
     item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc(),meeting_id=meeting_id,quote_json=js(quote) if quote else '')
     db.execute('INSERT INTO messages (id,profile_id,character_id,sender,mode,text,engine,created_at,meeting_id,quote_json) VALUES (?,?,?,?,?,?,?,?,?,?)',tuple(item.values()))
     item['quote']=quote
+    if sender=='ai' and mode=='meeting' and meeting_id and engine in ('live','demo'):
+        try:
+            p=profile_get(db,pid)
+            c=BY_ID.get(cid)
+            if c:ensure_meeting_checkpoints(db,p,c,meeting_id)
+        except Exception as error:
+            # Keep the scene reply even when paid archive generation fails. The
+            # previous raw-history window stays in use until a valid checkpoint exists.
+            log_event(db,pid,cid,'meeting_checkpoint_failed','阶段归档待重试：'+str(error)[:140])
     if sender=='user' and mode=='meeting' and not at and meeting_id:
         p=profile_get(db,pid);c=BY_ID.get(cid)
         if c:
@@ -2701,6 +2854,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     ensure_daily_summaries(db,p,c,working_ids)
     query_seed=latest or ' '.join(str(m['text'] or '').strip() for m in working_history[-3:] if m['sender']=='user') or (' '.join((str(m['text'] or '').strip() if m['sender']=='user' else clean_chat_bubble_text(m['text'])) for m in working_history[-2:]))
     recalled=retrieve_relevant_memories(db,p['id'],c['id'],query_text=query_seed,exclude_msg_ids=working_ids,limit=4,max_chars=1200,as_of=simulated_at)
+    if mode=='meeting':recalled=[x for x in recalled if x['source_type']!='meeting_checkpoint']
     rel_summary=relationship_baseline_summary(db,p['id'],c['id'],p['name'])
     cur_surv=get_current_surveillance_slot(db,p,c,simulated_at)
     interests_str='、'.join(p.get('interests') or []) or '未填写'
@@ -2740,6 +2894,8 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     else:
         system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n"+("（当前话题未触发额外远期档案，仅依靠下方今日活跃上下文连贯交流）" if mode=='meeting' else "（无额外远期档案命中，请直接聚焦下方当前聊天。）")
     if mode=='meeting':
+        active_mid=MEETING_STATE.get((p['id'],c['id']),{}).get('active_meeting_id','')
+        if active_mid:system+=meeting_checkpoint_prompt_context(db,p,c,active_mid,query_seed)
         pre_chat=select_pre_meeting_chat_context(db,p['id'],c['id'],6)
         if pre_chat:
             chat_lines=[]
@@ -3329,7 +3485,7 @@ class Handler(BaseHTTPRequestHandler):
                                 ai_sum='';ai_loc=loc_input or m_state.get('meeting_location','')
                                 if data.get('finalizeMeeting') is True and public_connection()['mode']=='live':
                                     try:
-                                        parsed=summarize_complete_meeting(p,c,m_msgs,ai_loc)
+                                        parsed=summarize_complete_meeting(p,c,m_msgs,ai_loc,db=db)
                                         if parsed and parsed.get('summary'):ai_sum=str(parsed['summary']).strip()[:320]
                                     except Exception:pass
                                 meeting_record=upsert_meeting_record(db,p,c,mid,m_msgs,ai_loc,ai_sum)
