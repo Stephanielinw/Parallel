@@ -72,6 +72,8 @@ function makeEngine(failOnce=false){
   const a=makeEngine();
   await a.engine.request('/settings',{base_url:'https://mock.example/v1',api_key:'fake',model:'mock',auto_translate:false});
   const actual=await a.engine.request('/surveillance',pair);
+  const diagnostic=JSON.parse(a.engine.exportData()).data;
+  console.log('POST-MEETING DEBUG',JSON.stringify({mode:(await a.engine.request('/settings',{})).mode,current:actual.current,stored:diagnostic.surveillance[key]?.byDate?.['2026-11-22']?.post_meeting_id,anchor:diagnostic.surveillance[key]?.byDate?.['2026-11-22']?.post_meeting_anchor,rec:diagnostic.meetings[0]?.ended_at,engine:actual.engine,error:actual.bgError,calls:a.calls.length}).slice(0,1600));
   assert.equal(a.calls.length,1,'open surveillance automatically triggers missing replan');
   const prompt=JSON.stringify(a.calls[0].messages);
   assert(prompt.includes('晚些时候回营地'),'actual ending is visible when summary API failed');
