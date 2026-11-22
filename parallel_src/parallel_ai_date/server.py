@@ -1837,14 +1837,22 @@ def meeting_room_name(current,room,p_name):
     if base and base!=where and len(base)<=24:return base+kind
     return kind
 
-def scene_location_from_character(text,current,p_name):
+def scene_location_from_character(text,current,p_name,c_name=''):
     text=str(text or '')
     if not text or not SCENE_INTERIOR_RE.search(text) or not SCENE_MOVE_RE.search(text):return None
     candidates=[]
     for m in SCENE_DESTINATION_RE.finditer(text):
-        prev=text[max(0,m.start()-18):m.start()]
+        before=text[:m.start()]
+        prev=before[-22:]
         following=text[m.start():m.end()+8]
-        if SCENE_NOT_ARRIVED_RE.search(prev) or re.search(r'准备|打算|想要|试图|正要|还没|没有|尚未',prev) or re.search(r'[？?]',following):continue
+        quoted=(before.rfind('“')>before.rfind('”') or
+                before.rfind('「')>before.rfind('」') or
+                before.rfind('『')>before.rfind('』'))
+        boundary=max(before.rfind(x) for x in ('。','！','？','；','，'))
+        clause=before[boundary+1:]
+        character_subject=bool(c_name and c_name in clause) or bool(re.search(r'(?:他|她)[^，。！？]{0,12}(?:抱着|扶着|带着|牵着|领着|背着)',clause))
+        other_actor=bool(re.search(r'(?:护士|保安|店员|路人|警卫|朋友|陌生人|门卫)[^，。！？]{0,6}$',clause)) or bool(p_name and p_name in clause[-12:])
+        if quoted or (other_actor and not character_subject) or SCENE_NOT_ARRIVED_RE.search(prev) or re.search(r'准备|打算|想要|试图|正要|还没|没有|尚未|不要|别|禁止',prev) or re.search(r'[？?]',following):continue
         candidates.append((m.start(),m.group(1),m.group(0)))
     # Reaching the bed after crossing from the patio is a completed location
     # change, even if no exact name for the interior was said.
@@ -1863,7 +1871,7 @@ def meeting_scene_signature(text):
     return hashlib.sha256(str(text or '').encode('utf8')).hexdigest()
 
 def classify_meeting_scene_location(p,c,text,current):
-    deterministic=scene_location_from_character(text,current,p['name'])
+    deterministic=scene_location_from_character(text,current,p['name'],c['name'])
     if deterministic:return deterministic
     if not SCENE_INTERIOR_RE.search(str(text or '')) or not SCENE_MOVE_RE.search(str(text or '')):return None
     conn=load_connection()
@@ -1910,7 +1918,7 @@ def refresh_meeting_scene_history(db,p,c,exclude_message_id=''):
             location=meeting_place_in_player_turn(m['text'],p['name'])
         else:
             recognized=(dict(location=m['scene_location']) if m['scene_location'] and m['scene_location_signature']==meeting_scene_signature(m['text'])
-                else scene_location_from_character(m['text'],location_before,p['name']))
+                else scene_location_from_character(m['text'],location_before,p['name'],c['name']))
             location=recognized['location'] if recognized else ''
         if location and location!=location_before:
             events.append(dict(at=m['created_at'],location=location,source='scene' if m['sender']=='user' else 'ai_scene',message_id=m['id']))
