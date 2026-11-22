@@ -638,7 +638,8 @@ test('9. Surveillance (实时监控) silently generates full-day schedule, unloc
 
   // 2. Prompt preview includes live surveillance location & status synchronization
   const promptPreview = JSON.stringify(engine.buildPromptPreview(p.id, cid, 'chat'));
-  assert.match(promptPreview, /【此刻你的真实位置与状态（实时监控同步）】/, 'Prompt includes live surveillance sync block');
+  assert.match(promptPreview, /【个人日程草案（不是已发生的事实）】/, 'Generated surveillance must be labeled as provisional rather than observed reality');
+  assert.match(promptPreview, /以亲历现场为准/, 'Confirmed scene actions outrank generated surveillance');
   assert.ok(promptPreview.includes(initialLocation), 'Prompt includes current surveillance slot location');
 
   // 3. Entering meeting mode without an explicit location in chat defaults to current surveillance location
