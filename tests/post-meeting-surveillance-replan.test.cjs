@@ -58,7 +58,7 @@ function makeEngine(failOnce=false){
   pack.data.relations[key]={profile_id:p.id,character_id:cid,status:'matched',mode:'chat',active_meeting_id:'',updated_at:meetingEnd};
   pack.data.messages=messages;
   pack.data.meetings=[meeting];
-  pack.data.surveillance=initialSurv;
+  pack.data.surveillance={[key]:initialSurv};
   pack.data.connection.base_url='https://mock.example/v1';
   pack.data.connection.api_key='mock-no-real-requests';
   pack.data.connection.model='mock';
@@ -72,8 +72,6 @@ function makeEngine(failOnce=false){
   const a=makeEngine();
   await a.engine.request('/settings',{base_url:'https://mock.example/v1',api_key:'fake',model:'mock',auto_translate:false});
   const actual=await a.engine.request('/surveillance',pair);
-  const diagnostic=JSON.parse(a.engine.exportData()).data;
-  console.log('POST-MEETING DEBUG',JSON.stringify({mode:(await a.engine.request('/settings',{})).mode,current:actual.current,stored:diagnostic.surveillance[key]?.byDate?.['2026-11-22']?.post_meeting_id,anchor:diagnostic.surveillance[key]?.byDate?.['2026-11-22']?.post_meeting_anchor,rec:diagnostic.meetings[0]?.ended_at,engine:actual.engine,error:actual.bgError,calls:a.calls.length}).slice(0,1600));
   assert.equal(a.calls.length,1,'open surveillance automatically triggers missing replan');
   const prompt=JSON.stringify(a.calls[0].messages);
   assert(prompt.includes('晚些时候回营地'),'actual ending is visible when summary API failed');
