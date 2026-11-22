@@ -99,7 +99,7 @@ function makeEngine(failOnce=false){
   const b=makeEngine(true);
   const failed=await b.engine.request('/surveillance',pair);
   assert.equal(b.calls.length,1);
-  assert.equal(failed.current.is_unconfirmed,undefined,'legacy placeholder does not falsely gain verified state');
+  assert.equal(failed.current.is_unconfirmed,true,'legacy placeholder is labeled unconfirmed after a failed retry');
   assert(failed.bgError,'a failed replan has a visible diagnostic');
   await b.engine.request('/surveillance',pair);
   assert.equal(b.calls.length,1,'failed replan respects retry cooldown');
