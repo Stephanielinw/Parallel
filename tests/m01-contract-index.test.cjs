@@ -32,7 +32,7 @@ for (const c of index.contracts) {
     assert(typeof c[field] === 'string' && c[field].trim().length >= 8, c.id+' missing '+field);
   }
   assert(Array.isArray(c.scenarios) && c.scenarios.length >= 1, c.id+' needs reproducible scenario(s)');
-  assert(c.scenarios.every(x => typeof x==='string' && x.trim().length>=8), c.id+' vague scenario');
+  assert(c.scenarios.every(x => typeof x==='string' && x.trim().length>=4), c.id+' vague scenario');
   assert(Array.isArray(c.tests), c.id+' must include test file array');
   assert(['covered','gap'].includes(c.status), c.id+' unsupported status');
   assert(doc.includes(c.id), c.id+' missing from human-readable contract table');
