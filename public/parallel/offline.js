@@ -1607,7 +1607,16 @@
       };
     }
     const active=rec.slots[activeSlotIndex(rec.slots,nowMin)]||rec.slots.filter(s=>hhmmToMin(s.start)<=nowMin).at(-1)||rec.slots[0];
-    return {...verifiedSlotForDisplay(c,active),isCurrent:true,isMeetingLive:false};
+    // Older saved builds may still contain the 09:51–23:59 placeholder.
+    // Display it as unknown whereabouts, never as a verified 13:00 scene.
+    const legacyPending=Boolean(active?.source==='meeting_shift'&&rec.post_meeting_id&&
+      (active?.is_unconfirmed||String(active?.id||'').startsWith('slot_meeting_shift_'))&&!active?.is_planned);
+    const display=legacyPending?{
+      ...active,is_unconfirmed:true,status:'见面后去向待核实',
+      activity:'最近一次确认在见面地点；之后没有位置证据',
+      scene:c.name+'的上次确认地点为「'+String(rec.post_meeting_location||active.location||'未知地点')+'」，当前去向尚未核实；不能把推测当成真实足迹。'
+    }:active;
+    return {...verifiedSlotForDisplay(c,display),isCurrent:true,isMeetingLive:false};
   };
   // Meeting is a live wall-clock interval, not a guessed future schedule.
   const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>{
