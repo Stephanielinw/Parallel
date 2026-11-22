@@ -38,6 +38,6 @@ assert(chronological.indexOf('TURN-0 ')<chronological.indexOf('TURN-60 '),'origi
  assert(server.includes('def meeting_summary_chunks(')&&server.includes('def summarize_complete_meeting('));
  assert(server.includes("if route=='/api/meeting-summary-refresh':"));
  assert(!server.includes('for x in m_msgs[-10:]'),'Python must not retain last-ten-only summary');
- assert(offline.includes('.slice(0,320)'),'meeting summary storage must accommodate a full recap');
+ assert(offline.includes('.slice(0,850)'),'meeting summary storage must accommodate a rich recap');
  console.log('Full meeting archive regression passed: every turn contributes, phases merge, older cards can refresh and original transcripts stay intact.');
 })().catch(e=>{console.error(e);process.exitCode=1});
