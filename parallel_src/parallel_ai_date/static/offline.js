@@ -2314,15 +2314,14 @@
     }
     return '约定的街角咖啡馆';
   };
-  // Cover the entire meeting rather than only the last ten chat bubbles.
-  // Every turn contributes a chronological, bounded excerpt; long prose keeps both ends.
+  // Preserve every scene, but bound each stage so the model can complete JSON.
   function meetingSummaryChunks(mMsgs,p,c){
-    const out=[],limit=9000;
+    const out=[],limit=4200;
     let chunk='';
     for(const m of mMsgs){
       const original=String(m.text||'').replace(/\s+/g,' ').trim();
-      const max=m.sender==='user'?220:200;
-      const excerpt=original.length<=max?original:original.slice(0,Math.floor(max*.55))+' … '+original.slice(-Math.floor(max*.45));
+      const max=240;
+      const excerpt=original.length<=max?original:original.slice(0,Math.floor(max*.6))+' … '+original.slice(-Math.floor(max*.4));
       const stampText=String(m.created_at||'').slice(0,19).replace('T',' ');
       const line='['+stampText+'] '+(m.sender==='user'?p.name:c.name)+'：'+excerpt+'\n';
       if(chunk&&chunk.length+line.length>limit){out.push(chunk);chunk='';}
@@ -2330,6 +2329,31 @@
     }
     if(chunk)out.push(chunk);
     return out;
+  }
+  // A provider may return malformed JSON with finish_reason=stop.
+  // Retry only structured-output errors, never save a guessed completion.
+  async function reliableMeetingSummaryJson(messages,opts){
+    let priorError=null;
+    for(let attempt=0;attempt<2;attempt++){
+      try{
+        const req=attempt?[
+          {...messages[0],content:messages[0].content+'\n上一轮结构化返回可能不完整。只输出一个完整的 JSON 对象，形如 {"summary":"完整摘要"}，不要附加其他文字。'},
+          ...messages.slice(1)
+        ]:messages;
+        const raw=await llm(req,{...opts,min_output_tokens:attempt?3072:2048});
+        const parsed=JSON.parse(raw);
+        const summary=String(parsed?.summary||'').trim();
+        if(summary.length<6)throw Error('结构化见面小结为空或内容过少');
+        return summary;
+      }catch(error){
+        priorError=error;
+        const code=String(error?.apiError?.error_code||error?.code||'');
+        const retryable=error instanceof SyntaxError||/INVALID_STRUCTURED_JSON|OUTPUT_TRUNCATED|EMPTY_CONTENT/.test(code)||
+          /结构化见面小结为空|JSON/.test(String(error?.message||''));
+        if(attempt||!retryable)throw error;
+      }
+    }
+    throw priorError;
   }
   async function summarizeCompleteMeeting(p,c,mMsgs,location){
     if(!mMsgs.length)return null;
@@ -2341,46 +2365,30 @@
     const trailing=reuse?groups.slice(expected*50).flat():mMsgs;
     const chunks=meetingSummaryChunks(trailing,p,c);
     const opts={json_mode:true,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true,temperature:0.25};
-    const instruction='你是见面记录的事实归档员。只能总结提供的实际对话，不得补写未出现的事件、亲吻、去过的地点、感情承诺或人物心理。严格按时间顺序，保留开场、中段、结尾的关键事件；优先记录已发生的行动与对话，忽略描写性赘述。若记录跨越午夜，必须体现前一晚和第二天。只输出 JSON 对象：{"summary":"120至240字的中文纪实梗概"}。';
+    const instruction='你是见面剧情的事实归档员。输出可供下次见面准确接续的纪实摘要，不得用第一句和最后一句拼凑。只记录原文实际发生的动作、人物之间的关键对话、感情和态度变化、具体物品去向、场景转换、约定、拒绝与未解决事件。区分玩笑、提议和真正承诺；绝不凭空补写台词、行为或人物心理。亲密场景概括实际互动即可，不要重复露骨身体细节。严格按时间顺序保留关键转折；跨午夜要保留睡前与次日醒来的变化。只输出一个完整 JSON 对象，唯一字段 summary。';
     const partSummaries=reuse?checkpoints.map(cp=>
       '第'+cp.round_start+'–'+cp.round_end+'组（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary+
       '；具体事件：'+cp.details.join('；')+
       '；关键对话：'+cp.key_dialogues.map(x=>x.speaker+'「'+x.quote+'」').join('；')
     ):[];
     for(let i=0;i<chunks.length;i++){
-      const data=await llm([
-        {role:'system',content:instruction+'这是第 '+(i+1)+'/'+chunks.length+' 段连续记录，仅总结本段确实发生的事件，保留重要转折。'},
-        {role:'user',content:'记录地点（不一定是初见地点）：'+location+'；整场消息总数：'+mMsgs.length+'。\n'+chunks[i]}
+      const part=await reliableMeetingSummaryJson([
+        {role:'system',content:instruction+'这次只整理第 '+(i+1)+'/'+chunks.length+' 段确实发生的事情（建议160–260字），着重保留重要行为及其后果，而不是首尾引言。'},
+        {role:'user',content:'地点线索（不等于所有事都在此发生）：'+location+'；整场消息总数：'+mMsgs.length+'。\n'+chunks[i]}
       ],opts);
-      const parsed=JSON.parse(data);
-      const part=String(parsed?.summary||'').trim();
-      if(!part)throw Error('见面分段摘要为空，原始记录保持不变');
       partSummaries.push(part);
     }
-    if(partSummaries.length===1)return {summary:reuse?checkpoints[0].summary:partSummaries[0]};
-    const final=await llm([
-      {role:'system',content:instruction+'以下是同一场见面按时间顺序整理的 '+partSummaries.length+' 段事实小结。合并为整场见面梗概，不得只概括最后一段，也不得增加分段摘要中没有的情节。'},
-      {role:'user',content:'见面时间：'+String(mMsgs[0].created_at||'')+' 至 '+String(mMsgs[mMsgs.length-1].created_at||'')+'；记录地点（不一定是初见地点）：'+location+'。\n'+partSummaries.map((x,i)=>'第'+(i+1)+'/'+partSummaries.length+'段：'+x).join('\n')}
+    if(partSummaries.length===1)return {summary:partSummaries[0]};
+    const summary=await reliableMeetingSummaryJson([
+      {role:'system',content:instruction+'以下是同一场见面按时间顺序整理的 '+partSummaries.length+' 段事实小结。合并为整场见面梗概（建议350–600字），务必保留关键对话、关系转折、角色行动、地点变化与未完成安排，不得遗漏早期重要事件，不要简单说从何开始到何结束。'},
+      {role:'user',content:'见面时间：'+String(mMsgs[0].created_at||'')+' 至 '+String(mMsgs[mMsgs.length-1].created_at||'')+'；最后已知地点：'+location+'。\n'+partSummaries.map((x,i)=>'第'+(i+1)+'/'+partSummaries.length+'段：'+x).join('\n')}
     ],opts);
-    const parsed=JSON.parse(final);
-    const summary=String(parsed?.summary||'').trim();
-    if(!summary)throw Error('整场见面摘要为空，原始记录保持不变');
     return {summary};
   }
   const buildMeetingSummaryText=(p,c,loc,mMsgs,aiSummary='')=>{
-    if(aiSummary&&String(aiSummary).trim().length>=6)return stripProtocolTags(String(aiSummary),{preserveParagraphs:false}).slice(0,320);
-    const uTurns=mMsgs.filter(m=>m.sender==='user'&&m.engine!=='recalled');
-    const aTurns=mMsgs.filter(m=>m.sender==='ai'&&m.engine!=='recalled');
-    if(uTurns.length){
-      const firstU=String(uTurns[0].text??'').replace(/\s+/g,' ').trim().slice(0,38);
-      const lastU=uTurns.length>1?String(uTurns[uTurns.length-1].text??'').replace(/\s+/g,' ').trim().slice(0,34):'';
-      return `${p.name}「${firstU}」${lastU?`、再到「${lastU}」`:''}，与 ${c.name} 面对面互动了 ${mMsgs.length} 个回合。`;
-    }
-    if(aTurns.length){
-      const snippet=cleanMeetingNovelText(aTurns[0].text).replace(/\s+/g,' ').slice(0,48);
-      return `${snippet}…（共 ${mMsgs.length} 段面对面互动）`;
-    }
-    return `在「${loc}」见了一面。`;
+    if(aiSummary&&String(aiSummary).trim().length>=6)return stripProtocolTags(String(aiSummary),{preserveParagraphs:false}).slice(0,850);
+    // No faux narrative: preserve the transcript and make the missing digest explicit.
+    return '本次见面原文已完整保存，剧情小结尚未生成成功；可点击「重新整理整场梗概」补全。';
   };
   const upsertMeetingRecord=(p,c,meetingId,mMsgs,customLoc='',aiSummary='',finishedAt='')=>{
     if(!mMsgs||!mMsgs.length)return null;
@@ -3532,7 +3540,8 @@
     const pObj=options.profile||null;
     const cObj=options.character||null;
     const entryPoint=options.entry_point||mode;
-    const reqMaxTokens=resolveTaskMaxTokens(db.connection,mode,entryPoint,options.max_tokens);
+    const baselineTokens=resolveTaskMaxTokens(db.connection,mode,entryPoint,options.max_tokens);
+    const reqMaxTokens=options.min_output_tokens&&mode==='meeting_summary'?Math.min(4096,Math.max(baselineTokens,options.min_output_tokens)):baselineTokens;
     const payload={model:s.model,messages:await resolveChatPhotoInput(messages),temperature:options.temperature??s.temperature,top_p:s.top_p,max_tokens:reqMaxTokens};
     if(options.json_mode&&options.omit_response_format!==true)payload.response_format={type:'json_object'};
     const presetMode=(mode==='meeting'||mode==='chat')?mode:null;
@@ -4990,7 +4999,7 @@
               if(data.finalizeMeeting===true&&pub().mode==='live'){
                 try{
                   const parsed=await summarizeCompleteMeeting(p,c,mMsgs,aiLoc);
-                  if(parsed?.summary)aiSum=String(parsed.summary).trim().slice(0,320);
+                  if(parsed?.summary)aiSum=String(parsed.summary).trim().slice(0,850);
                 }catch(e){
                   recordBgError(p.id,c.id,'meeting_finalize',e.apiError||{message:String(e.message||e)});
                 }
