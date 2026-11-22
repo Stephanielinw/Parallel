@@ -46,7 +46,7 @@ class MeetingLocationTests(unittest.TestCase):
               'location':'宿舍厨房','location_history':points,'summary':'见面'}
         slots=server.observed_meeting_segments(self.p,self.c,info,'2026-11-22')
         self.assertEqual([x['location'] for x in slots],['宿舍外廊露台','宿舍卧室','宿舍厨房'])
-        self.assertEqual(slots[0]['start'],'08:00')
+        self.assertEqual(slots[0]['start'],self.first.astimezone().strftime('%H:%M'))
         self.db.execute("UPDATE messages SET text='这条见面实际上没有移动' WHERE id='row15'")
         points=server.refresh_meeting_scene_history(self.db,self.p,self.c)
         self.assertNotIn('宿舍厨房',[x['location'] for x in points],'edited evidence cannot keep stale AI position')
