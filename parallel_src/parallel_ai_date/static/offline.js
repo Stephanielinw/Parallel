@@ -1518,7 +1518,7 @@
       };
     }
     const active=rec.slots[activeSlotIndex(rec.slots,nowMin)]||rec.slots.filter(s=>hhmmToMin(s.start)<=nowMin).at(-1)||rec.slots[0];
-    return {...active,isCurrent:true,isMeetingLive:false};
+    return {...verifiedSlotForDisplay(c,active),isCurrent:true,isMeetingLive:false};
   };
   // Meeting is a live wall-clock interval, not a guessed future schedule.
   const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>getOrInitSurveillance(p,c,localDateStr());
@@ -1593,6 +1593,7 @@
         if(!Number.isFinite(endRaw)||endRaw<=cursor)continue;
         const end=Math.min(last,endRaw);
         const locNext=String(row.location||loc).trim().slice(0,30)||loc;
+        if(incompatibleCharacterSlot(c,row))continue;
         planned.push({
           id:'slot_replanned_'+anchorId+'_'+planned.length+'_'+cursor,
           start:minToHHMM(cursor),end:minToHHMM(end),location:locNext,
@@ -1692,7 +1693,7 @@
     const txt=String(aiText||'').trim();
     if(!txt||relation(p.id,c.id)?.mode==='meeting')return;
     const newLoc=txt.split(/\s+\/\s+|\|\|\||\n/).map(locationFromReport).filter(Boolean).at(-1);
-    if(!newLoc)return;
+    if(!newLoc||incompatibleCharacterSlot(c,{location:newLoc}))return;
     const rec=getOrInitSurveillance(p,c,localDateStr(at));
     const nowHHMM=fmtHHMM(at)||'12:00',nowMin=hhmmToMin(nowHHMM),idx=activeSlotIndex(rec.slots,nowMin);
     if(idx<0)return;
@@ -1742,7 +1743,7 @@
           scene:String(s.scene||'').trim().slice(0,160),
           source:'schedule'
         }));
-        rec.slots=overlayActualSlots(aiSlots,preserved);
+        rec.slots=overlayActualSlots(aiSlots.map(slot=>verifiedSlotForDisplay(c,slot)),preserved);
         rec.engine='live';
         rec.updated_at=stamp();
         clearBgError(p.id,c.id,'surveillance');
@@ -1779,7 +1780,8 @@
     })():rec.slots;
     const unlocked=[];
     let lockedCount=0;
-    for(const s of visibleSlots){
+    for(const rawSlot of visibleSlots){
+      const s=verifiedSlotForDisplay(c,rawSlot);
       if(!isToday||hhmmToMin(s.start)<=nowMin){
         unlocked.push({
           ...s,
@@ -2028,7 +2030,10 @@
     const text=normalizeSceneText(raw);
     if(!text||/^[「『“"*>]/.test(text)||SCENE_RULES.uncertain.test(text)||SCENE_RULES.cancel.test(text))return '';
     const en=text.match(SCENE_RULES.proposalEn);if(en)return cleanScenePlace(en[1],true);
-    const zh=text.match(SCENE_RULES.proposalZh);return zh?cleanScenePlace(zh[1],false):'';
+    const zh=text.match(SCENE_RULES.proposalZh);
+    if(zh)return cleanScenePlace(zh[1],false);
+    const pickup=text.match(/(?:来|到|去|在)\s*([^，。！？；、\n「」『』“”"]{2,30}?)\s*接(?:上)?(?:我|你)/);
+    return pickup?cleanScenePlace(pickup[1],false):'';
   }
   // Locations taken from an actual player's present-tense description, never
   // from an AI guess or a hypothetical future plan.
@@ -2821,6 +2826,52 @@
     const offset='UTC'+(zone>=0?'+':'-')+String(Math.floor(abs/60)).padStart(2,'0')+':'+String(abs%60).padStart(2,'0');
     return '【面对面现实时间规则 · 强制 1:1】应用本地现实时间：'+chatClockLabel(now)+'（'+offset+'）；本次见面实际开始：'+chatClockLabel(start)+'；本幕时间：'+chatClockLabel(anchor)+'；本幕距见面开始 '+elapsed+' 秒（约 '+Math.floor(elapsed/60)+' 分钟），距上一条现场记录 '+gap+' 秒。'+(rerollAt?'本次是对同一幕的替代版本，以原先本幕时间为锚点。不得续写、记得或承认已弃用版本。真实见面计时没有暂停或重置，下一轮按当时现实时间继续。':'现实经过几秒，见面就经过几秒；不要因生成一段长正文就推进数分钟或数小时。')+' 现实日期只用于互动计时，原作年份、年龄及科技保持不变。禁止擅自跳时、跳日、突然结束约会或把未发生的事情写成既成事实。间隔较长时只承接已确认现场状态与真实流逝，不擅自替双方补写这段期间的行动。描写应收束在自然回应点；不必机械报时，不在正文中输出时间元数据。';
   }
+  // Derived only from this profile/character's archived original meeting turns.
+  // A poor fallback summary or unrelated SMS topic must not hide a recent encounter.
+  function recentActualMeetingContext(p,c,query='',at=Date.now()){
+    const rel=relation(p.id,c.id),active=rel?.mode==='meeting'?rel.active_meeting_id:'';
+    const candidates=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&m.id!==active)
+      .filter(m=>{const end=Date.parse(m.finished_at||m.ended_at||'');return Number.isFinite(end)&&end<=at&&at-end<=72*3600000;})
+      .sort((a,b)=>Date.parse(b.finished_at||b.ended_at)-Date.parse(a.finished_at||a.ended_at));
+    const meeting=candidates[0];if(!meeting)return '';
+    const entries=(Array.isArray(meeting.entries)?meeting.entries:[]).filter(m=>
+      ['user','ai'].includes(m?.sender)&&String(m.text||'').trim()&&
+      !(m.sender==='user'&&/(?:心想|心里|内心独白|默念|梦见|如果|假如)/.test(String(m.text))));
+    if(!entries.length)return '';
+    const queryTerms=extractQueryTerms(query).filter(t=>t.length>=2);
+    const important=/(?:本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见)/;
+    const n=entries.length;
+    const anchors=[0,Math.floor(n/4),Math.floor(n/2),Math.floor(n*3/4),Math.max(0,n-3),Math.max(0,n-2),n-1];
+    const selected=new Set(anchors);
+    const ranked=entries.map((e,i)=>{
+      const body=String(e.text);
+      const hits=queryTerms.reduce((n,t)=>n+(body.toLowerCase().includes(t.toLowerCase())?1:0),0);
+      return {i,score:hits*7+(important.test(body)?5:0)+(e.sender==='user'?1:0)};
+    }).sort((a,b)=>b.score-a.score||b.i-a.i);
+    for(const item of ranked){if(selected.size>=13)break;if(item.score>0)selected.add(item.i);}
+    const lines=[];let used=0;
+    for(const i of [...selected].sort((a,b)=>a-b)){
+      const e=entries[i],whole=String(e.text).replace(/\s+/g,' ').trim();
+      const excerpt=whole.length>205?whole.slice(0,115)+' … '+whole.slice(-85):whole;
+      const line='['+(e.sender==='user'?p.name:c.name)+' · 现场原文 #'+(i+1)+'] '+excerpt;
+      if(used+line.length>3000)continue;
+      used+=line.length;lines.push(line);
+    }
+    if(!lines.length)return '';
+    return '\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'。\n'+
+      lines.join('\n')+'\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。私人内心不可当作角色亲眼所见；没有展示的情节保持不确定。';
+  }
+  // A generated slot can mix versions of a character. Do not promote that
+  // speculation to observed identity or pass it to a paid chat request.
+  function incompatibleCharacterSlot(c,slot){
+    if(!slot||!c)return false;
+    const body=[slot.location,slot.status,slot.activity,slot.scene].map(x=>String(x||'')).join(' ');
+    return c.id==='re-game:leon:re2'&&/(?:\bDSO\b|特工|联邦调查|华盛顿特区|安全公寓|防窃听|总统护卫|加密终端|政府机密)/i.test(body);
+  }
+  function verifiedSlotForDisplay(c,slot){
+    if(!incompatibleCharacterSlot(c,slot))return slot;
+    return {...slot,location:'地点未确认',status:'日程待核实',activity:'原日程与本角色时期冲突，不作为已发生事实',scene:c.name+'的此时位置尚无有效证据。',source:'unverified'};
+  }
   const prompt=(p,c,mode,pendingIds=[],options={})=>{
     const macros=t=>expandPresetMacros(t,p,c);
     const excludeSet=options.excludeMessageIds?new Set(options.excludeMessageIds):null;
@@ -2860,6 +2911,7 @@
     if(mode==='meeting'){
       sys+=`\n当前见面地点：「${meetingLoc}」${curSurv?`（实时状态同步：${curSurv.activity}）`:''}。`;
     }
+    if(mode==='chat')sys+=recentActualMeetingContext(p,c,querySeed,options.simulatedAt||Date.now());
     if(recalled.length){
       sys+=`\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n`+recalled.map(formatEpisodicEntry).join('\n');
     }else{
