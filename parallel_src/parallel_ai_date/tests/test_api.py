@@ -571,7 +571,10 @@ class ParallelAPITest(unittest.TestCase):
             self.assertIn(m_b2['id'],regen['removedIds'])
             new_id=regen['replies'][0]['id']
             self.call('/translate-messages',{'profileId':pid,'characterId':cid,'messageIds':[new_id]})
-            self.call('/message-delete',{'profileId':pid,'characterId':cid,'messageId':new_id})
+            # Only the sender may recall: AI reply must reject recall.
+            self.call('/message-delete',{'profileId':pid,'characterId':cid,'messageId':new_id},400)
+            # Permanent deletion is a distinct local action and clears translations.
+            self.call('/message-forget',{'profileId':pid,'characterId':cid,'messageId':new_id})
             th_final=self.call(f'/thread?profileId={pid}&characterId={urllib.parse.quote(cid)}')
             self.assertNotIn(new_id,th_final['translations'])
         finally:
