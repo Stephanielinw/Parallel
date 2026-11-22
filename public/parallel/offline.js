@@ -2124,14 +2124,22 @@
     if(base&&base!==where&&base.length<=24)return base+roomKind;
     return roomKind;
   }
-  function sceneLocationFromCharacter(raw,current,pName){
+  function sceneLocationFromCharacter(raw,current,pName,cName=''){
     const text=String(raw||'');
     if(!text||!SCENE_INTERIOR_RE.test(text)||!SCENE_MOVE_RE.test(text))return null;
     const destination=/(?:走进|走入|进入|步入|迈入|踏进|回到|来到|抵达|到达|到了|进了|出了|走出|带进|抱进|抱回|推门进入)\s*[了的进到入过]?[\s「『“"]*(?:(?:这间|那间|自己|他们|她|他|我们|我|你|Lin|Carlos)\s*的?)?[\s「『“"]*((?:[\u4e00-\u9fff]{1,12}的)?(?:卧室|寝室|房间|客厅|厨房|浴室|卫生间|洗手间|室内|屋内|露台|阳台|庭院|花园|走廊|楼下|楼上|咖啡馆|咖啡店|餐厅|车里|车内|车上|停车场|街道))/g;
     const seen=[...text.matchAll(destination)].filter(m=>{
-      const prefix=text.slice(Math.max(0,m.index-18),m.index);
-      const after=text.slice(m.index,m.index+m[0].length+8);
-      return !SCENE_NOT_ARRIVED_RE.test(prefix)&&!/(?:准备|打算|想要|试图|正要|还没|没有|尚未)/.test(prefix)&&!/[？?]/.test(after);
+      const before=text.slice(0,m.index||0);
+      const prefix=before.slice(-22),after=text.slice(m.index,m.index+m[0].length+8);
+      const insideQuote=before.lastIndexOf('“')>before.lastIndexOf('”')||
+        before.lastIndexOf('「')>before.lastIndexOf('」')||
+        before.lastIndexOf('『')>before.lastIndexOf('』');
+      const clause=before.slice(Math.max(before.lastIndexOf('。'),before.lastIndexOf('！'),before.lastIndexOf('？'),before.lastIndexOf('；'),before.lastIndexOf('，'))+1);
+      const escapedName=String(pName||'').replace(/[.*+?^${}()|[]\\]/g,'\\$&');
+      const otherActor=new RegExp('(?:'+escapedName+'|护士|保安|店员|路人|警卫|朋友|陌生人|门卫)[^，。！？]{0,6}$');
+      const characterSubject=Boolean(cName&&clause.includes(cName))||/(?:他|她)[^，。！？]{0,12}(?:抱着|扶着|带着|牵着|领着|背着)/.test(clause);
+      return !insideQuote&&(!otherActor.test(clause)||characterSubject)&&
+        !SCENE_NOT_ARRIVED_RE.test(prefix)&&!/(?:准备|打算|想要|试图|正要|还没|没有|尚未|不要|别|禁止)/.test(prefix)&&!/[？?]/.test(after);
     }).map(m=>({place:m[1],evidence:m[0],pos:m.index||0}));
     // Indirect but physically completed: opened a door to the interior and
     // arrived at the bed. Not merely "we should go to bed".
@@ -2158,7 +2166,7 @@
     return SCENE_INTERIOR_RE.test(src)&&SCENE_MOVE_RE.test(src);
   }
   async function classifyMeetingMovement(p,c,characterText,current,options={}){
-    const deterministic=sceneLocationFromCharacter(characterText,current,p.name);
+    const deterministic=sceneLocationFromCharacter(characterText,current,p.name,c.name);
     if(deterministic)return deterministic;
     if(!isPotentialMeetingMovement(characterText)||pub().mode!=='live')return null;
     // Only ambiguous physical scene shifts require an additional small model
@@ -2218,7 +2226,7 @@
       else if(m.sender==='ai'){
         const current=allEvents.filter(e=>Date.parse(e.at)<=Date.parse(m.created_at)).sort((a,b)=>Date.parse(a.at)-Date.parse(b.at)).at(-1)?.location||startingLoc;
         const evidence=(m.scene_location&&m.scene_location_signature===meetingSceneSignature(m.text))
-          ?{location:m.scene_location}:sceneLocationFromCharacter(m.text,current,p.name);
+          ?{location:m.scene_location}:sceneLocationFromCharacter(m.text,current,p.name,c.name);
         loc=evidence?.location||'';
       }
       const previous=allEvents.filter(e=>Date.parse(e.at)<=Date.parse(m.created_at))
