@@ -1482,7 +1482,8 @@ def build_surveillance_payload(db,p,c,requested_date=''):
             prev.append(dict(s,end=current['start']) if hhmm_to_min(s['end'])>cut else s)
         slots=prev+[dict(current,id='live_meeting_'+str(m_state.get('active_meeting_id','')),
                          meeting_id=m_state.get('active_meeting_id',''))]
-    for s in slots:
+    for stored_slot in slots:
+        s=verified_surveillance_slot(c,stored_slot)
         start_m=hhmm_to_min(s['start'])
         end_m=hhmm_to_min(s['end'])
         if (not is_today) or start_m<=now_m:
@@ -1492,7 +1493,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
                 state='current' if is_cur else 'past'
             ))
     if is_today and not unlocked and slots:
-        unlocked.append(dict(slots[0],isCurrent=True,state='current'))
+        unlocked.append(dict(verified_surveillance_slot(c,slots[0]),isCurrent=True,state='current'))
     return {
         'date':rec['date'],
         'today':today,
