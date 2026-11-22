@@ -1982,6 +1982,7 @@ async function submitEditMessage(mid){
   }
 }
 async function regenerateMessage(mid){
+  closeModal();
   if(!state.threadId||!state.activeId||state.chatBusy||state.flushBusy||state.revealingBubbles)return;
   const id=state.threadId,profileId=state.activeId,mode=state.chatMode;
   state.chatBusy=true;
@@ -2682,6 +2683,13 @@ async function retryFailedApiTask(){
     if(state.tab==='messages')renderMessages();
   }
 }
+// Keyboard support for the same bubble menu available by touch or mouse.
+addEventListener('keydown',e=>{
+  const target=e.target.closest?.('[data-action="open-chat-bubble-actions"]');
+  if(target&&(e.key==='Enter'||e.key===' ')){
+    e.preventDefault();openChatBubbleActions(target.dataset.id);
+  }
+});
 // Central action delegation
 addEventListener('click',async e=>{
 if(state.profileMenuOpen&&!e.target.closest('#topbar-profile-dropdown')){
