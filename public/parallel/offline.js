@@ -64,7 +64,7 @@
     return validTokenBudget(explicit)||main;
   }
   const empty=()=>({profiles:[],swipes:{},relations:{},messages:[],meetings:[],meetingCheckpoints:[],events:[],episodicMemories:[],portraits:{},photoDescriptions:{},discoverSessions:{},queue:{},taskStates:{},bgErrors:{},bios:{},bioTags:{},proactiveLog:{},surveillance:{},diaries:{},translations:{},presets:DEFAULT_PRESETS.map((x,i)=>({...x,sort_order:i})),connection:{base_url:'',api_key:'',model:'',image_base_url:'',image_api_key:'',image_model:'',temperature:0.85,top_p:1,max_tokens:4096,task_max_tokens:{},auto_portraits:false,proactive_mode:'daily',auto_translate:true,character_language_pref:'natural',character_language_custom:''}});
-  let db;let storageAvailable=true;let mainStoreReadable=true;let lastSavedRaw=null;
+  let db;let storageAvailable=true;let mainStoreReadable=true;let lastSavedRaw=null;let lastSavedDataRaw=null;
 
   // Lossless compact storage: the exported backup remains ordinary JSON.
   // The old plain JSON key is migrated in-place only after round-trip
@@ -443,7 +443,9 @@
   try {
     const raw=localStorage.getItem(STORE_KEY);
     lastSavedRaw=raw;
-    db=raw?JSON.parse(decompressStoredJson(raw)):empty();
+    const decoded=raw?decompressStoredJson(raw):'';
+    lastSavedDataRaw=decoded||null;
+    db=raw?JSON.parse(decoded):empty();
     if(!db||!Array.isArray(db.profiles))throw Error('broken');
     legacySystemLogs=Array.isArray(db.systemLogs)?db.systemLogs:[];
     delete db.systemLogs;
@@ -451,7 +453,13 @@
   }catch(err){db=empty();storageAvailable=false;mainStoreReadable=false;}
   const save=()=>{
     if(!mainStoreReadable)throw Error('无法安全读取原存档，已停止覆盖；请先导出备份。');
-    try{const raw=JSON.stringify(db),stored=encodeStoredJson(raw);localStorage.setItem(STORE_KEY,stored);lastSavedRaw=stored;storageAvailable=true;}
+    try{
+      const raw=JSON.stringify(db);
+      if(raw===lastSavedDataRaw&&lastSavedRaw&&lastSavedRaw.startsWith(STORAGE_COMPRESSED_PREFIX)&&localStorage.getItem(STORE_KEY)===lastSavedRaw){storageAvailable=true;return;}
+      const stored=encodeStoredJson(raw);
+      localStorage.setItem(STORE_KEY,stored);
+      lastSavedRaw=stored;lastSavedDataRaw=raw;storageAvailable=true;
+    }
     catch(err){storageAvailable=false;throw Error('浏览器本地空间不足或禁止保存。请先导出备份并释放空间。后续保存会继续尝试，不会静默跳过。');}
   };
   // Diagnostics never share the authoritative save or its failure state.
