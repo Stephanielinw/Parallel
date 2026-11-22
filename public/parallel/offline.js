@@ -977,6 +977,20 @@
     }
     return queueInfo(pid,cid);
   };
+  async function verifyGeneratedMeetingDetail(p,c,messages,draft,options={}){
+    // Regular chat uses the concise recap. Only a drafted recollection requiring
+    // precise facts triggers a second grounded generation before persistence.
+    if(!draft||!needsMeetingDetail(draft)||messages[0]?.content?.includes('现场原文 #'))return draft;
+    const source=recentActualMeetingContext(p,c,draft,options.simulatedAt||Date.now());
+    if(!source.includes('现场原文 #'))return draft;
+    const checked=messages.map((m,i)=>i===0?{...m,content:m.content+'\n【补充事实核对：角色想自主提及见面中的具体经历】'+source+'\n请重新生成同一轮回复，保留自然口吻，只能使用可核对的具体事实，不要让人物解释系统或引文。'}:m);
+    try{
+      return await llm(checked,{...options,mode:'chat',entry_point:'chat_meeting_detail_recall'});
+    }catch{
+      // A failed lookup must not publish an unsupported, confident recollection.
+      return '那天的事我记得，不过有些细节我不想凭空说错。';
+    }
+  }
   async function flushQueue(p,c,force,retryOpts={}){
     const key=pairKey(p.id,c.id),q=db.queue[key];
     const tKey=taskKeyOf(p.id,c.id,'chat');
@@ -1053,6 +1067,11 @@
           simulatedAt,
           background:Boolean(retryOpts.background),
           signal:abortCtrl?.signal
+        });
+        txt=await verifyGeneratedMeetingDetail(p,c,msgs,txt,{
+          profile:p,character:c,simulatedAt,
+          task_id:taskId,retry_of_task_id:retryOfTaskId,attempt,
+          background:Boolean(retryOpts.background),signal:abortCtrl?.signal
         });
         engine='live';
       }catch(e){
@@ -3872,6 +3891,10 @@
           retry_of_task_id:retryOfTaskId,
           attempt,
           signal:abortCtrl?.signal
+        });
+        if(mode==='chat')txt=await verifyGeneratedMeetingDetail(p,c,compiled,txt,{
+          profile:p,character:c,task_id:taskId,
+          retry_of_task_id:retryOfTaskId,attempt,signal:abortCtrl?.signal
         });
         engine='live';
       }catch(e){
