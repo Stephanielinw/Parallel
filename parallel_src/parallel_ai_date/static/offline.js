@@ -2163,7 +2163,9 @@
   }
   function isPotentialMeetingMovement(text){
     const src=String(text||'');
-    return SCENE_INTERIOR_RE.test(src)&&SCENE_MOVE_RE.test(src);
+    // A generic verb such as “遇到了” is not a physical arrival; avoid
+    // wasting API calls and replacing the model payload with a classifier.
+    return SCENE_INTERIOR_RE.test(src)&&/(?:走进|走入|进入|步入|迈入|踏进|回到|来到|抵达|到达|进了|走出|带进|抱进|抱回|推门进入|推开.{0,36}门|穿过.{0,35}(?:门|走廊)|下了车|下车|停好车|(?:坐|躺|倒|抱|落|陷|放).{0,24}(?:床沿|床边|床上))/.test(src);
   }
   async function classifyMeetingMovement(p,c,characterText,current,options={}){
     const deterministic=sceneLocationFromCharacter(characterText,current,p.name,c.name);
