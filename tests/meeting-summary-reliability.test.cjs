@@ -33,7 +33,7 @@ const opts={mode:'meeting_summary',entry_point:'meeting_finalize',temperature:0.
  assert(backup.includes('小结尚未生成成功'),'failed archive is transparent');
  assert(!backup.includes('再到「'),'fallback must not concatenate first and last messages');
  const rich=('先从安全屋的相处谈起，Lin告诉Leon希望他不要再把自己推开，她说“你去哪，我去哪”；Leon逐渐松口。'
-   +'两人休息后在安全屋吃早饭，Lin想带走Leon的大号T恤当睡裙。Leon载她回大学，在校门口告别。').repeat(3);
+   +'两人休息后在安全屋吃早饭，Lin想带走Leon的大号T恤当睡裙。Leon载她回大学，在校门口告别。').repeat(6);
  assert(runtime.buildMeetingSummaryText({}, {},'',[],rich).length>320,'rich summary is no longer cut to 320 characters');
  // A 151-message encounter must have at least two source digests, not 1 giant request.
  const m=Array.from({length:151},(_,k)=>({
