@@ -33,6 +33,7 @@ jobs:
           node tests/chat-anchor-memory.test.cjs
           node tests/chat-bubble-menu-quote.test.cjs
           node tests/recent-meeting-chat-memory.test.cjs
+          node tests/appointment-event-lifecycle.test.cjs
           node tests/scene-transition.test.cjs
           node tests/meeting-location-surveillance.test.cjs
           node tests/meeting-surveillance-authority.test.cjs
