@@ -175,6 +175,7 @@ def init_db():
             if name not in cols:db.execute('ALTER TABLE chat_queue ADD COLUMN '+name+' '+typ)
         message_cols={r['name'] for r in db.execute('PRAGMA table_info(messages)')}
         if 'meeting_id' not in message_cols:db.execute("ALTER TABLE messages ADD COLUMN meeting_id TEXT NOT NULL DEFAULT ''")
+        if 'quote_json' not in message_cols:db.execute("ALTER TABLE messages ADD COLUMN quote_json TEXT NOT NULL DEFAULT ''")
         meeting_cols={r['name'] for r in db.execute('PRAGMA table_info(meetings)')}
         if 'location_history' not in meeting_cols:
             db.execute("ALTER TABLE meetings ADD COLUMN location_history TEXT NOT NULL DEFAULT '[]'")
@@ -1909,6 +1910,8 @@ def forget_thread_messages(db,p,c,message_ids,whole_meeting_ids=None):
     for mid in ids:
         db.execute('DELETE FROM messages WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id']))
         invalidate_translation(db,mid)
+    for ref in db.execute("SELECT id,quote_json FROM messages WHERE profile_id=? AND character_id=? AND quote_json!=''",(p['id'],c['id'])):
+        if (parse_json(ref['quote_json'],{}) or {}).get('id') in ids:db.execute("UPDATE messages SET quote_json='' WHERE id=?",(ref['id'],))
     # Event notes are secondary summaries, not authority. Remove directly matching source events.
     for row in db.execute("SELECT id,type,summary,created_at FROM events WHERE profile_id=? AND character_id=?",(p['id'],c['id'])).fetchall():
         if row['type'] in ('meeting','return') and erased_meetings:
@@ -2140,7 +2143,7 @@ def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids
         if cutoff:
             # A recovered reply can have a later insertion rowid but an earlier conversation timestamp.
             where+=' AND (julianday(created_at)<julianday(?) OR (julianday(created_at)=julianday(?) AND rowid<=?))';args.extend([cutoff['created_at'],cutoff['created_at'],through_rowid])
-    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at,meeting_id FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
+    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at,meeting_id,quote_json FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
     excl=set(exclude_ids or [])
     chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m) and m['id'] not in excl]
     if mode=='meeting':
@@ -2168,11 +2171,19 @@ def select_pre_meeting_chat_context(db,pid,cid,limit=6):
     chat_before=[m for m in chron[:end_idx] if m['mode']=='chat']
     return chat_before[-limit:]
 
-def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0):
+def chat_quote_snapshot(db,pid,cid,quote_id):
+    if not quote_id:return None
+    source=db.execute('SELECT * FROM messages WHERE id=? AND profile_id=? AND character_id=? AND mode=?',(quote_id,pid,cid,'chat')).fetchone()
+    if not source or source['engine']=='recalled':raise ValueError('引用的原消息已失效，请重新选择')
+    return {'id':source['id'],'sender':source['sender'],'text':str(source['text'] or '').replace('\n',' ').strip()[:220]}
+
+def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0,quote_id=''):
     clean_txt = (clean_meeting_novel_text(txt) if mode=='meeting' else (clean_chat_bubble_text(txt) or '…')) if (sender=='ai' and engine not in ('error','recalled')) else str(txt or '')
     meeting_id=MEETING_STATE.get((pid,cid),{}).get('active_meeting_id','') if mode=='meeting' else ''
-    item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc(),meeting_id=meeting_id)
-    db.execute('INSERT INTO messages (id,profile_id,character_id,sender,mode,text,engine,created_at,meeting_id) VALUES (?,?,?,?,?,?,?,?,?)',tuple(item.values()))
+    quote=chat_quote_snapshot(db,pid,cid,quote_id) if sender=='user' and mode=='chat' and quote_id else None
+    item=dict(id=uid(),profile_id=pid,character_id=cid,sender=sender,mode=mode,text=clean_txt,engine=engine,created_at=datetime.fromtimestamp(at/1000,timezone.utc).isoformat(timespec='microseconds') if at else utc(),meeting_id=meeting_id,quote_json=js(quote) if quote else '')
+    db.execute('INSERT INTO messages (id,profile_id,character_id,sender,mode,text,engine,created_at,meeting_id,quote_json) VALUES (?,?,?,?,?,?,?,?,?,?)',tuple(item.values()))
+    item['quote']=quote
     if sender=='user' and mode=='meeting' and not at and meeting_id:
         p=profile_get(db,pid);c=BY_ID.get(cid)
         if c:
@@ -2663,6 +2674,10 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             who=c['name'] if msg['sender']=='ai' else p['name']
             timeline_lines.append(f"#{idx+1} {t_tag}（{m_label}·{who}）")
             clean_body=str(msg.get('text','')) if msg['sender']=='user' else (clean_meeting_novel_text(msg['text']) if msg['mode']=='meeting' else (clean_chat_bubble_text(msg['text']) or '…'))
+            quote=parse_json(msg.get('quote_json'),None)
+            if isinstance(quote,dict) and msg['mode']=='chat':
+                who='自己' if quote.get('sender')=='user' else '对方'
+                clean_body='[引用'+who+'的消息：「'+str(quote.get('text') or '')[:220]+'」]\n'+clean_body
             history_turns.append({'role':role,'content':clean_body})
     if timeline_lines:
         system+="\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n"+" ｜ ".join(timeline_lines)
@@ -2838,6 +2853,7 @@ class Handler(BaseHTTPRequestHandler):
                     rel=db.execute('SELECT * FROM relations WHERE profile_id=? AND character_id=?',(p['id'],cid)).fetchone()
                     if not rel or rel['status']!='matched':raise ValueError('尚未匹配或已解除匹配')
                     msgs,meetings=ensure_meeting_records(db,p,c)
+                    msgs=[dict(m,quote=parse_json(m.get('quote_json'),None)) for m in msgs]
                     db.commit()
                     m_state=MEETING_STATE.get((p['id'],cid),{})
                     nick=str(m_state.get('nickname','')).strip()
@@ -3329,8 +3345,13 @@ class Handler(BaseHTTPRequestHandler):
                 if route=='/api/message-delete':
                     p=profile_get(db,data.get('profileId'));cid=data.get('characterId');mid=str(data.get('messageId',''))
                     if not mid:raise ValueError('缺少消息 ID')
+                    target=db.execute('SELECT sender FROM messages WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],cid)).fetchone()
+                    if not target:raise ValueError('消息不存在')
+                    if target['sender']!='user':raise ValueError('只能撤回自己发送的消息')
                     recalled_text='[系统提示：对方撤回了一条消息（你没有看清具体内容）]'
                     db.execute("UPDATE messages SET text=?,engine='recalled' WHERE id=? AND profile_id=? AND character_id=?",(recalled_text,mid,p['id'],cid))
+                    for ref in db.execute("SELECT id,quote_json FROM messages WHERE profile_id=? AND character_id=? AND quote_json!=''",(p['id'],cid)):
+                        if (parse_json(ref['quote_json'],{}) or {}).get('id')==mid:db.execute("UPDATE messages SET quote_json='' WHERE id=?",(ref['id'],))
                     invalidate_translation(db,mid)
                     mem_rows=db.execute('SELECT id,raw_msg_ids FROM episodic_memories WHERE owner_id=? AND profile_id=?',(cid,p['id'])).fetchall()
                     for mr in mem_rows:
@@ -3544,7 +3565,7 @@ class Handler(BaseHTTPRequestHandler):
                     txt=str(data.get('text','')).strip()
                     if not txt or len(txt)>4000:raise ValueError('消息请控制在 1–4000 字')
                     mode=r['mode'];auto=False
-                    user_msg=write_message(db,p['id'],cid,'user',mode,txt)
+                    user_msg=write_message(db,p['id'],cid,'user',mode,txt,quote_id=str(data.get('quoteMessageId') or '') if mode=='chat' else '')
                     detect_and_apply_correction(db,p,c,user_msg)
                     if mode=='chat':
                         log_event(db,p['id'],cid,'user_message','与 '+p['name']+' 的聊天：'+txt[:180])

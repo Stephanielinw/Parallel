@@ -834,6 +834,38 @@ function meetingClockText(){
   return '实时 1:1 · 已见面 '+(h?h+'时 ':'')+m+'分 '+String(sec).padStart(2,'0')+'秒';
 }
 setInterval(()=>{if(state.chatMode==='meeting'){const el=$('meeting-real-clock');if(el)el.textContent=meetingClockText();}},1000);
+let activeChatQuote=null;
+const activeQuote=()=>activeChatQuote&&activeChatQuote.profileId===state.activeId&&activeChatQuote.characterId===state.threadId?activeChatQuote:null;
+function chatQuoteBar(){
+  const q=activeQuote();
+  if(!q||state.chatMode!=='chat')return '';
+  return '<div class="chat-quote-compose" role="status"><div><b>引用 '+esc(q.sender==='user'?'自己':displayName(state.threads.find(x=>x.character.id===state.threadId)?.character))+'</b><span>'+esc(q.text.slice(0,120))+'</span></div><button type="button" data-action="cancel-chat-quote" aria-label="取消引用">'+I('x')+'</button></div>';
+}
+function lastAiRoundIds(){
+  const ids=[];
+  for(const m of [...state.messages].reverse()){
+    if(m.mode!=='chat')break;
+    if(m.recalled||m.engine==='recalled')continue;
+    if(m.sender!=='ai')break;
+    if(m.id&&m.id!=='typing'&&m.id!=='pending')ids.push(m.id);
+  }
+  return ids;
+}
+function openChatBubbleActions(mid){
+  if(state.chatMode!=='chat'||!mid||state.chatBusy||state.flushBusy)return;
+  const m=state.messages.find(x=>x.id===mid);
+  if(!m||m.mode!=='chat'||m.recalled||m.engine==='recalled'||m.id==='pending'||m.id==='typing')return;
+  const mine=m.sender==='user',roll=lastAiRoundIds();
+  const actions=[
+    ['quote-chat-message','引用'],
+    ...(m.photo_kind==='gallery'?[]:[['edit-message','编辑']]),
+    ...(mine?[['delete-message','撤回']]:roll.includes(mid)?[['regenerate-message','重抽整轮（'+roll.length+'条）']]:[]),
+    ['prompt-forget-message','永久删除']
+  ];
+  const buttons=actions.map(([act,label])=>'<button type="button" class="btn '+(act==='prompt-forget-message'?'danger':'soft')+' bubble-option-btn" data-action="'+act+'" data-id="'+esc(mid)+'">'+esc(label)+'</button>').join('');
+  const preview=m.photo_kind?'[照片]':cleanBodyText(m.text,m.sender);
+  modal('<div class="kicker">MESSAGE ACTIONS</div><h2>消息操作</h2><p class="bubble-action-preview">'+esc(preview.slice(0,180))+'</p>',buttons+'<button type="button" class="btn ghost" data-action="close-modal">取消</button>');
+}
 function renderChatMessagesHtml(c){
   const pendingSet=new Set(state.queue?.pendingIds||[]);
   const charTyping=isCharacterTyping();
@@ -906,18 +938,7 @@ function renderChatMessagesHtml(c){
 
   const autoTranslateOn=state.settings?.auto_translate!==false;
   const ignoreNames=[c?.name||'',pName,...(c?.aliases||[])];
-  let lastTrailingAiId='';
-  for(let i=blocks.length-1;i>=0;i--){
-    const blk=blocks[i];
-    if(blk.type!=='chat_msg')break;
-    const bm=blk.msg;
-    if(bm.engine==='recalled'||bm.recalled)continue;
-    if(bm.sender==='ai'&&bm.id&&bm.id!=='pending'&&bm.id!=='typing'){
-      lastTrailingAiId=bm.id;
-      break;
-    }
-    break;
-  }
+  const latestAiRound=new Set(lastAiRoundIds());
 
   const htmlParts=blocks.map(b=>{
     if(b.type==='meeting_group'){
@@ -974,9 +995,9 @@ function renderChatMessagesHtml(c){
         }
       }
     }
-    const editBtn=isRealMsg&&m.photo_kind!=='gallery'?`<button type="button" class="msg-action-btn" data-action="edit-message" data-id="${esc(m.id)}" title="编辑此条消息" aria-label="编辑此条消息">编辑</button>`:'';
-    const regenBtn=(isRealMsg&&m.id===lastTrailingAiId&&!charTyping)?`<button type="button" class="msg-action-btn" data-action="regenerate-message" data-id="${esc(m.id)}" title="重新生成角色回复" aria-label="重新生成角色回复">重新生成</button>`:'';
-    const recallBtn=isRealMsg?`<button type="button" class="msg-del-btn" data-action="delete-message" data-id="${esc(m.id)}" title="撤回此条消息" aria-label="撤回此条消息">撤回</button>`:'';
+    // Message actions now open from the bubble itself. The whole final AI
+    // batch is one regeneration unit, not individually rerolled bubbles.
+    const canRerollRound=m.sender==='ai'&&latestAiRound.has(m.id)&&!charTyping;
     let receiptHtml='';
     if(m.sender==='user'){
       const isPending=(m.id==='pending'||(pendingSet.has(m.id)&&!charTyping));
@@ -989,8 +1010,8 @@ function renderChatMessagesHtml(c){
           :`<span class="msg-receipt is-read" title="对方已读">${I('read','receipt-ic')}<em>已读</em></span>`;
       }
     }
-    const time=`<span>${fmtTime(m.created_at)}${m.edited_at?' · 已编辑':''}${m.engine==='demo'?' · 演示回复':''}</span>${receiptHtml}${translationActionBtn}${editBtn}${regenBtn}${recallBtn}${m.id&&m.id!=='pending'&&m.id!=='typing'?`<button type="button" class="msg-action-btn" data-action="prompt-forget-message" data-id="${esc(m.id)}">永久删除</button>`:''}`;
-    return `<div class="bubble-row ${m.sender==='user'?'mine':''}" data-message-id="${esc(m.id||'')}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble ${translationHtml?'is-bilingual':''}"><div class="bubble-orig">${m.photo_kind?renderChatPhoto(m):esc(origText)}</div>${translationHtml}</div><div class="chat-time">${time}</div></div></div>`;
+    const time=`<span>${fmtTime(m.created_at)}${m.edited_at?' · 已编辑':''}${m.engine==='demo'?' · 演示回复':''}</span>${receiptHtml}${translationActionBtn}`;
+    return `<div class="bubble-row ${m.sender==='user'?'mine':''}" data-message-id="${esc(m.id||'')}">${m.sender==='ai'?avatar({...c,avatar:c.portrait}):''}<div><div class="bubble ${translationHtml?'is-bilingual':''} ${isRealMsg?'bubble-tappable':''}" ${isRealMsg?'role="button" tabindex="0" data-action="open-chat-bubble-actions" data-id="'+esc(m.id)+'" aria-label="点击消息查看操作"':''}><div class="bubble-orig">${m.quote?'<div class="chat-quoted-content"><b>引用 '+esc(m.quote.sender==='user'?'自己':displayName(c))+'</b><span>'+esc(m.quote.text||'')+'</span></div>':''}${m.photo_kind?renderChatPhoto(m):esc(origText)}</div>${translationHtml}</div><div class="chat-time">${time}</div></div></div>`;
   }).join('');
 
   const typingHtml=charTyping?`<div class="typing-inline" role="status" aria-live="polite"><span class="typing-label">对方正在输入中</span><span class="typing-ellipsis"><i>.</i><i>.</i><i>.</i></span></div>`:'';
@@ -1151,6 +1172,7 @@ function renderMessages(){
       plusBtn.classList.toggle('active',Boolean(state.chatPlusOpen));
       plusBtn.setAttribute('aria-expanded',state.chatPlusOpen?'true':'false');
     }
+    const quoteSlot=$('chat-quote-slot');if(quoteSlot)quoteSlot.innerHTML=chatQuoteBar();
     const plusPanel=$('chat-plus-panel');
     if(plusPanel)plusPanel.classList.toggle('open',Boolean(state.chatPlusOpen));
     updateQueueCountdown();
@@ -1185,7 +1207,7 @@ function renderChat(thread){
     <span class="chat-plus-icon">${I(item.icon)}</span>
     <span class="chat-plus-label">${item.label}</span>
   </button>`).join('');
-  return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表" title="返回列表">${I('back')}</button><button type="button" class="chat-avatar-trigger" data-action="open-char-hub" aria-label="打开角色专属空间" title="点击打开角色专属空间（监控、日记、记忆档案与备注）">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b title="${esc(dName)}">${esc(dName)}</b><small class="${charTyping?'typing-header-hint':''}" title="${esc(subText)}">${charTyping?'对方正在输入中…':esc(subText)}</small></div></button></div><div class="chat-header-actions"><span id="chat-mode-btn-slot">${renderHeaderModeButton(meeting)}</span><button type="button" class="icon-btn danger-icon" data-action="unmatch" aria-label="解除匹配" title="解除匹配">${I('unmatch')}</button></div></div><div id="chat-body" class="chat-body ${meeting?'meeting-novel-body':''}">${renderChatMessagesHtml(c)}</div><div id="chat-paused-banner-slot">${renderPausedTaskBanner()}</div><form id="chat-form" class="chat-compose"><textarea id="chat-input" rows="1" placeholder="${meeting?'写下你在见面时的动作、神态或台词……':'输入消息……'}" maxlength="4000" required></textarea><button class="send" type="submit" title="发送消息" ${isBusy?'disabled':''}>${I('send')}</button><button class="chat-plus-btn ${plusOpen?'active':''}" type="button" data-action="toggle-chat-plus" aria-label="更多功能" aria-expanded="${plusOpen?'true':'false'}" title="更多功能（照片、语音、表情包、电话、视频电话）">${I('plus')}</button></form><div id="chat-plus-panel" class="chat-plus-panel ${plusOpen?'open':''}" role="region" aria-label="聊天扩展功能面板"><div class="chat-plus-grid">${plusItemsHtml}</div></div><div class="chat-queue-status" id="chat-queue-status" aria-live="polite"></div>`;
+  return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表" title="返回列表">${I('back')}</button><button type="button" class="chat-avatar-trigger" data-action="open-char-hub" aria-label="打开角色专属空间" title="点击打开角色专属空间（监控、日记、记忆档案与备注）">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b title="${esc(dName)}">${esc(dName)}</b><small class="${charTyping?'typing-header-hint':''}" title="${esc(subText)}">${charTyping?'对方正在输入中…':esc(subText)}</small></div></button></div><div class="chat-header-actions"><span id="chat-mode-btn-slot">${renderHeaderModeButton(meeting)}</span><button type="button" class="icon-btn danger-icon" data-action="unmatch" aria-label="解除匹配" title="解除匹配">${I('unmatch')}</button></div></div><div id="chat-body" class="chat-body ${meeting?'meeting-novel-body':''}">${renderChatMessagesHtml(c)}</div><div id="chat-paused-banner-slot">${renderPausedTaskBanner()}</div><div id="chat-quote-slot">${chatQuoteBar()}</div><form id="chat-form" class="chat-compose"><textarea id="chat-input" rows="1" placeholder="${meeting?'写下你在见面时的动作、神态或台词……':'输入消息……'}" maxlength="4000" required></textarea><button class="send" type="submit" title="发送消息" ${isBusy?'disabled':''}>${I('send')}</button><button class="chat-plus-btn ${plusOpen?'active':''}" type="button" data-action="toggle-chat-plus" aria-label="更多功能" aria-expanded="${plusOpen?'true':'false'}" title="更多功能（照片、语音、表情包、电话、视频电话）">${I('plus')}</button></form><div id="chat-plus-panel" class="chat-plus-panel ${plusOpen?'open':''}" role="region" aria-label="聊天扩展功能面板"><div class="chat-plus-grid">${plusItemsHtml}</div></div><div class="chat-queue-status" id="chat-queue-status" aria-live="polite"></div>`;
 }
 function openCharacterHubModal(editingNick=false){
   const thread=state.threads.find(x=>x.character.id===state.threadId);
@@ -1835,15 +1857,16 @@ async function toggleHotChat(){
 }
 async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
   const input=$('chat-input'),txt=input?.value.trim();if(!txt)return;
-  state.chatBusy=true;const id=state.threadId,mode=state.chatMode,profileId=state.activeId;
+  state.chatBusy=true;const id=state.threadId,mode=state.chatMode,profileId=state.activeId,quote=mode==='chat'?activeQuote():null;
   const wasPaused=isCurrentThreadPaused();
   input.value='';state.draftInputs[id]='';state.lastSendAt=Date.now();
   pinCurrentChat();
-  const now=new Date().toISOString();state.messages.push({id:'pending',sender:'user',mode,text:txt,created_at:now,engine:'human'});
+  const now=new Date().toISOString();state.messages.push({id:'pending',sender:'user',mode,text:txt,created_at:now,engine:'human',quote:quote?{id:quote.id,sender:quote.sender,text:quote.text}:null});
   if(mode==='meeting'&&!wasPaused)state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:now,engine:'human'});
   renderMessages();
   try{
-    const r=await api('/message',{profileId,characterId:id,text:txt,...(mode==='meeting'?{location:state.meetingLocation}: {})});
+    const r=await api('/message',{profileId,characterId:id,text:txt,...(quote?{quoteMessageId:quote.id}:{}),...(mode==='meeting'?{location:state.meetingLocation}: {})});
+    if(quote&&activeChatQuote===quote)activeChatQuote=null;
     if(isCurrentPair(profileId,id)&&hasCurrentThreadSnapshot()){
       if(r.queue)state.queue=r.queue;
       if(r.taskState)state.taskState=r.taskState;
@@ -1959,6 +1982,7 @@ async function submitEditMessage(mid){
   }
 }
 async function regenerateMessage(mid){
+  closeModal();
   if(!state.threadId||!state.activeId||state.chatBusy||state.flushBusy||state.revealingBubbles)return;
   const id=state.threadId,profileId=state.activeId,mode=state.chatMode;
   state.chatBusy=true;
@@ -2659,6 +2683,13 @@ async function retryFailedApiTask(){
     if(state.tab==='messages')renderMessages();
   }
 }
+// Keyboard support for the same bubble menu available by touch or mouse.
+addEventListener('keydown',e=>{
+  const target=e.target.closest?.('[data-action="open-chat-bubble-actions"]');
+  if(target&&(e.key==='Enter'||e.key===' ')){
+    e.preventDefault();openChatBubbleActions(target.dataset.id);
+  }
+});
 // Central action delegation
 addEventListener('click',async e=>{
 if(state.profileMenuOpen&&!e.target.closest('#topbar-profile-dropdown')){
@@ -2887,6 +2918,14 @@ if(a==='export-backup')return exportBackup();
 if(a==='export-text-backup')return await exportBackup(true);
 if(a==='confirm-restore-backup')return confirmRestoreBackup();
 if(a==='continue-reply')return continueReply();
+if(a==='open-chat-bubble-actions')return openChatBubbleActions(el.dataset.id);
+if(a==='quote-chat-message'){
+  const m=state.messages.find(x=>x.id===el.dataset.id);
+  if(!m||m.mode!=='chat'||m.recalled||m.engine==='recalled')return;
+  activeChatQuote={profileId:state.activeId,characterId:state.threadId,id:m.id,sender:m.sender,text:cleanBodyText(m.text,m.sender).slice(0,220)};
+  closeModal();renderMessages();$('chat-input')?.focus();return;
+}
+if(a==='cancel-chat-quote'){activeChatQuote=null;renderMessages();return;}
 if(a==='delete-message')return deleteMessage(el.dataset.id);
 if(a==='edit-message')return openEditMessageModal(el.dataset.id);
 if(a==='confirm-edit-message')return submitEditMessage(el.dataset.id);
