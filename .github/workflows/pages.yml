@@ -38,6 +38,7 @@ jobs:
           node tests/scene-transition.test.cjs
           node tests/meeting-location-surveillance.test.cjs
           node tests/meeting-surveillance-authority.test.cjs
+          node tests/post-meeting-surveillance-replan.test.cjs
           node tests/live-meeting-scene-location.test.cjs
           python3 parallel_src/parallel_ai_date/tests/test_live_meeting_scene_location.py
           node tests/thread-typing-isolation.test.cjs

@@ -1607,7 +1607,16 @@
       };
     }
     const active=rec.slots[activeSlotIndex(rec.slots,nowMin)]||rec.slots.filter(s=>hhmmToMin(s.start)<=nowMin).at(-1)||rec.slots[0];
-    return {...verifiedSlotForDisplay(c,active),isCurrent:true,isMeetingLive:false};
+    // Older saved builds may still contain the 09:51–23:59 placeholder.
+    // Display it as unknown whereabouts, never as a verified 13:00 scene.
+    const legacyPending=Boolean(active?.source==='meeting_shift'&&rec.post_meeting_id&&
+      (active?.is_unconfirmed||String(active?.id||'').startsWith('slot_meeting_shift_'))&&!active?.is_planned);
+    const display=legacyPending?{
+      ...active,is_unconfirmed:true,status:'见面后去向待核实',
+      activity:'最近一次确认在见面地点；之后没有位置证据',
+      scene:c.name+'的上次确认地点为「'+String(rec.post_meeting_location||active.location||'未知地点')+'」，当前去向尚未核实；不能把推测当成真实足迹。'
+    }:active;
+    return {...verifiedSlotForDisplay(c,display),isCurrent:true,isMeetingLive:false};
   };
   // Meeting is a live wall-clock interval, not a guessed future schedule.
   const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>{
@@ -1655,10 +1664,10 @@
     const known={
       id:'slot_meeting_shift_'+meetingRecord.id+'_'+end,
       start:minToHHMM(end),end:'23:59',location:loc,
-      status:'见面后安排待定',
-      activity:'刚结束见面，尚未确认离开当前地点',
-      scene:c.name+'刚与 '+p.name+' 结束这次见面，仍以「'+loc+'」为最后确认的地点；后续去向尚未发生。',
-      source:'meeting_shift',meeting_id:meetingRecord.id
+      status:'见面后去向待核实',
+      activity:'最近一次确认在见面地点；之后没有位置证据',
+      scene:c.name+'与 '+p.name+' 的见面已结束，最后确认地点是「'+loc+'」。目前并无证据证明仍在原地，待日程重排。',
+      source:'meeting_shift',meeting_id:meetingRecord.id,is_unconfirmed:true
     };
     rec.slots=overlayActualSlots(rec.slots,[known]);
     rec.post_meeting_anchor=meetingRecord.ended_at;
@@ -1667,59 +1676,127 @@
     rec.updated_at=stamp();
     return rec;
   }
+  // At most one model call per character while resuming an unfinished replan.
+  const pendingPostMeetingPlans=new Map();
   async function replanRemainingDayAfterMeeting(p,c,meetingRecord,fromMs=Date.parse(meetingRecord?.ended_at||'')){
-    if(pub().mode!=='live'||!Number.isFinite(fromMs))return null;
-    const originalFinish=Date.parse(meetingRecord?.ended_at||'');
-    const anchor=Number.isFinite(originalFinish)?Math.max(fromMs,originalFinish):fromMs;
-    if(localDateStr(anchor)!==localDateStr())return null; // history is immutable
-    const rec=anchorRemainingDayAfterMeeting(p,c,meetingRecord,anchor);
-    if(!rec)return null;
-    const minute=hhmmToMin(fmtHHMM(anchor)),last=1439;
-    const settleEnd=Math.min(last,minute+15);
-    if(settleEnd>=last-15)return rec;
-    const anchorId=rec.post_meeting_id,anchorTime=rec.post_meeting_anchor;
-    const loc=String(rec.post_meeting_location);
-    const planFrom=minToHHMM(settleEnd);
-    try{
-      const rules='你是角色个人日程规划器，不是剧情记录改写器。先前的日程只是可取消的计划，真实见面事件永远优先。只重排今天余下尚未发生的时间，不能修改已发生的见面、之前的短信或真实地点。角色刚刚在「'+loc+'」结束与 '+p.name+' 的见面；此刻没有证据表明角色已离开。后续要离开必须合理安排告别、步行、交通或工作衔接，绝不能瞬间出现在另一地点。符合 '+c.name+' 原作时代及独立生活节奏。提供 2 至 4 个按顺序排列的后续片段，首段不早于 '+planFrom+'，最后覆盖 23:59。仅输出 JSON：{"slots":[{"start":"HH:MM","end":"HH:MM","location":"地点","status":"简短状态","activity":"具体行为","scene":"第三人称画面"}]}。';
-      const raw=await llm([{role:'system',content:rules},{role:'user',content:'当前日期：'+localDateStr(anchor)+'；确认结束时间：'+fmtHHMM(anchor)+'；最后实际地点：'+loc+'；见面事实摘要：'+String(meetingRecord.summary||'').slice(0,260)+'。请只规划此后尚未发生的时间。'}],{json_mode:true,profile:p,character:c,mode:'surveillance',entry_point:'surveillance_after_meeting',background:true,temperature:0.35,max_tokens:1200});
-      const result=JSON.parse(raw),rows=Array.isArray(result?.slots)?result.slots:[];
-      if(!rows.length)return rec;
-      // An old async result must not overwrite a newly resumed meeting or changed scene.
-      if(relation(p.id,c.id)?.mode==='meeting'||rec.post_meeting_id!==anchorId||rec.post_meeting_anchor!==anchorTime)return rec;
-      let cursor=settleEnd;
-      const planned=[];
-      for(const row of rows.slice(0,5)){
-        if(!row||typeof row!=='object')continue;
-        const endRaw=/^\d{2}:\d{2}$/.test(String(row.end||''))?hhmmToMin(row.end):NaN;
-        if(!Number.isFinite(endRaw)||endRaw<=cursor)continue;
-        const end=Math.min(last,endRaw);
-        const locNext=String(row.location||loc).trim().slice(0,30)||loc;
-        if(incompatibleCharacterSlot(c,row))continue;
-        planned.push({
-          id:'slot_replanned_'+anchorId+'_'+planned.length+'_'+cursor,
-          start:minToHHMM(cursor),end:minToHHMM(end),location:locNext,
-          status:String(row.status||'调整后行程').slice(0,16),
-          activity:String(row.activity||'根据实际见面调整后续安排').slice(0,90),
-          scene:String(row.scene||'后续日程根据刚刚的见面重新安排。').slice(0,170),
-          source:'meeting_shift',meeting_id:anchorId
-        });
-        cursor=end;
-        if(cursor>=last)break;
+    if(pub().mode!=='live'||!Number.isFinite(fromMs)||!meetingRecord?.id)return null;
+    const originalFinish=Date.parse(meetingRecord.ended_at||'');
+    if(!Number.isFinite(originalFinish))return null;
+    const anchor=Math.max(fromMs,originalFinish);
+    if(localDateStr(anchor)!==localDateStr())return null; // do not rewrite history
+    const key=pairKey(p.id,c.id);
+    if(pendingPostMeetingPlans.has(key))return pendingPostMeetingPlans.get(key);
+    const task=(async()=>{
+      let rec=getOrInitSurveillance(p,c,localDateStr(anchor));
+      // The ending is anchored only once. Retrying later must preserve intervening
+      // confirmed SMS locations rather than overwriting the whole afternoon.
+      if(rec.post_meeting_id!==meetingRecord.id||!rec.post_meeting_anchor){
+        rec=anchorRemainingDayAfterMeeting(p,c,meetingRecord,originalFinish)||rec;
       }
-      if(!planned.length)return rec;
-      if(cursor<last)planned[planned.length-1].end='23:59';
-      // Preserve a short on-site transition instead of teleporting at the exact end minute.
-      const settle={id:'slot_post_on_site_'+anchorId+'_'+minute,start:minToHHMM(minute),end:planFrom,location:loc,status:'见面后整理',activity:'仍在刚刚确认的见面地点',scene:c.name+'仍在「'+loc+'」整理思绪与随身物品，后续行程尚未开始。',source:'meeting_shift',meeting_id:anchorId};
-      rec.slots=overlayActualSlots(rec.slots,[settle,...planned]);
-      rec.engine='live';
-      rec.updated_at=stamp();
-      clearBgError(p.id,c.id,'surveillance');
-      save();
-    }catch(e){
-      recordBgError(p.id,c.id,'surveillance',e.apiError||{message:String(e.message||e)});
-    }
-    return rec;
+      const meetingId=rec.post_meeting_id,meetingAnchor=rec.post_meeting_anchor;
+      const minute=hhmmToMin(fmtHHMM(anchor)),last=1439;
+      if(minute>=last-2)return rec;
+      const isDelayed=anchor-originalFinish>=10*60000;
+      const settleEnd=isDelayed?minute:Math.min(last,minute+15);
+      const planFrom=minToHHMM(settleEnd);
+      // A chat can confirm a subsequent location. Such evidence outranks the
+      // last meeting room; speculative itinerary does not.
+      const observed=rec.slots.filter(x=>x.source==='chat_update'&&hhmmToMin(x.start)<=minute)
+        .sort((a,b)=>hhmmToMin(a.start)-hhmmToMin(b.start)).at(-1);
+      const lastKnown=String(observed?.location||meetingRecord.location||'地点未确认').slice(0,40);
+      const postChat=messagesOf(p.id,c.id).filter(m=>m.mode==='chat'&&!m.recalled&&m.engine!=='recalled'&&!isChatArtifact(m))
+        .filter(m=>{const at=Date.parse(m.created_at);return Number.isFinite(at)&&at>originalFinish&&at<=Date.now();})
+        .slice(-12);
+      const latestChatAt=postChat.at(-1)?.created_at||meetingRecord.ended_at;
+      const chatEvidence=postChat.map(m=>
+        '['+chatClockLabel(m.created_at)+' '+(m.sender==='user'?p.name:c.name)+'] '+
+        String(m.text||'').replace(/\s+/g,' ').slice(0,200)).join('\n');
+      const realTurns=(meetingRecord.entries||[]).filter(m=>['user','ai'].includes(m?.sender))
+        .slice(-8).map(m=>
+          '['+String(m.created_at||'').slice(0,19)+' '+(m.sender==='user'?p.name:c.name)+'] '+
+          String(m.text||'').replace(/\s+/g,' ').slice(0,260)).join('\n');
+      const digest=String(meetingRecord.ai_summary||meetingRecord.summary||'').slice(0,600);
+      rec.post_meeting_attempted_at=stamp();
+      try{
+        const rules='你是角色个人日程规划器。按照已经发生的面对面见面、之后的手机聊天，以及角色独立的工作与生活，重排今天剩下尚未发生的日程。'+
+          '见面已于 '+fmtHHMM(originalFinish)+' 结束，最近一次确认的地点是「'+lastKnown+'」。'+
+          (isDelayed?'现在已是 '+fmtHHMM(anchor)+'；中间未记录的行动属于未知，不得声称已证实角色这几小时始终停留在见面地点，也不得凭空倒填已经发生的行动。':'见面刚刚结束，后续移动必须有合理的步行、交通或工作衔接。')+
+          '已说出的计划不等于真的完成；明确取消的计划不应执行。没有发生的约会不能当作事实。'+
+          '合理安排角色自己的工作、补给、休息或社交，不得让角色永远停在见面场景，也不要全天围绕对方打转。'+
+          '首段开始不早于 '+planFrom+'，连续覆盖至23:59，给出2至4段。它们属于推演的未来安排，不是假装已经亲眼目睹的事实。'+
+          '只输出JSON：{"slots":[{"start":"HH:MM","end":"HH:MM","location":"地点","status":"简短状态","activity":"具体行为","scene":"第三人称画面"}]}。';
+        const raw=await llm([{role:'system',content:rules},
+          {role:'user',content:'角色：'+c.name+'；原作时期：'+c.version+'；原作资料：'+String(c.canon||'').slice(0,350)+
+            '\n结束见面时间：'+chatClockLabel(originalFinish)+'；现在：'+chatClockLabel(anchor)+
+            '\n见面摘要（如果是生成失败提示则不能作为事件依据）：'+digest+
+            '\n【见面最后真实现场原文】\n'+(realTurns||'未取得现场原文')+
+            '\n【见面结束后真正发生的手机聊天】\n'+(chatEvidence||'尚无后续聊天')+
+            '\n请据此推演今后日程，明确区分亲历事实、谈话计划及合理推测。'}],
+          {json_mode:true,profile:p,character:c,mode:'surveillance',entry_point:'surveillance_after_meeting',background:true,temperature:0.35,max_tokens:2048});
+        const result=JSON.parse(raw);
+        const rows=Array.isArray(result?.slots)?result.slots:[];
+        if(!rows.length)throw Error('见面后日程生成未提供有效时间段');
+        // Ignore obsolete replies if a new meeting began while the model was busy.
+        const fresh=getOrInitSurveillance(p,c,localDateStr(anchor));
+        if(fresh!==rec||relation(p.id,c.id)?.mode==='meeting'||
+          rec.post_meeting_id!==meetingId||rec.post_meeting_anchor!==meetingAnchor)return rec;
+        let cursor=settleEnd;
+        const planned=[];
+        for(const row of rows.slice(0,5)){
+          if(!row||typeof row!=='object')continue;
+          const endRaw=/^\d{2}:\d{2}$/.test(String(row.end||''))?hhmmToMin(row.end):NaN;
+          if(!Number.isFinite(endRaw)||endRaw<=cursor)continue;
+          const end=Math.min(last,endRaw);
+          const loc=String(row.location||lastKnown).trim().slice(0,30)||lastKnown;
+          if(incompatibleCharacterSlot(c,row))continue;
+          planned.push({
+            id:'slot_replanned_'+meetingId+'_'+planned.length+'_'+cursor,
+            start:minToHHMM(cursor),end:minToHHMM(end),location:loc,
+            status:String(row.status||'调整后行程').slice(0,16),
+            activity:String(row.activity||'根据实际见面调整后续安排').slice(0,90),
+            scene:String(row.scene||'后续日程根据最新互动重新安排。').slice(0,170),
+            source:'meeting_shift',meeting_id:meetingId,is_planned:true
+          });
+          cursor=end;
+          if(cursor>=last)break;
+        }
+        if(!planned.length)throw Error('见面后日程没有可用的未来时间段');
+        if(cursor<last)planned[planned.length-1].end='23:59';
+        const settle=isDelayed?[]:[{
+          id:'slot_post_on_site_'+meetingId+'_'+minute,
+          start:minToHHMM(minute),end:planFrom,location:lastKnown,
+          status:'见面后整理',activity:'结束见面，开始整理接下来的安排',
+          scene:c.name+'刚结束见面，接下来的安排将从最后确认的地点合理衔接。',
+          source:'meeting_shift',meeting_id:meetingId,is_planned:true
+        }];
+        // Keep actual chat-derived locations authoritative even if the future
+        // planner generated an incompatible location for the same minute.
+        const confirmed=rec.slots.filter(x=>x.source==='chat_update'&&hhmmToMin(x.end)>minute);
+        rec.slots=overlayActualSlots(overlayActualSlots(rec.slots,[...settle,...planned]),confirmed);
+        rec.engine='live';
+        rec.post_meeting_planned_at=stamp();
+        rec.post_meeting_evidence_at=latestChatAt;
+        rec.post_meeting_retry_at=0;
+        rec.post_meeting_attempts=0;
+        rec.updated_at=stamp();
+        clearBgError(p.id,c.id,'surveillance');
+        save();
+      }catch(e){
+        // Do not silently freeze at "just ended meeting" for the entire day.
+        const stillCurrent=getOrInitSurveillance(p,c,localDateStr(anchor));
+        if(stillCurrent===rec&&rec.post_meeting_id===meetingId){
+          const attempts=Math.min(8,Number(rec.post_meeting_attempts||0)+1);
+          rec.post_meeting_attempts=attempts;
+          rec.post_meeting_retry_at=Date.now()+Math.min(20*60000,(2**Math.min(attempts-1,4))*2*60000);
+          rec.updated_at=stamp();
+          recordBgError(p.id,c.id,'surveillance',e.apiError||{message:String(e?.message||e),title:'见面后日程重排失败'});
+          rec._lastApiError=e.apiError||{message:String(e?.message||e),title:'见面后日程重排失败'};
+        }
+      }
+      return rec;
+    })();
+    pendingPostMeetingPlans.set(key,task);
+    try{return await task}finally{if(pendingPostMeetingPlans.get(key)===task)pendingPostMeetingPlans.delete(key)}
   }
   function activeSlotIndex(slots,minute){
     for(let i=slots.length-1;i>=0;i--)if(hhmmToMin(slots[i].start)<=minute&&minute<=hhmmToMin(slots[i].end))return i;
@@ -1831,12 +1908,24 @@
     // Live meeting truth wins; re-generating a fake day while together is counterproductive.
     if(dStr===today&&relation(p.id,c.id)?.mode==='meeting')return rec;
     if(dStr===today&&rec.post_meeting_anchor&&rec.post_meeting_id){
-      if(forceRefresh){
-        const meeting=(db.meetings||[]).find(x=>x.id===rec.post_meeting_id&&x.profile_id===p.id&&x.character_id===c.id);
-        if(meeting)return await replanRemainingDayAfterMeeting(p,c,meeting,Date.now());
+      // Earlier versions saved a full-day "just ended meeting" placeholder even
+      // when the replan model failed. Upgrade those saves without touching scenes.
+      const oldPlan=rec.slots.some(x=>String(x.id||'').startsWith('slot_replanned_')&&x.meeting_id===rec.post_meeting_id);
+      if(oldPlan&&!rec.post_meeting_planned_at){
+        rec.post_meeting_planned_at=rec.updated_at||rec.post_meeting_anchor;
+        rec.post_meeting_evidence_at=rec.post_meeting_anchor;
       }
-      // This date's unfinished timeline has already been rebased on the real ending.
-      // Never regenerate a contradictory entire day from 00:00 on later page opens.
+      const meeting=(db.meetings||[]).find(x=>x.id===rec.post_meeting_id&&x.profile_id===p.id&&x.character_id===c.id);
+      const now=Date.now(),lastPlan=Date.parse(rec.post_meeting_planned_at||'')||0;
+      const laterChat=messagesOf(p.id,c.id).filter(m=>m.mode==='chat'&&!m.recalled&&m.engine!=='recalled'&&!isChatArtifact(m))
+        .some(m=>{const at=Date.parse(m.created_at);return Number.isFinite(at)&&at>Date.parse(rec.post_meeting_evidence_at||rec.post_meeting_anchor||'')&&at<=now;});
+      const staleForChat=Boolean(lastPlan&&laterChat&&now-lastPlan>=15*60000);
+      const shouldRetry=!lastPlan||staleForChat;
+      if(meeting&&(forceRefresh||(shouldRetry&&now>=Number(rec.post_meeting_retry_at||0)))){
+        return await replanRemainingDayAfterMeeting(p,c,meeting,now);
+      }
+      // Preserve confirmed meeting and SMS footprints; never reconstruct an
+      // unrelated full day from 00:00 just because this date was revisited.
       return rec;
     }
     if(rec.engine==='live'&&!forceRefresh)return rec;
