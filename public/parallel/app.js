@@ -1456,7 +1456,7 @@ function openMeetingRecordModal(meetingId){
     <div class="meeting-modal-meta">
       <div class="inline-ic-text">${I('map','inline-doodle-ic')}<b>见面地点：</b><span>${esc(rec.location||'约定的街角咖啡馆')}</span></div>
       <div class="inline-ic-text">${I('clock','inline-doodle-ic')}<b>见面时间：</b><span>${esc(rec.time||'近期')}</span></div>
-      <div class="inline-ic-text">${I('book','inline-doodle-ic')}<b>见面梗概：</b><span>${esc(rec.summary||'')}</span></div>
+      <div class="inline-ic-text">${I('book','inline-doodle-ic')}<b>见面梗概${rec.summary_source==='manual'?'（已手动编辑）':''}：</b><span>${esc(rec.summary||'')}</span></div>
     </div>
     ${state.chatMode==='chat'?`<div class="meeting-resume-location">
       <label for="resume-meeting-place">续接时的实际地点（可选）</label>
@@ -1474,9 +1474,10 @@ function openMeetingRecordModal(meetingId){
       </article>`).join(''):'<p class="caption">暂无详细段落记录。</p>'}
     </div>`;
   const canRefresh=Boolean(rec.id&&entries.length&&rec.id!==state.activeMeetingId);
+  const canEdit=Boolean(rec.id&&entries.length&&rec.id!==state.activeMeetingId);
   const canResume=Boolean(rec.id&&entries.length&&state.chatMode==='chat'&&!state.chatBusy&&!state.flushBusy);
   const canForget=Boolean(rec.id&&entries.length&&rec.id!==state.activeMeetingId&&!state.chatBusy);
-  const buttons=`${canResume?`<button class="btn primary" data-action="resume-meeting" data-id="${esc(rec.id)}">继续这次见面</button>`:''}${canRefresh?`<button class="btn soft" data-action="refresh-meeting-summary" data-id="${esc(rec.id)}">重新整理整场梗概（消耗 Token）</button>`:''}${canForget?`<button class="btn danger" data-action="prompt-forget-meeting" data-id="${esc(rec.id)}">删除整场见面与关联记忆</button>`:''}<button class="btn soft" data-action="close-modal">关闭</button>`;
+  const buttons=`${canResume?`<button class="btn primary" data-action="resume-meeting" data-id="${esc(rec.id)}">继续这次见面</button>`:''}${canEdit?`<button class="btn soft" data-action="edit-meeting-summary" data-id="${esc(rec.id)}">${I('edit')} 编辑总结 / 粘贴外部总结</button>`:''}${canRefresh?`<button class="btn soft" data-action="refresh-meeting-summary" data-id="${esc(rec.id)}">重新整理整场梗概（消耗 Token）</button>`:''}${canForget?`<button class="btn danger" data-action="prompt-forget-meeting" data-id="${esc(rec.id)}">删除整场见面与关联记忆</button>`:''}<button class="btn soft" data-action="close-modal">关闭</button>`;
   modal(html,buttons);
   const mEl=document.querySelector('#modal-root .modal');
   if(mEl)mEl.classList.add('modal-wide');
@@ -1535,13 +1536,55 @@ async function permanentlyForgetMeeting(meetingId){
   }catch(e){toast('删除失败：'+String(e.message||e));}
   finally{state.chatBusy=false;if(isCurrentPair(pid,cid)&&state.tab==='messages')renderMessages();}
 }
-async function refreshMeetingSummary(meetingId){
+function openMeetingSummaryEditor(meetingId){
+  const rec=(state.meetings||[]).find(x=>x.id===meetingId)||
+    (state.lastMemoriesData?.meetings||[]).find(x=>x.id===meetingId);
+  if(!rec||!rec.entries?.length)return toast('找不到本次见面的原始记录');
+  if(meetingId===state.activeMeetingId)return toast('请先结束这次见面，再编辑最终总结');
+  const initial=String(rec.ai_summary||'').trim()||'';
+  const html=`<div class="kicker">MEETING RECAP · 手动归档</div>
+    <h2>编辑这次见面的总结</h2>
+    <p class="caption">可以直接粘贴外部 AI 整理的总结，不消耗 Parallel 的 Token。保存后同步更新见面卡片与角色记忆索引，不会修改原文、时间或已有约定。后续如继续这场见面，需要重新整理包含新剧情的总结。</p>
+    <label class="field-label" for="meeting-summary-editor">整场见面梗概（6–4000字）</label>
+    <textarea id="meeting-summary-editor" class="form-input" maxlength="4000" rows="12" style="display:block;width:100%;min-height:240px;resize:vertical;white-space:pre-wrap;margin-top:8px" placeholder="在此粘贴你的完整见面总结…">${esc(initial)}</textarea>
+    <p class="caption">手动总结会标记为「已手动编辑」，重新调用 AI 整理前会要求确认覆盖。</p>`;
+  modal(html,`<button type="button" class="btn soft" data-action="open-meeting-record" data-id="${esc(meetingId)}">取消</button><button type="button" class="btn primary" data-action="save-meeting-summary" data-id="${esc(meetingId)}">保存总结</button>`);
+  document.querySelector('#meeting-summary-editor')?.focus();
+}
+async function saveMeetingSummary(meetingId){
+  const input=document.querySelector('#meeting-summary-editor');
+  const summary=String(input?.value||'').trim();
+  if(summary.length<6||summary.length>4000){toast('请输入 6–4000 字的见面总结');input?.focus();return;}
+  const pid=state.activeId,cid=state.threadId;
+  if(!pid||!cid||!meetingId)return;
+  const btn=document.querySelector('[data-action="save-meeting-summary"]');
+  if(btn){btn.disabled=true;btn.textContent='正在保存…';}
+  try{
+    const result=await api('/meeting-summary-save',{profileId:pid,characterId:cid,meetingId,summary});
+    if(!result?.meetingRecord)throw Error('没有收到保存后的见面记录');
+    if(!isCurrentPair(pid,cid))return;
+    const rec=result.meetingRecord;
+    const current=(state.meetings||[]).find(x=>x.id===rec.id);
+    if(current)Object.assign(current,rec);else (state.meetings||=[]).push(rec);
+    const cached=(state.lastMemoriesData?.meetings||[]).find(x=>x.id===rec.id);
+    if(cached)Object.assign(cached,rec);
+    const mem=(state.lastMemoriesData?.memories||[]).find(x=>x.meeting_id===rec.id&&x.source_type==='meeting_summary');
+    if(mem)mem.summary=('和 '+(activeProfile()?.name||'你')+' 在「'+rec.location+'」见面：'+rec.summary).slice(0,280);
+    if(state.tab==='messages')renderMessages();
+    openMeetingRecordModal(meetingId);
+    toast('见面总结已保存，原始聊天记录没有改变');
+  }catch(e){
+    toast('保存失败：'+String(e.message||e));
+    if(btn){btn.disabled=false;btn.textContent='保存总结';}
+  }
+}
+async function refreshMeetingSummary(meetingId,overwriteManual=false){
   const pid=state.activeId,cid=state.threadId;
   if(!pid||!cid||!meetingId)return;
   const btn=document.querySelector('[data-action="refresh-meeting-summary"]');
   if(btn){btn.disabled=true;btn.textContent='正在按整场时间线整理…';}
   try{
-    const result=await api('/meeting-summary-refresh',{profileId:pid,characterId:cid,meetingId});
+    const result=await api('/meeting-summary-refresh',{profileId:pid,characterId:cid,meetingId,overwriteManual});
     if(!result?.meetingRecord)throw Error('没有收到更新后的见面梗概');
     if(state.activeId!==pid||state.threadId!==cid)return;
     const rec=result.meetingRecord;
@@ -3002,7 +3045,18 @@ if(a==='prompt-forget-message')return confirmForgetMessage(el.dataset.id);
 if(a==='confirm-forget-message')return await permanentlyForgetMessage(el.dataset.id);
 if(a==='prompt-forget-meeting')return confirmForgetMeeting(el.dataset.id);
 if(a==='confirm-forget-meeting')return await permanentlyForgetMeeting(el.dataset.id);
-if(a==='refresh-meeting-summary')return await refreshMeetingSummary(el.dataset.id);
+if(a==='edit-meeting-summary')return openMeetingSummaryEditor(el.dataset.id);
+if(a==='save-meeting-summary')return await saveMeetingSummary(el.dataset.id);
+if(a==='refresh-meeting-summary'){
+  const mid=el.dataset.id;
+  const rec=(state.meetings||[]).find(x=>x.id===mid);
+  if(rec?.summary_source==='manual'){
+    return modal('<h2>用 AI 覆盖手动总结？</h2><p>这次重新整理会替换你粘贴的正式总结。完整见面原文不会改变；如需保留现有文字，请先自行复制。</p>',
+      '<button class="btn soft" data-action="open-meeting-record" data-id="'+esc(mid)+'">取消</button><button class="btn primary" data-action="confirm-refresh-meeting-summary" data-id="'+esc(mid)+'">确认重新整理</button>');
+  }
+  return await refreshMeetingSummary(mid);
+}
+if(a==='confirm-refresh-meeting-summary')return await refreshMeetingSummary(el.dataset.id,true);
 if(a==='open-daily-messages')return openDailyMessagesModal(el.dataset.id);
 if(a==='open-memories')return openMemoriesModal('',state.memoryCategory||'all');
 if(a==='filter-memories')return openMemoriesModal($('memory-search-input')?.value.trim()||'',el.dataset.cat||'all');
