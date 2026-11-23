@@ -3401,7 +3401,24 @@
       (finalTurns?'\n【这场见面最后的真实交互（来自保存的现场原文，不是新短信）】\n'+finalTurns:'\n（目前未读取到现场末尾原文；不可假造结局。）')+
       (hasMissingDigest?'\n整场 AI 小结尚未生成成功；以上现场末尾原文是可确认依据，缺失的中间情节保持未知，不得把见面前计划当成见面后的事实。':'');
     const context=overview+handoff;
-    if(!detail)return context;
+    // Compact ordinary-SMS continuity is drawn from saved transcript text,
+    // not the model's potentially fabricated ai_summary. Keep high-impact
+    // witnessed turns even when the user changes topic (M02 contract).
+    const factualPatterns=[
+      /(?:没(?:有)?(?:去|看|做)|电影并没有看|取消|改了行程|改成|改为)/,
+      /(?:相拥睡|睡着|睡了|睡醒|午睡|入睡)/,
+      /(?:亲密相处|吻|亲了|拥抱)/,
+      /(?:下车|送.{0,14}(?:到|回)|告别|再见)/
+    ];
+    const grounded=[];
+    for(const pat of factualPatterns){
+      const match=entries.find(e=>pat.test(String(e.text||'')));
+      if(match&&!grounded.includes(match))grounded.push(match);
+    }
+    const groundedLines=grounded.slice(0,4).map(e=>
+      '- '+(e.sender==='user'?p.name:c.name)+'：'+String(e.text||'').replace(/\s+/g,' ').slice(0,220)).join('\n');
+    const groundedContext=groundedLines?'\n【从存档原文核对的关键片段 · 原文里的计划仍不是成行事实】\n'+groundedLines:'';
+    if(!detail)return context+groundedContext;
     if(!entries.length)return context;
     const queryTerms=extractQueryTerms(query).filter(t=>t.length>=2);
     const important=/(?:本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见)/;
@@ -5275,11 +5292,11 @@
         const mMsgs=(db.messages||[]).filter(x=>x.mode==='meeting'&&x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid);
         if(!mMsgs.length)bodyErr('原始见面记录不可用，无法重新整理');
         if(!archiveStoredCurrent())bodyErr('存档已在另一页面更新，请先刷新页面');
-        const signature=mMsgs.map(x=>x.id+'='+x.text).join('\\n');
+        const signature=mMsgs.map(x=>x.id+'='+x.text).join('\n');
         const parsed=await summarizeCompleteMeeting(p,c,mMsgs,existing.location||'');
         if(!archiveStoredCurrent())bodyErr('整理期间存档被其他页面修改，请刷新后再试');
         const latest=(db.messages||[]).filter(x=>x.mode==='meeting'&&x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid);
-        if(latest.map(x=>x.id+'='+x.text).join('\\n')!==signature)bodyErr('见面原文已更新，请重新整理');
+        if(latest.map(x=>x.id+'='+x.text).join('\n')!==signature)bodyErr('见面原文已更新，请重新整理');
         const rec=upsertMeetingRecord(p,c,mid,latest,existing.location||'',parsed.summary,existing.finished_at||'');
         save();
         return {ok:true,meetingRecord:rec};
