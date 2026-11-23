@@ -120,6 +120,13 @@ test('M03-C: stale second tab cannot publish, concurrent fresh tabs use disjoint
   await boot(other);
   const stale=await makeToken(other);
   const newer=await seed(page,63);
+  // Even if the old tab reads the NEW localStorage token, its engine cache
+  // must not be allowed to claim that the old exported data are current.
+  const recapture=await other.evaluate(async()=>{
+    try{await (window as any).M03CShadowProbe.capture();return 'UNSAFE SUCCESS';}
+    catch(e){return String((e as Error).message);}
+  });
+  expect(recapture).toContain('in-memory engine differs from live source');
   const rejection=await other.evaluate(async token=>{
     const probe=(window as any).M03CShadowProbe;
     try{await probe.stage({name:probe.newName(),...token});return 'UNSAFE SUCCESS';}
