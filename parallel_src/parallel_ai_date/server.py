@@ -2997,6 +2997,20 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
     overview+='\n【最近现场原文末尾（实际说过/写过，不代表其中的计划完成）】\n'+'\n'.join(
         '- '+(p['name'] if e['sender']=='user' else c['name'])+'：'+
         re.sub(r'\s+',' ',str(e['text'])).strip()[:200] for e in entries[-4:])
+    # Normal SMS still receives a few high-impact saved scene excerpts, not
+    # unverified model-written recap claims. Preserve real shared experiences.
+    patterns=(r'没(?:有)?(?:去|看|做)|电影并没有看|取消|改了行程|改成|改为',
+              r'相拥睡|睡着|睡了|睡醒|午睡|入睡',
+              r'亲密相处|吻|亲了|拥抱',
+              r'下车|送.{0,14}(?:到|回)|告别|再见')
+    grounded=[]
+    for pattern in patterns:
+        match=next((e for e in entries if re.search(pattern,str(e.get('text') or ''))),None)
+        if match is not None and match not in grounded:grounded.append(match)
+    if grounded:
+        overview+='\\n【从存档原文核对的关键片段 · 提及计划不表示已发生】\\n'+'\\n'.join(
+            '- '+(p['name'] if e['sender']=='user' else c['name'])+'：'
+            +re.sub(r'\\s+',' ',str(e['text'])).strip()[:220] for e in grounded[:4])
     if not detail:return overview
     terms=[t for t in extract_query_terms(query) if len(str(t))>=2]
     salient=re.compile(r'本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见')
