@@ -219,7 +219,7 @@ test('M04: simulated quota abort and lost acknowledgement preserve committed dat
     const store=(window as any).ParallelM04Incremental.createStore(name);
     let error='';
     try{await store.applyBatch({expectedRevision:1,changes:[{
-      op:'delete',collection:'messages',id:'m04-msg-23'
+      op:'delete',collection:'messages',id:'m04-msg-60'
     }],fault:'after-commit-interrupt'});}
     catch(e){error=String((e as Error).message);}
     return error;
@@ -230,7 +230,7 @@ test('M04: simulated quota abort and lost acknowledgement preserve committed dat
     (window as any).ParallelM04Incremental.createStore(name).load(),name);
   expect(recovered.revision).toBe(2);
   expect(recovered.data.messages).toHaveLength(84);
-  expect(recovered.data.messages.some((m:any)=>m.id==='m04-msg-23')).toBe(false);
+  expect(recovered.data.messages.some((m:any)=>m.id==='m04-msg-60')).toBe(false);
   expect(recovered.data.meetings[0].entries)
     .toEqual(fixture.snapshot.meetings[0].entries);
   expect(await page.evaluate(k=>localStorage.getItem(k),LEGACY_KEY))
