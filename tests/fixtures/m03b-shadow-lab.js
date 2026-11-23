@@ -60,6 +60,25 @@
     const credential=pack.data.connection||{};
     if(credential.api_key||credential.image_api_key||credential.archive_api_key)
       throw Error('M03B export contains an API credential');
+    if(Object.prototype.hasOwnProperty.call(pack.data,'systemLogs'))
+      throw Error('M03B export contains diagnostic logs');
+    const requiredPhotos=new Set(pack.data.messages
+      .filter(m=>m&&m.photo_kind==='gallery'&&!m.recalled&&m.engine!=='recalled')
+      .map(m=>m.photo_ref));
+    if(requiredPhotos.has(undefined)||requiredPhotos.has(''))
+      throw Error('M03B gallery message has missing photo reference');
+    if(pack.chatPhotoFiles!==undefined&&!Array.isArray(pack.chatPhotoFiles))
+      throw Error('M03B invalid gallery bundle');
+    const found=new Set();
+    for(const file of (pack.chatPhotoFiles||[])){
+      if(!file||typeof file.ref!=='string'||!file.ref||found.has(file.ref)||
+        typeof file.data!=='string'||file.data.length>1500000||
+        !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(file.data))
+        throw Error('M03B malformed or duplicate photo attachment');
+      found.add(file.ref);
+    }
+    if([...requiredPhotos].some(ref=>!found.has(ref)))
+      throw Error('M03B backup missing referenced photo attachments');
     return pack;
   }
   function partition(pack){
