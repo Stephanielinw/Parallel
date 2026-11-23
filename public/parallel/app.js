@@ -539,6 +539,44 @@ const typingPair=(pid,cid)=>pid&&cid?JSON.stringify([pid,cid]):'';
 const currentTypingPair=()=>typingPair(state.activeId,state.threadId);
 let loadedThreadPair='',bubbleRevealPair='';
 function isCurrentPair(pid,cid){return state.activeId===pid&&state.threadId===cid;}
+// One profile transition owns all ephemeral UI invalidation. Previously the
+// two switch buttons reset different subsets and caches were keyed by cid.
+function activateProfile(nextId){
+  if(!nextId||!state.profiles.some(p=>p.id===nextId)||nextId===state.activeId)return false;
+  const oldInput=$('chat-input');
+  if(oldInput&&state.renderedThreadId)state.draftInputs[state.renderedThreadId]=oldInput.value;
+  closeModal();
+  state.activeId=nextId;
+  try{localStorage.setItem('parallel-active-profile',nextId);}catch{}
+  ++threadRequestSeq;
+  ++inboxRequestSeq;
+  ++modalRequestSeq;
+  state.profileMenuOpen=false;
+  state.profileDraft=null;
+  state.allowAllSources=false;
+  state.threadId='';
+  state.renderedThreadId='';
+  state.threads=[];
+  state.messages=[];
+  state.translations={};
+  state.meetings=[];
+  state.lastMemoriesData=null;
+  state.memoryCategory='all';
+  state.chatMode='chat';
+  state.activeMeetingId='';
+  state.meetingLocation='';
+  state.queue={count:0,pendingIds:[],status:'idle',blocked:false,paused:false};
+  state.taskState=null;
+  state.bgErrors=null;
+  state.candidates=[];
+  state.surveillanceMap={};
+  state.diaryMap={};
+  state.diarySummaryMap={};
+  loadedThreadPair='';
+  bubbleRevealPair='';
+  activeChatQuote=null;
+  return true;
+}
 function hasCurrentThreadSnapshot(){return Boolean(loadedThreadPair&&loadedThreadPair===currentTypingPair());}
 function generatingRequestPair(path,data){
   if(!data?.profileId||!data?.characterId)return '';
@@ -589,7 +627,7 @@ async function loadThread(cid,render=true){
   state.translations=r.translations||{};
   state.meetings=r.meetings||[];
   if(r.surveillance)state.surveillanceMap[typingPair(pid,cid)]=r.surveillance;
-  if(r.diarySummary)state.diarySummaryMap[cid]=r.diarySummary;
+  if(r.diarySummary)state.diarySummaryMap[typingPair(pid,cid)]=r.diarySummary;
   const tItem=state.threads.find(x=>x.character.id===cid);
   if(tItem){
     if(r.character)tItem.character=r.character;
@@ -1305,9 +1343,11 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
   if(!thread||!state.activeId)return;
   const c=thread.character;
   const dName=displayName(c);
+  const pid=state.activeId,scope=beginPairModalRequest(pid,c.id);
   try{
-    const data=await api('/surveillance',{profileId:state.activeId,characterId:c.id,date:selectedDate||'',refresh:Boolean(forceRefresh)});
-    if(data.isToday!==false)state.surveillanceMap[typingPair(state.activeId,c.id)]=data;
+    const data=await api('/surveillance',{profileId:pid,characterId:c.id,date:selectedDate||'',refresh:Boolean(forceRefresh)});
+    if(!ownsPairModalRequest(scope))return;
+    if(data.isToday!==false)state.surveillanceMap[typingPair(pid,c.id)]=data;
     if(forceRefresh&&data.apiError){
       showApiErrorModal(data.apiError,null,{type:'surveillance',characterId:c.id,date:selectedDate||''});
       return;
@@ -1376,17 +1416,19 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
     modal(html,`<button class="btn soft" data-action="open-char-hub">返回角色空间</button><button class="btn primary" data-action="close-modal">关闭监控</button>`);
     const mEl=document.querySelector('#modal-root .modal');
     if(mEl)mEl.classList.add('modal-wide');
-  }catch(e){toast('读取实时监控失败：'+e.message)}
+  }catch(e){if(ownsPairModalRequest(scope))toast('读取实时监控失败：'+e.message)}
 }
 async function openDiaryModal(selectedDate='',forceRefresh=false){
   const thread=state.threads.find(x=>x.character.id===state.threadId);
   if(!thread||!state.activeId)return;
   const c=thread.character;
   const dName=displayName(c);
+  const pid=state.activeId,scope=beginPairModalRequest(pid,c.id);
   try{
-    const data=await api('/diary',{profileId:state.activeId,characterId:c.id,date:selectedDate||'',refresh:Boolean(forceRefresh)});
-    state.diaryMap[typingPair(state.activeId,c.id)]=data;
-    state.diarySummaryMap[typingPair(state.activeId,c.id)]={latestDate:data.latestDate,availableDates:data.availableDates,latestTitle:data.diary?.title||''};
+    const data=await api('/diary',{profileId:pid,characterId:c.id,date:selectedDate||'',refresh:Boolean(forceRefresh)});
+    if(!ownsPairModalRequest(scope))return;
+    state.diaryMap[typingPair(pid,c.id)]=data;
+    state.diarySummaryMap[typingPair(pid,c.id)]={latestDate:data.latestDate,availableDates:data.availableDates,latestTitle:data.diary?.title||''};
     if(forceRefresh&&data.apiError){
       showApiErrorModal(data.apiError,null,{type:'diary',characterId:c.id,date:selectedDate||''});
       return;
@@ -1435,7 +1477,7 @@ async function openDiaryModal(selectedDate='',forceRefresh=false){
     modal(html,`<button class="btn soft" data-action="open-char-hub">返回角色空间</button><button class="btn primary" data-action="close-modal">合上日记</button>`);
     const mEl=document.querySelector('#modal-root .modal');
     if(mEl)mEl.classList.add('modal-wide');
-  }catch(e){toast('读取角色日记失败：'+e.message)}
+  }catch(e){if(ownsPairModalRequest(scope))toast('读取角色日记失败：'+e.message)}
 }
 const MEM_SOURCE_LABEL={
   meeting_summary:'见面回忆',
@@ -1594,11 +1636,12 @@ function openDailyMessagesModal(memId){
 async function openMemoriesModal(query='',category=state.memoryCategory||'all'){
   const thread=state.threads.find(x=>x.character.id===state.threadId);
   if(!thread||!state.activeId)return;
+  const c=thread.character,pid=state.activeId,scope=beginPairModalRequest(pid,c.id);
   state.memoryCategory=category;
-  const c=thread.character;
   try{
-    const qs=`?profileId=${encodeURIComponent(state.activeId)}&characterId=${encodeURIComponent(c.id)}${query?`&query=${encodeURIComponent(query)}`:''}`;
+    const qs=`?profileId=${encodeURIComponent(pid)}&characterId=${encodeURIComponent(c.id)}${query?`&query=${encodeURIComponent(query)}`:''}`;
     const data=await api('/memories'+qs);
+    if(!ownsPairModalRequest(scope))return;
     state.lastMemoriesData=data;
     if(Array.isArray(data.meetings)&&data.meetings.length)state.meetings=data.meetings;
     const recalled=data.recalledPreview||[];
@@ -1676,7 +1719,7 @@ async function openMemoriesModal(query='',category=state.memoryCategory||'all'){
     modal(html,`<button class="btn soft" data-action="close-modal">关闭档案</button>`);
     const mEl=document.querySelector('#modal-root .modal');
     if(mEl)mEl.classList.add('modal-wide');
-  }catch(e){toast('读取记忆档案失败：'+e.message)}
+  }catch(e){if(ownsPairModalRequest(scope))toast('读取记忆档案失败：'+e.message)}
 }
 function updateQueueCountdown(){
   const el=$('chat-queue-status');
@@ -1810,12 +1853,13 @@ async function tickChatQueue(){
   if(state.lastKnownDate&&curDate!==state.lastKnownDate){
     state.lastKnownDate=curDate;
     if(state.threadId){
-      api('/diary',{profileId:state.activeId,characterId:state.threadId}).then(d=>{
-        if(d){
+      const pid=state.activeId,cid=state.threadId;
+      api('/diary',{profileId:pid,characterId:cid}).then(d=>{
+        if(d&&state.activeId===pid){
           state.diaryMap[typingPair(pid,cid)]=d;
           state.diarySummaryMap[typingPair(pid,cid)]={latestDate:d.latestDate,availableDates:d.availableDates,latestTitle:d.diary?.title||''};
         }
-        if(d&&!d.bgError)toast('已过零点 · 已根据前日监控自动生成角色最新日记');
+        if(d&&!d.bgError&&isCurrentPair(pid,cid))toast('已过零点 · 已根据前日监控自动生成角色最新日记');
       }).catch(()=>{});
     }
   }
