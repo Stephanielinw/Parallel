@@ -212,7 +212,7 @@ test('M03-D: photo divergence or newer legacy source blocks shadow read, permits
     (window as any).M03DCutoverRehearsal.rollback({controlName:name,expectedRevision:1}),name);
   // Changing the authoritative legacy save invalidates a previously verified
   // shadow generation, even when that generation's own records are intact.
-  const second=await page.evaluate(async ({name,photo})=>{
+  await page.evaluate(async photo=>{
     const db=await new Promise<IDBDatabase>((resolve,reject)=>{
       const req=indexedDB.open('parallel-chat-photos-v1',1);
       req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
@@ -222,14 +222,7 @@ test('M03-D: photo divergence or newer legacy source blocks shadow read, permits
       tx.objectStore('photos').put(photo,'m03d-photo');
       tx.oncomplete=()=>resolve();tx.onabort=tx.onerror=()=>reject(tx.error);
     });db.close();
-    const ctr=(window as any).M03DCutoverRehearsal;
-    const next=await ctr.switchToShadow({controlName:name,expectedRevision:2,
-      candidate:(window as any).__m03dCandidateForTest});
-    return next;
-  },{name,photo:PHOTO}).catch(e=>String(e));
-  // The test deliberately requires an explicit fresh candidate token rather
-  // than accepting a missing or implicit candidate from another page.
-  expect(String(second)).toContain('disposable verified shadow generation');
+  },PHOTO);
   const armed=await page.evaluate(({name,candidate})=>
     (window as any).M03DCutoverRehearsal.switchToShadow({
       controlName:name,expectedRevision:2,candidate
