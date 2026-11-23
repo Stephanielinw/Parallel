@@ -1771,7 +1771,8 @@ def clean_scene_place(raw,is_english=False):
     return value
 
 def location_from_report(raw):
-    text=normalize_scene_text(raw)
+    text=re.sub(r'^我(?:就|还|仍然)(?:站)?在','我现在在',normalize_scene_text(raw))
+    text=re.sub(r"^(i(?:'m| am))\s+right\s+outside\b",r'\1 outside',text,flags=re.I)
     if not text or re.match(r'^[「『“"*>]',text) or re.search(r'[?？]$',text) or SCENE_RULES['uncertain'].search(text):return ''
     en=SCENE_RULES['stateEn'].search(text)
     if en:return clean_scene_place(en.group(1),True)
