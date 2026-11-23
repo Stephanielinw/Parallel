@@ -2610,7 +2610,10 @@
       unresolved:0,
       raw_msg_ids:rec.message_ids,
       meeting_id:meetingId,
-      meeting_data:rec,
+      // The canonical full transcript is db.meetings[meetingId]. New memories
+      // only store a meeting_id reference. Existing inline legacy copies are
+      // intentionally preserved by appendEpisodicMemory's existing fallback.
+      meeting_data:null,
       event_at:endedAt
     });
     const updated=db.episodicMemories.find(x=>x.owner_id===c.id&&x.profile_id===p.id&&x.source_key==='meeting:'+meetingId);
@@ -5017,6 +5020,14 @@
         save();
         const allMsgs=messagesOf(p.id,c.id);
         const items=[...(db.episodicMemories||[]),...pendingEpisodes].filter(m=>m.owner_id===c.id&&m.profile_id===p.id&&!m.isolated_error).sort((a,b)=>b.event_at.localeCompare(a.event_at)).map(m=>{
+          // Read-only compatibility layer: new records use meeting_id instead
+          // of embedding a second full transcript. Older embedded copies stay
+          // untouched in storage, while the UI always gets the canonical
+          // current meeting when it exists for this exact profile/character.
+          if(m.source_type==='meeting_summary'&&m.meeting_id){
+            const record=(db.meetings||[]).find(x=>x.id===m.meeting_id&&x.profile_id===p.id&&x.character_id===c.id);
+            if(record)return {...m,meeting_data:record};
+          }
           if(['episode-summary','episode-pending'].includes(m.source_type)){
             const rawSet=new Set(m.raw_msg_ids||[]);
             return {...m,day_messages:allMsgs.filter(x=>rawSet.has(x.id)&&x.engine!=='recalled'&&!x.recalled).map(x=>({id:x.id,sender:x.sender,speaker:x.sender==='user'?p.name:c.name,text:x.text,mode:x.mode,created_at:x.created_at}))};
