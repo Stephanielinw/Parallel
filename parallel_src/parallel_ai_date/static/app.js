@@ -875,11 +875,12 @@ async function openChatPhoto(mid){
   if(m.photo_kind==='virtual'){
     return modal('<div class="kicker">A PHOTO, IN WORDS</div><h2>'+(m.sender==='user'?'你发送的照片':'对方发送的照片')+'</h2><div class="photo-description-paper"><p style="white-space:pre-wrap">'+esc(m.photo_description||'')+'</p></div>','<button class="btn primary" data-action="close-modal">关闭</button>');
   }
+  const scope=beginPairModalRequest(pid,cid);
   try{
     const data=chatPhotoCache.get(m.photo_ref)||(await api('/chat-photo-read',{profileId:pid,characterId:cid,messageId:mid})).data;
-    if(!isCurrentPair(pid,cid))return;
+    if(!ownsPairModalRequest(scope))return;
     modal('<h2>照片</h2><img src="'+esc(data)+'" alt="真实照片" style="max-width:100%;max-height:70vh;object-fit:contain;border-radius:12px;">','<button class="btn primary" data-action="close-modal">关闭</button>');
-  }catch(e){toast(e.message);}
+  }catch(e){if(ownsPairModalRequest(scope))toast(e.message);}
 }
 function meetingClockText(){
   const now=Date.now(),start=Date.parse(state.meetingStartedAt||'');
@@ -1329,8 +1330,10 @@ async function saveCharacterNickname(nickValue){
   const thread=state.threads.find(x=>x.character.id===state.threadId);
   if(!thread||!state.activeId)return;
   const clean=String(nickValue??'').trim().slice(0,36);
+  const pid=state.activeId,cid=thread.character.id;
   try{
-    const r=await api('/nickname',{profileId:state.activeId,characterId:thread.character.id,nickname:clean});
+    const r=await api('/nickname',{profileId:pid,characterId:cid,nickname:clean});
+    if(!isCurrentPair(pid,cid))return;
     if(r.character)thread.character=r.character;
     else thread.character.nickname=clean;
     renderMessages();
@@ -2892,19 +2895,9 @@ if(a==='toggle-profile-menu'){
 }
 if(a==='quick-switch-profile'){
   const nextId=el.dataset.id;
-  state.profileMenuOpen=false;
-  $('topbar-profile-dropdown')?.classList.remove('is-open');
-  const menu=document.querySelector('#topbar-profile-dropdown .profile-dropdown-menu');
-  if(menu)menu.classList.remove('open');
-  if(!nextId||nextId===state.activeId)return;
-  state.activeId=nextId;
-  try{localStorage.setItem('parallel-active-profile',state.activeId)}catch{}
-  state.profileDraft=null;
-  state.threadId='';
-  state.renderedThreadId='';
-  state.candidates=[];
-  state.allowAllSources=false;
+  if(!activateProfile(nextId))return;
   renderChrome();
+  $('view').innerHTML='<div class="empty-state"><p>正在读取当前身份…</p></div>';
   const curName=activeProfile()?.name||'';
   if(state.tab==='discover')await loadCandidates(false);
   else if(state.tab==='messages')await loadThreads();
@@ -2939,7 +2932,7 @@ if(a==='retry')return await navigate(state.tab);
 if(a==='go-profile')return navigate('profile');
 if(a==='go-discover')return navigate('discover');
 if(a==='new-profile'){state.profileDraft=newDraft();return renderProfile(state.profileDraft)}
-if(a==='switch-profile'){state.activeId=el.dataset.id;try{localStorage.setItem('parallel-active-profile',state.activeId)}catch{};state.profileDraft=null;state.threadId='';state.renderedThreadId='';state.candidates=[];state.allowAllSources=false;renderChrome();refreshInboxQuietly();return renderProfile(activeProfile())}
+if(a==='switch-profile'){if(!activateProfile(el.dataset.id))return;renderChrome();refreshInboxQuietly();return renderProfile(activeProfile())}
 if(a==='allow-all-sources'){state.allowAllSources=true;return loadCandidates(true)}
 if(a==='gender-chip')return editChips(el);
 if(a==='add-source-tag')return addSourceTag();
