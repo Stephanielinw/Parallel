@@ -1616,7 +1616,7 @@
       activity:'最近一次确认在见面地点；之后没有位置证据',
       scene:c.name+'的上次确认地点为「'+String(rec.post_meeting_location||active.location||'未知地点')+'」，当前去向尚未核实；不能把推测当成真实足迹。'
     }:active;
-    return {...verifiedSlotForDisplay(c,display),isCurrent:true,isMeetingLive:false};
+    return {...witnessedSurveillanceSlot(p,c,display),isCurrent:true,isMeetingLive:false};
   };
   // Meeting is a live wall-clock interval, not a guessed future schedule.
   const syncSurveillanceOnMeetingStart=(p,c,loc,meetingId)=>{
@@ -1990,7 +1990,7 @@
     const unlocked=[];
     let lockedCount=0;
     for(const rawSlot of visibleSlots){
-      const s=verifiedSlotForDisplay(c,rawSlot);
+      const s=witnessedSurveillanceSlot(p,c,rawSlot);
       if(!isToday||hhmmToMin(s.start)<=nowMin){
         unlocked.push({
           ...s,
@@ -3455,6 +3455,21 @@
     if(!incompatibleCharacterSlot(c,slot))return slot?.source==='schedule'?{...slot,is_planned:true}:slot;
     return {...slot,location:'地点未确认',status:'日程待核实',activity:'原日程与本角色时期冲突，不作为已发生事实',scene:c.name+'的此时位置尚无有效证据。',source:'unverified'};
   }
+  // A synthetic itinerary can describe a missed appointment as a shared
+  // activity. Mark it uncertain at read time, including old saved slots.
+  // Keep character-only daily plans usable; do not mutate the old archive.
+  const witnessedSurveillanceSlot=(p,c,slot)=>{
+    const checked=verifiedSlotForDisplay(c,slot);
+    if(checked?.source!=='schedule')return checked;
+    const body=[checked.location,checked.status,checked.activity,checked.scene].join(' ');
+    const shared=/(?:两人|双方|我们俩|一起|共同|共进|相伴|和你|与你|跟你|陪你)/.test(body)||
+      (p?.name&&body.includes(p.name)&&/(?:见面|约会|吃饭|晚餐|回家|接送|接到|送回|进屋|相拥|拥抱|抵达)/.test(body));
+    if(!shared)return {...checked,is_planned:true};
+    return {...checked,location:'地点未确认',status:'约定待核实',
+      activity:'双方是否实际见面、同行或用餐均未确认',
+      scene:c.name+'的个人安排可能改变；预约与推演不代表两人已实际见面。',
+      is_planned:true,is_unconfirmed:true};
+  };
   const prompt=(p,c,mode,pendingIds=[],options={})=>{
     const macros=t=>expandPresetMacros(t,p,c);
     const excludeSet=options.excludeMessageIds?new Set(options.excludeMessageIds):null;
