@@ -33,7 +33,11 @@ const message=(id,pid,sender,text,time,mode='chat',mid='')=>({
   message('m05-no-show',p.id,'user','我没去，今晚忙到很晚才回来。',at(22,20,3)),
   message('m05-door',p.id,'ai','我现在在你家门口等你。',at(22,21,58))
  ];
- d.messages.push(...scene);
+ const filler=Array.from({length:110},(_,i)=>
+   message('m05-filler-'+i,p.id,i%2?'ai':'user',
+     '角色日常短信往来，天气和工作近况。'.repeat(16),
+     new Date(Date.parse(at(22,16,5))+i*60000).toISOString()));
+ d.messages.push(...scene.slice(0,2),...filler,...scene.slice(2));
  d.surveillance[key]={byDate:{'2026-11-22':{
   date:'2026-11-22',profile_id:p.id,character_id:cid,engine:'live',slots:[
     {id:'fake1',start:'00:00',end:'17:30',location:'Carlos 的住处',
