@@ -1185,7 +1185,7 @@ def get_current_surveillance_slot(db,p,c,at=0):
     slots=rec.get('slots') or []
     idx=active_slot_index(slots,now_m)
     active=slots[idx] if idx>=0 else (slots[-1] if slots else None)
-    return dict(verified_surveillance_slot(c,active),isCurrent=True) if active else {
+    return dict(verified_surveillance_slot(c,active,p),isCurrent=True) if active else {
         'start':'00:00','end':'23:59','location':f"{c['name']}的常去街角",'status':'日常活动','activity':'正在处理日常事务','scene':f"{c['name']}正在日常活动中。",'source':'schedule','isCurrent':True
     }
 
@@ -1582,7 +1582,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
             prev.append(dict(s,end=observed[0]['start']) if hhmm_to_min(s['end'])>cut else s)
         slots=prev+observed
     for stored_slot in slots:
-        s=verified_surveillance_slot(c,stored_slot)
+        s=verified_surveillance_slot(c,stored_slot,p)
         start_m=hhmm_to_min(s['start'])
         end_m=hhmm_to_min(s['end'])
         if (not is_today) or start_m<=now_m:
@@ -1592,7 +1592,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
                 state='current' if is_cur else 'past'
             ))
     if is_today and not unlocked and slots:
-        unlocked.append(dict(verified_surveillance_slot(c,slots[0]),isCurrent=True,state='current'))
+        unlocked.append(dict(verified_surveillance_slot(c,slots[0],p),isCurrent=True,state='current'))
     return {
         'date':rec['date'],
         'today':today,
@@ -3053,9 +3053,21 @@ def incompatible_character_slot(c,slot):
     body=' '.join(str(slot.get(key) or '') for key in ('location','status','activity','scene'))
     return c.get('id')=='re-game:leon:re2' and bool(re.search(r'\bDSO\b|特工|联邦调查|华盛顿特区|安全公寓|防窃听|总统护卫|加密终端|政府机密',body,re.I))
 
-def verified_surveillance_slot(c,slot):
+def verified_surveillance_slot(c,slot,p=None):
     if not incompatible_character_slot(c,slot):
-        return dict(slot,is_planned=True) if slot and slot.get('source')=='schedule' else slot
+        if slot and slot.get('source')=='schedule':
+            result=dict(slot,is_planned=True)
+            body=' '.join(str(slot.get(k) or '') for k in ('location','status','activity','scene'))
+            shared=bool(re.search(r'两人|双方|我们俩|一起|共同|共进|相伴|和你|与你|跟你|陪你',body)) or (
+                bool(p and p.get('name') and p['name'] in body) and
+                bool(re.search(r'见面|约会|吃饭|晚餐|回家|接送|接到|送回|进屋|相拥|拥抱|抵达',body)))
+            if shared:
+                result.update(location='地点未确认',status='约定待核实',
+                              activity='双方是否实际见面、同行或用餐均未确认',
+                              scene=c['name']+'的个人安排可能改变；预约与推演不代表两人已实际见面。',
+                              is_unconfirmed=True)
+            return result
+        return slot
     return dict(slot,location='地点未确认',status='日程待核实',activity='原日程与本角色时期冲突，不作为已发生事实',
         scene=c['name']+'的此时位置尚无有效证据。',source='unverified')
 
