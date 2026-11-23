@@ -38,6 +38,10 @@ class EventAuthorityTests(unittest.TestCase):
              'human' if sender=='user' else 'live',iso)
         )
 
+    def test_colloquial_character_doorstep_report(self):
+        self.assertEqual(server.location_from_report('我就在你家门口等你。'),'你家门口')
+        self.assertEqual(server.location_from_report("I'm right outside your door."),'your door')
+
     def test_no_show_doorstep_is_character_location(self):
         self.add('plan-1','user','我们今天五点半在餐厅吃饭见面吧',
                  '2026-11-22T16:00:00Z')
