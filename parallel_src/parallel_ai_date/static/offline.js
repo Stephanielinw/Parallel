@@ -5310,9 +5310,12 @@
         const mMsgs=(db.messages||[]).filter(x=>x.mode==='meeting'&&x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid);
         if(!mMsgs.length)bodyErr('原始见面记录不可用，无法保存总结');
         if(!archiveStoredCurrent())bodyErr('存档已在另一页面更新，请先刷新页面');
-        const rec=upsertMeetingRecord(p,c,mid,mMsgs,existing.location||'',summary,existing.finished_at||'','manual');
-        save();
-        return {ok:true,meetingRecord:rec};
+        const snapshot=JSON.stringify(db);
+        try{
+          const rec=upsertMeetingRecord(p,c,mid,mMsgs,existing.location||'',summary,existing.finished_at||'','manual');
+          save();
+          return {ok:true,meetingRecord:rec};
+        }catch(e){db=JSON.parse(snapshot);throw e;}
       }
       case '/meeting-summary-refresh':{
         const p=getP(data.profileId),c=getC(data.characterId),mid=String(data.meetingId||'');
