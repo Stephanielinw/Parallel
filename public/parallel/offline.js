@@ -2227,7 +2227,9 @@
     return value;
   }
   function locationFromReport(raw){
-    const text=normalizeSceneText(raw);
+    const text=normalizeSceneText(raw)
+      .replace(/^我(?:就|还|仍然)(?:站)?在/,'我现在在')
+      .replace(/^(i(?:'m| am))\\s+right\\s+outside\\b/i,'$1 outside');
     if(!text||/^[「『“"*>]/.test(text)||/[?？]$/.test(text)||SCENE_RULES.uncertain.test(text))return '';
     const en=text.match(SCENE_RULES.stateEn);
     if(en)return cleanScenePlace(en[1],true);
