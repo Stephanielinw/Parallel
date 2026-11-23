@@ -81,6 +81,26 @@ class EventAuthorityTests(unittest.TestCase):
             server.infer_meeting_location(self.db,self.pid,self.cid),
             '街角咖啡店门口')
 
+    def test_ai_only_scene_has_no_confirmed_prior_encounter(self):
+        import json
+        self.db.execute("""
+            CREATE TABLE meetings (
+                id TEXT,profile_id TEXT,character_id TEXT,
+                started_at TEXT,ended_at TEXT,entries TEXT
+            )
+        """)
+        self.db.execute("CREATE TABLE relations (profile_id TEXT,character_id TEXT,mode TEXT)")
+        self.db.execute("INSERT INTO relations VALUES (?,?,?)",(self.pid,self.cid,'chat'))
+        only_ai=[{'id':'opening','sender':'ai','text':'Carlos still waiting on the steps'}]
+        self.db.execute("INSERT INTO meetings VALUES (?,?,?,?,?,?)",(
+            'candidate',self.pid,self.cid,'2026-11-22T20:00:00Z',
+            '2026-11-22T20:01:00Z',json.dumps(only_ai)))
+        self.assertEqual(server.recent_actual_meeting_context(
+            self.db,{'id':self.pid,'name':'Lin'},
+            {'id':self.cid,'name':'Carlos'},'remember our dinner?'), '')
+        self.assertIn("if not any(m.get('sender')=='user'",inspect.getsource(server.upsert_meeting_record))
+        self.assertIn("日程推演，未核实",inspect.getsource(server.build_default_diary))
+
     def test_archive_text_is_not_injected_as_firsthand_memory(self):
         formatter=server.format_episodic_entry({
             'source_type':'daily-summary',
