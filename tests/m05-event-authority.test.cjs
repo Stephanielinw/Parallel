@@ -25,6 +25,7 @@ const message=(id,pid,sender,text,time,mode='chat',mid='')=>({
  const pair={profileId:p.id,characterId:cid},key=p.id+'|'+cid;
  for(let i=0;i<35;i++)if((await e.request('/swipe',{...pair,direction:'right'})).matched)break;
  const pack=JSON.parse(e.exportData()),d=pack.data;
+ for(const ev of d.events||[])if(ev.profile_id===p.id&&ev.character_id===cid)ev.created_at=at(22,15,0);
  d.relations[key].mode='chat';
  d.relations[key].meeting_location='';d.relations[key].meeting_location_history=[];
  const scene=[
