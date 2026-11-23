@@ -23,6 +23,52 @@
     if(typeof name!=='string'||!NAME_RE.test(name))
       throw Error('M03C requires a fresh disposable generation name');
   }
+  // Mirror the live engine's LZW14 *reader* so a stale tab cannot take a
+  // freshly observed localStorage hash and pair it with its old in-memory DB.
+  // This decoder is test-only and never writes the legacy key.
+  function decodeSource(raw){
+    const prefix='PARALLEL-LZW14-V1:';
+    if(!raw.startsWith(prefix))return raw;
+    const dictionary=new Array(16384);
+    let next=257,previous='',buffer=new Uint8Array(Math.max(8192,Math.min(32*1024*1024,raw.length*3))),used=0;
+    const append=entry=>{
+      if(used+entry.length>100*1024*1024)throw Error('M03C source decode limit exceeded');
+      if(used+entry.length>buffer.length){
+        let size=buffer.length;
+        while(size<used+entry.length)size*=2;
+        const grown=new Uint8Array(size);grown.set(buffer);buffer=grown;
+      }
+      for(let i=0;i<entry.length;i++)buffer[used++]=entry.charCodeAt(i);
+    };
+    for(let i=prefix.length;i<raw.length;i++){
+      const code=raw.charCodeAt(i)-32;
+      if(code===256){dictionary.fill(undefined);next=257;previous='';continue;}
+      if(code<0||code>=16384)throw Error('M03C invalid compressed source code');
+      const entry=code<256?String.fromCharCode(code):
+        (dictionary[code]||(code===next&&previous?previous+previous[0]:null));
+      if(!entry)throw Error('M03C corrupt compressed source');
+      append(entry);
+      if(previous&&next<16384)dictionary[next++]=previous+entry[0];
+      previous=entry;
+    }
+    return new TextDecoder('utf-8',{fatal:true}).decode(buffer.subarray(0,used));
+  }
+  function verifiedEngineExport(raw){
+    if(!root.ParallelOffline||root.ParallelOffline.storageAvailable!==true||
+       typeof root.ParallelOffline.exportData!=='function')
+      throw Error('M03C synthetic export engine unavailable');
+    let live;
+    try{live=JSON.parse(decodeSource(raw));}catch{throw Error('M03C source cannot be decoded');}
+    const candidate=JSON.parse(root.ParallelOffline.exportData());
+    const scrubbed=JSON.parse(JSON.stringify(live));
+    if(!scrubbed.connection||typeof scrubbed.connection!=='object')
+      throw Error('M03C source connection missing');
+    for(const key of ['api_key','image_api_key','archive_api_key'])scrubbed.connection[key]='';
+    delete scrubbed.systemLogs;
+    if(JSON.stringify(scrubbed)!==JSON.stringify(candidate.data))
+      throw Error('M03C in-memory engine differs from live source');
+    return JSON.stringify(candidate);
+  }
   function parsePhotos(backup){
     let pack;
     try{pack=JSON.parse(backup);}catch{throw Error('M03C malformed export');}
@@ -88,10 +134,10 @@
     }finally{db.close();}
   }
   async function capture(){
-    if(!root.ParallelOffline||typeof root.ParallelOffline.exportData!=='function')
-      throw Error('M03C synthetic export engine missing');
-    const sourceSha256=await sha(currentRaw());
-    return {sourceSha256,backup:root.ParallelOffline.exportData()};
+    const raw=currentRaw(),backup=verifiedEngineExport(raw);
+    const sourceSha256=await sha(raw);
+    if(currentRaw()!==raw)throw Error('M03C source changed during capture');
+    return {sourceSha256,backup};
   }
   async function verify({name,sourceSha256,backup}){
     requireName(name);
@@ -108,6 +154,7 @@
     if(typeof backup!=='string'||!sourceSha256)throw Error('M03C missing captured snapshot');
     if(!root.M03BShadowLab)throw Error('M03C isolated M03-B lab unavailable');
     if(await sha(currentRaw())!==sourceSha256)throw Error('M03C stale source token');
+    verifiedEngineExport(currentRaw());
     await verifyPhotoSource(backup);
     if(await sha(currentRaw())!==sourceSha256)throw Error('M03C source changed during photo preflight');
     // Each attempt MUST use a separate random DB name. Neither this probe nor
