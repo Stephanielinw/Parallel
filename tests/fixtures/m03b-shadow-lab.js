@@ -118,8 +118,17 @@
   }
   async function stage({name,backup,fault=''}){
     validName(name);
+    if(!root.ParallelOffline||root.ParallelOffline.storageAvailable!==true||
+       typeof root.ParallelOffline.exportData!=='function')
+      throw Error('Current synthetic engine is not safely readable and writable');
     const before=getSource(),sourceSha256=await sha(before);
     const pack=parseExport(backup);
+    // The caller cannot pass an unrelated or older export and have it
+    // labeled as an exact copy of the active legacy state. Photos themselves
+    // are external to the core localStorage save and are checked separately.
+    const active=JSON.parse(root.ParallelOffline.exportData());
+    if(JSON.stringify(pack.data)!==JSON.stringify(active.data))
+      throw Error('M03B supplied backup differs from the active source');
     const canonical=JSON.stringify(pack);
     const backupSha256=await sha(canonical);
     // Refuse a changed source rather than treating a stale backup as current.
