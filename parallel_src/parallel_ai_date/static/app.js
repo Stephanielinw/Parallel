@@ -2073,7 +2073,125 @@ function confirmUnmatch(){const t=state.threads.find(x=>x.character.id===state.t
 // Terminal
 async function loadTerminal(){const [a,b,c]=await Promise.all([api('/settings'),api('/presets'),api('/system-logs').catch(()=>({logs:[]}))]);state.settings=a;state.presets=b.entries||[];state.presetDiagnostics=b.diagnostics||{};state.systemLogs=c?.logs||[];state.logEnabled=c?.enabled!==false;state.logStorage=c?.storage||'session';renderChrome();renderTerminal()}
 function renderTerminal(){$('topbar-actions').innerHTML=`<span class="status-pill ${state.settings.mode==='live'?'live':''}">${state.settings.mode==='live'?'LIVE API':(state.settings.mode==='normal'?'NORMAL · 未连接 API':'DEMO MODE')}</span>`;const tabBody=state.terminalTab==='api'?renderApiSettings():(state.terminalTab==='presets'?renderPresets():renderSystemLogs());$('view').innerHTML=`<div class="terminal-screen"><div class="terminal-tabs"><button class="terminal-tab ${state.terminalTab==='api'?'active':''}" data-action="term-tab" data-tab="api">${I('link')} 连接与模型</button><button class="terminal-tab ${state.terminalTab==='presets'?'active':''}" data-action="term-tab" data-tab="presets">${I('book')} 文字预设</button><button class="terminal-tab ${state.terminalTab==='logs'?'active':''}" data-action="term-tab" data-tab="logs">${I('monitor')} 生成日志${state.systemLogs.length?` (${state.systemLogs.length})`:''}</button></div>${tabBody}${globalThis.ParallelOffline&&state.terminalTab==='api'?renderPortableBackup():''}</div>`;if(state.terminalTab==='api'){const form=$('api-settings-form');form.addEventListener('submit',saveSettings);$('api-temperature').addEventListener('input',e=>$('temp-output').textContent=e.target.value);$('api-top-p').addEventListener('input',e=>$('topp-output').textContent=e.target.value);const langSel=$('api-char-lang-pref');if(langSel){langSel.addEventListener('change',e=>{const wrap=$('api-char-lang-custom-wrap');if(wrap)wrap.hidden=e.target.value!=='custom';});}bindModelPickers()} }
-function renderPortableBackup(){return `<div class="terminal-card"><div class="kicker">LOCAL DATA</div><h3>存档备份</h3><p class="caption">单 HTML 版把聊天和 Profile 存在当前浏览器中。移动文件或清理浏览器数据可能导致存档丢失。建议定期导出备份。完整备份包含真实照片，请妥善保管；不包含 API Key 与生成日志。</p>${globalThis.ParallelOffline.storageAvailable?'':`<div class="notice" style="margin:12px 0">当前浏览器禁止本地持久化，刷新页面后存档可能消失。请在结束前导出备份。</div>`}<div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="export-backup">${I('book')} 导出完整存档 JSON</button><button type="button" class="btn ghost" data-action="export-text-backup">仅导出文字存档</button><label class="btn soft file-upload">${I('refresh')} 恢复存档<input type="file" id="portable-restore" accept=".json,application/json"></label></div></div>`}
+// M03 backup preflight: intentionally pure/read-only. This function only
+// inspects supplied JSON; it does not access or alter the active game save.
+function inspectParallelBackupFile(raw){
+  if(typeof raw!=='string'||!raw.trim())throw Error('备份文件为空或不是有效 JSON');
+  if(raw.length>100*1024*1024)throw Error('备份文件超过 100 MB 上限');
+  let pack;
+  try{pack=JSON.parse(raw)}catch{throw Error('备份文件不是有效 JSON');}
+  if(pack?.format!=='parallel-portable-backup'||pack?.schemaVersion!==1||!pack.data||typeof pack.data!=='object')
+    throw Error('备份格式或版本不受支持，已停止检查');
+  const data=pack.data;
+  if(!Array.isArray(data.profiles)||!Array.isArray(data.messages)||!Array.isArray(data.events)||
+     !Array.isArray(data.presets)||!data.connection||typeof data.connection!=='object'||
+     !data.relations||typeof data.relations!=='object'||Array.isArray(data.relations)||
+     !data.swipes||typeof data.swipes!=='object'||Array.isArray(data.swipes))
+    throw Error('备份数据缺少必要的 Profile、消息或设置字段');
+  if(['api_key','image_api_key','archive_api_key'].some(k=>Boolean(data.connection[k])))
+    throw Error('备份意外包含 API 密钥，不能作为安全备份分享');
+  if(Object.prototype.hasOwnProperty.call(data,'systemLogs'))
+    throw Error('备份包含生成日志，可能泄露私密请求内容');
+  const warnings=[];
+  for(const [key,kind] of [['meetings',[]],['episodicMemories',[]],['surveillance',{}],['diaries',{}]]){
+    const value=data[key];
+    if(value==null){warnings.push('缺少 '+key+' 资料集合，无法确认这部分经历已备份');continue;}
+    if(Array.isArray(kind)?!Array.isArray(value):(typeof value!=='object'||Array.isArray(value)))
+      throw Error('备份中的 '+key+' 数据结构无效');
+  }
+  const messageIds=new Set();
+  for(const m of data.messages){
+    if(!m||typeof m.id!=='string'||!m.id)throw Error('备份中存在无效消息 ID');
+    if(messageIds.has(m.id))throw Error('备份中存在重复消息 ID');
+    messageIds.add(m.id);
+  }
+  const records=Array.isArray(data.meetings)?data.meetings:[];
+  for(const m of records){
+    if(!m||typeof m!=='object')throw Error('见面归档数据结构无效');
+    const ids=Array.isArray(m.message_ids)?m.message_ids:[];
+    if(ids.some(id=>!messageIds.has(id)))warnings.push('有见面归档的原始消息来源缺失，不能证明该场完整');
+    else if(Array.isArray(m.entries)&&m.entries.length&&!ids.length)
+      warnings.push('有见面归档缺少关联消息 ID，请谨慎确认完整性');
+  }
+  const needed=new Set();
+  for(const m of data.messages){
+    if(m.photo_kind!=='gallery'||m.recalled||m.engine==='recalled')continue;
+    if(typeof m.photo_ref!=='string'||!m.photo_ref)throw Error('有照片消息缺少照片引用');
+    needed.add(m.photo_ref);
+  }
+  const photoBundle=Object.prototype.hasOwnProperty.call(pack,'chatPhotoFiles');
+  const files=photoBundle?pack.chatPhotoFiles:[];
+  if(photoBundle&&!Array.isArray(files))throw Error('照片备份格式无效');
+  const available=new Set();
+  for(const row of files){
+    if(!row||typeof row.ref!=='string'||!row.ref||
+       typeof row.data!=='string'||row.data.length>1500000||
+       !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(row.data))
+      throw Error('照片备份数据无效，不能确认照片可恢复');
+    if(available.has(row.ref))throw Error('发现重复的照片引用');
+    available.add(row.ref);
+  }
+  if([...needed].some(ref=>!available.has(ref)))
+    throw Error('备份缺少聊天照片，不能作为完整照片备份');
+  if(files.length>needed.size)
+    warnings.push('照片包内有未被当前消息引用的附件，恢复时可能不会重新关联');
+  if(!photoBundle)warnings.push('这份文件没有独立照片包；若曾发送真实照片，请使用“导出完整存档”');
+  const byDateTotal=store=>Object.values(store||{}).reduce((n,item)=>n+
+    Object.keys(item?.byDate&&typeof item.byDate==='object'?item.byDate:{}).length,0);
+  const counts={
+    profiles:data.profiles.length,messages:data.messages.length,
+    meetings:records.length,memories:Array.isArray(data.episodicMemories)?data.episodicMemories.length:0,
+    diaries:byDateTotal(data.diaries),surveillanceDays:byDateTotal(data.surveillance),
+    photoRefs:needed.size,photoFiles:files.length
+  };
+  // The actual restoration path also limits the unpacked non-photo JSON to
+  // 20 MiB. Apply the same restriction without writing a single byte.
+  const {chatPhotoFiles:omitted,...meta}=pack;
+  if(JSON.stringify(meta).length>20*1024*1024)
+    throw Error('照片以外的存档超过 20 MB，当前恢复程序无法安全处理');
+  return {ok:true,photoBundle,counts,warnings};
+}
+async function verifyBackupFiles(fileList){
+  const files=Array.from(fileList||[]);
+  if(files.length<1||files.length>2){toast('请选择一份或两份备份 JSON 核对');return;}
+  try{
+    const checked=[];
+    for(const file of files){
+      if(file.size>100*1024*1024)throw Error('备份文件超过 100 MB 上限');
+      const bytes=await file.arrayBuffer();
+      const raw=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
+      const inspection=inspectParallelBackupFile(raw);
+      let digest='';
+      if(globalThis.crypto?.subtle){
+        const hash=await crypto.subtle.digest('SHA-256',bytes);
+        digest=[...new Uint8Array(hash)].map(b=>b.toString(16).padStart(2,'0')).join('');
+      }
+      checked.push({name:file.name,size:file.size,digest,inspection});
+    }
+    const same=checked.length===2&&checked.every(x=>x.digest)&&checked[0].digest===checked[1].digest;
+    const compare=checked.length===1?'只检查了 1 份文件。还需在另一个位置留存第二份，再一起核对。':
+      (!checked.every(x=>x.digest)?'浏览器不支持 SHA-256 核对，无法确认两份字节相同。':
+       same?'两份文件的 SHA-256 一致（内容逐字节相同的强校验）。':
+       '两份文件的 SHA-256 不同！请从同一份导出文件复制两份后重新核对。');
+    const rows=checked.map((x,i)=>{
+      const c=x.inspection.counts,warning=x.inspection.warnings;
+      const items='Profile '+c.profiles+' · 消息 '+c.messages+' · 见面 '+c.meetings+
+        ' · 记忆 '+c.memories+' · 日记 '+c.diaries+' · 监控日期 '+c.surveillanceDays+
+        ' · 真实照片引用 '+c.photoRefs+' / 文件 '+c.photoFiles;
+      return '<p><b>第 '+(i+1)+' 份：'+esc(x.name)+'</b>（'+(x.size/1024/1024).toFixed(2)+' MB）<br>'+esc(items)+
+        (warning.length?'<br><span class="subtle">'+warning.map(esc).join('；')+'</span>':'')+'</p>';
+    }).join('');
+    modal('<div class="kicker">BACKUP PREFLIGHT · READ ONLY</div><h2>备份只读核验</h2>'+
+      rows+'<p><b>'+esc(compare)+'</b></p>'+
+      '<p class="caption">这里只检查所选文件的格式、引用与两份文件的一致性，不上传、不恢复、不修改现有存档。'+
+      '无法仅凭备份文件证明手机原始存档没有缺漏，也不能替代另一个独立位置的保存。</p>');
+  }catch(error){
+    modal('<div class="kicker">BACKUP PREFLIGHT · READ ONLY</div><h2>备份检查未通过</h2>'+
+      '<p>'+esc(String(error?.message||error))+'</p>'+
+      '<p class="caption">现有存档未被修改。请重新从终端导出完整存档，先不要执行恢复或迁移。</p>');
+  }
+}
+function renderPortableBackup(){return `<div class="terminal-card"><div class="kicker">LOCAL DATA</div><h3>存档备份</h3><p class="caption">单 HTML 版把聊天和 Profile 存在当前浏览器中。移动文件或清理浏览器数据可能导致存档丢失。建议先导出一份完整备份，再复制到两个不同的安全位置，使用「只读核验两份备份」核对相同文件的 SHA-256。此核验不会覆盖当前存档。完整备份包含真实照片，请妥善保管；不包含 API Key 与生成日志。</p>${globalThis.ParallelOffline.storageAvailable?'':`<div class="notice" style="margin:12px 0">当前浏览器禁止本地持久化，刷新页面后存档可能消失。请在结束前导出备份。</div>`}<div class="inline-row" style="margin-top:14px"><button type="button" class="btn soft" data-action="export-backup">${I('book')} 导出完整存档 JSON</button><button type="button" class="btn ghost" data-action="export-text-backup">仅导出文字存档</button><label class="btn soft file-upload">只读核验两份备份<input type="file" id="portable-backup-check" accept=".json,application/json" multiple></label><label class="btn soft file-upload">${I('refresh')} 恢复存档<input type="file" id="portable-restore" accept=".json,application/json"></label></div></div>`}
 async function exportBackup(textOnly=false){try{const raw=textOnly?globalThis.ParallelOffline.exportData():await globalThis.ParallelOffline.exportDataWithPhotos(),blob=new Blob([raw],{type:'application/json'}),href=URL.createObjectURL(blob),a=document.createElement('a');a.href=href;a.download='Parallel_Backup_'+new Date().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(href),2000);toast(textOnly?'文字存档已导出，不包含真实照片':'完整存档已导出（含照片，不含 API Key）')}catch(e){toast('导出失败：'+e.message)}}
 let pendingRestoreText='';
 async function importBackup(file){if(!file)return;try{pendingRestoreText=await file.text();modal(`<h2>恢复存档确认</h2><p>这将用备份文件 <b>${esc(file.name)}</b> 覆盖当前存档。确定继续吗？</p>`,`<button class="btn ghost" data-action="close-modal">取消</button><button class="btn primary" data-action="confirm-restore-backup">确认恢复</button>`)}catch(e){toast('读取备份失败：'+e.message)}}
@@ -2975,6 +3093,7 @@ if(a==='delete-preset'){await api('/preset',{action:'delete',id:el.dataset.id});
 }catch(err){toast(err.message)}});
 addEventListener('pointerdown',()=>{state.lastUserActiveAt=Date.now()},{passive:true});
 addEventListener('change',async e=>{
+  if(e.target.id==='portable-backup-check'){await verifyBackupFiles(e.target.files);e.target.value='';return;}
   if(e.target.id==='portable-restore')importBackup(e.target.files[0]);
   if(e.target.id==='preset-import-file')choosePresetImport(e.target.files[0]);
   if(e.target.id==='meeting-location-input'&&state.chatMode==='meeting'&&state.activeId&&state.threadId){
