@@ -18,6 +18,8 @@ assert(probe.includes("'parallel-chat-photos-v1'"));
 assert(probe.includes("db.transaction('photos','readonly')"));
 assert(probe.includes('req.transaction.abort()'),'missing photo database must fail closed');
 assert(probe.includes('M03C stale source token'));
+assert(probe.includes('M03C in-memory engine differs from live source'));
+assert(probe.includes('PARALLEL-LZW14-V1:'));
 assert(probe.includes('M03C source changed during verification'));
 assert(probe.includes('root.M03BShadowLab.stage'));
 assert(lab.includes("fault==='simulated-quota-abort'"));
