@@ -2467,19 +2467,23 @@
   const inferMeetingLocation=(pid,cid,customLoc='')=>{
     const cleanCustom=String(customLoc||'').trim();
     if(cleanCustom)return cleanCustom.slice(0,40);
-    const recent=currentPlanRows(pid,cid).slice(-16);
+    const recent=currentPlanRows(pid,cid).slice(-24);
+    // Current, witnessed SMS location wins over any older appointment venue.
+    // A user's location is not a claim about the character's whereabouts.
     for(let i=recent.length-1;i>=0;i--){
       const m=recent[i];
-      const loc=proposalLocation(m.text)||(m.sender==='user'?explicitArrivalPlace(m.text):locationFromReport(m.text));
+      const loc=m.sender==='ai'?locationFromReport(m.text):explicitArrivalPlace(m.text);
       if(loc)return loc;
-      if(SCENE_RULES.cancel.test(normalizeSceneText(m.text)))break;
     }
-    const p=db.profiles.find(x=>x.id===pid),c=byId.get(cid);
-    if(p&&c){
-      const curSlot=getCurrentSurveillanceSlot(p,c);
-      if(curSlot?.location)return curSlot.location.slice(0,32);
+    // Only if no on-scene location exists may an un-cancelled proposed venue
+    // guide the opening. Never promote an AI surveillance itinerary to fact.
+    for(let i=recent.length-1;i>=0;i--){
+      const m=recent[i],t=normalizeSceneText(m.text);
+      if(SCENE_RULES.cancel.test(t)||/(?:没去|未赴约|没赴约|没有去|放鸽子|没能赴约|没赶上|no.show|didn't go|never went)/i.test(t))break;
+      const planned=proposalLocation(t);
+      if(planned)return planned;
     }
-    return '约定的街角咖啡馆';
+    return '见面地点待确认';
   };
   // Preserve every scene, but bound each stage so the model can complete JSON.
   function meetingSummaryChunks(mMsgs,p,c){
@@ -2937,7 +2941,22 @@
     return {id:'pending:'+x.source_key,owner_id:x.owner_id,profile_id:x.profile_id,source_type:'episode-pending',source_key:x.source_key,signature:x.signature,summary:x.previous?'原文已变更，等待自动重新归档':'情节已结束，等待语义归档',tags:[],raw_msg_ids:x.raw_msg_ids,started_at:x.started_at,event_at:x.event_at,created_at:x.event_at,archive_status:status,archive_state:running?'running':x.job?.status||'pending',archive_retry_at:retryAt>Date.now()?new Date(retryAt).toISOString():'',episode:{startedAt:x.started_at,endedAt:x.event_at}};
   };
   const retrieveRelevantMemories=(pid,cid,queryText='',excludeMsgIds=new Set(),limit=4,maxChars=1200,asOf=0,discardedIds=null,activeMeetingId='')=>{
-    const allItems=db.episodicMemories.filter(x=>x.owner_id===cid&&x.profile_id===pid&&!x.isolated_error&&!x.archive_stale&&(!asOf||(Date.parse(x.event_at)<=asOf&&(x.raw_msg_ids||[]).every(id=>db.messages.some(m=>m.id===id&&Date.parse(m.created_at)<=asOf))))).filter(x=>x.source_type!=='daily-summary'||!db.episodicMemories.some(y=>y.owner_id===cid&&y.profile_id===pid&&y.source_type==='episode-summary'&&!y.archive_stale&&overlapIds(x.raw_msg_ids,y.raw_msg_ids))).sort((a,b)=>b.event_at.localeCompare(a.event_at));
+    const generatedTypes=new Set(['meeting_summary','episode-summary','daily-summary']);
+    const sourceEvidenceValid=item=>{
+      if(!generatedTypes.has(item.source_type))return true;
+      const ids=item.raw_msg_ids||[];
+      // A generated summary without extant primary-source messages is only a
+      // historical card, never an authoritative AI-retrieval memory.
+      if(!ids.length||!ids.every(id=>db.messages.some(m=>
+        m.id===id&&m.profile_id===pid&&m.character_id===cid&&!m.recalled&&m.engine!=='recalled'
+      )))return false;
+      if(item.source_type==='meeting_summary'){
+        const mid=item.meeting_id||String(item.source_key||'').replace(/^meeting:/,'');
+        return db.meetings.some(m=>m.id===mid&&m.profile_id===pid&&m.character_id===cid);
+      }
+      return true;
+    };
+    const allItems=db.episodicMemories.filter(x=>x.owner_id===cid&&x.profile_id===pid&&!x.isolated_error&&!x.archive_stale&&sourceEvidenceValid(x)&&(!asOf||(Date.parse(x.event_at)<=asOf&&(x.raw_msg_ids||[]).every(id=>db.messages.some(m=>m.id===id&&Date.parse(m.created_at)<=asOf))))).filter(x=>x.source_type!=='daily-summary'||!db.episodicMemories.some(y=>y.owner_id===cid&&y.profile_id===pid&&y.source_type==='episode-summary'&&!y.archive_stale&&overlapIds(x.raw_msg_ids,y.raw_msg_ids))).sort((a,b)=>b.event_at.localeCompare(a.event_at));
     if(!allItems.length)return [];
     const blockedMemoryIds=new Set(allItems.filter(x=>(activeMeetingId&&(x.meeting_id===activeMeetingId||x.source_key==='meeting:'+activeMeetingId))||(discardedIds&&[...(x.raw_msg_ids||[]),...(x.meeting_data?.message_ids||[])].some(id=>discardedIds.has(id)))).map(x=>x.id));
     const byMemId=new Map(allItems.filter(x=>!blockedMemoryIds.has(x.id)).map(x=>[x.id,x]));
@@ -2982,7 +3001,7 @@
         const orig=byMemId.get(item.clarifies_id);
         entry.disputed_original=orig.summary;usedIds.add(orig.id);
       }
-      if(overlapScore>=6&&(item.raw_msg_ids||[]).length){
+      if((overlapScore>=6||generatedTypes.has(item.source_type))&&(item.raw_msg_ids||[]).length){
         const sourceIds=item.episode?.evidenceMessageIds?.length?item.episode.evidenceMessageIds:item.raw_msg_ids;
         const rawRows=(sourceIds||[]).map(id=>db.messages.find(m=>m.id===id&&m.profile_id===pid&&m.character_id===cid&&m.engine!=='recalled'&&!isLegacyErrorArtifact(m))).filter(Boolean).sort((a,b)=>extractQueryTerms(b.text).filter(t=>qTerms.has(t)).length-extractQueryTerms(a.text).filter(t=>qTerms.has(t)).length).slice(0,2);
         if(rawRows.length)entry.raw_excerpt=rawRows.map(r=>(r.sender==='user'?'对方：':'你：')+(r.sender==='user'?String(r.text??'').trim():cleanChatBubbleText(r.text)).slice(0,70)).join(' | ');
@@ -2996,6 +3015,13 @@
   const formatEpisodicEntry=entry=>{
     const modeTag={'program-fact':'[系统确认事实]','experienced':'[亲历互动记录]','stated':'[对话陈述·非客观事实证明]','clarified':'[已澄清纠正]'}[entry.knowledge_mode]||'[过往记录]';
     const datePart=String(entry.event_at||'').slice(0,10);
+    if(['meeting_summary','episode-summary','daily-summary'].includes(entry.source_type)){
+      // Never re-inject a model-written recap as a witnessed event or as
+      // verbatim user dialogue. Only the matching stored primary text is usable.
+      return '- '+datePart+' [原文证据·摘要仅作检索线索] '+
+        (entry.raw_excerpt||'原文未找到，不得据此回忆细节')+
+        '（以上是说过/写过的原文，并不证明讨论中的计划已经发生。）';
+    }
     if(entry.disputed){
       let line=`- ${datePart} [旧记录·已被澄清存疑] ${entry.summary}`;
       if(entry.correction_note)line+=` -> [最新澄清] ${entry.correction_note}`;
@@ -3359,7 +3385,7 @@
     });
     const meeting=candidates[0];
     const summary=String(meeting.ai_summary||meeting.summary||'').trim().slice(0,500);
-    const overview='\n\n【过去真实见面的事实小结 · 默认记忆】\n'+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'，与 '+p.name+' 的这场见面：'+(summary||'见面原文已归档，小结等待重建。')+'\n这是已经发生的事情，原来的计划不代表已经完成；小结不足以证明的细节不能自行编造。只有确实需要具体细节时才查看引用的现场原文。';
+    const overview='\n\n【过去真实见面的原始记录索引 · 不是 AI 生成的事实小结】\n'+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'，保存有与 '+p.name+' 的线下见面记录。模型生成的小结可能含推断，已从提示词中移除；所有具体对白、到访、共同活动必须以此场保存的原文为证。预约、监控推演、总结文案均不能证明确曾发生。';
     const entries=(Array.isArray(meeting.entries)?meeting.entries:[]).filter(m=>
       ['user','ai'].includes(m?.sender)&&String(m.text||'').trim()&&
       !(m.sender==='user'&&/(?:心想|心里|内心独白|默念|梦见|如果|假如)/.test(String(m.text))));
@@ -3426,7 +3452,7 @@
     return c.id==='re-game:leon:re2'&&/(?:\bDSO\b|特工|联邦调查|华盛顿特区|安全公寓|防窃听|总统护卫|加密终端|政府机密)/i.test(body);
   }
   function verifiedSlotForDisplay(c,slot){
-    if(!incompatibleCharacterSlot(c,slot))return slot;
+    if(!incompatibleCharacterSlot(c,slot))return slot?.source==='schedule'?{...slot,is_planned:true}:slot;
     return {...slot,location:'地点未确认',status:'日程待核实',activity:'原日程与本角色时期冲突，不作为已发生事实',scene:c.name+'的此时位置尚无有效证据。',source:'unverified'};
   }
   const prompt=(p,c,mode,pendingIds=[],options={})=>{
@@ -3449,7 +3475,7 @@
     const interestsStr=(p.interests||[]).join('、')||'未填写';
     const intentStr=p.intent||'未填写';
     const curSurv=getCurrentSurveillanceSlot(p,c,options.simulatedAt||Date.now());
-    const meetingLoc=curSurv?.location||relation(p.id,c.id)?.meeting_location||'约定的街角咖啡馆';
+    const meetingLoc=mode==='meeting'?(relation(p.id,c.id)?.meeting_location||'见面地点待确认'):(curSurv?.location||'地点待确认');
     let sys='你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n';
     sys+='现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。\n';
     if(mode==='meeting'){
@@ -3466,9 +3492,10 @@
       else if(messagesOf(p.id,c.id).length<=8)sys+='\n关系阶段提示：你们刚通过交友软件匹配不久，请保持角色自然的社交边界、幽默感或分寸，不要过度自来熟，也不要像客服一样生硬盘问或长篇解释个人设定。';
     }
     if(mode==='meeting'){
-      sys+=`\n当前见面地点：「${meetingLoc}」${curSurv?`（实时状态同步：${curSurv.activity}）`:''}。`;
+      sys+=`\n当前见面地点（来自实际互动，不参考监控预排）：「${meetingLoc}」。进入见面模式不代表对方已到、双方已见面或共同活动。`;
     }
     if(mode==='chat')sys+=recentActualMeetingContext(p,c,querySeed,options.simulatedAt||Date.now());
+    sys+='\n【共同经历事实优先级】当前真实互动/实际现场原文 > 带时间戳的角色位置陈述 > 已确认但未发生的约定 > 监控/日程推演。任何预定见面、吃饭、回家、接送，未经现场原文证实均不得用过去时说成双方曾一起做过；不得为对方杜撰对白或自称记得没有证据的共同经历。模型摘要是线索而非证言。';
     if(recalled.length){
       sys+=`\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n`+recalled.map(formatEpisodicEntry).join('\n');
     }else{
