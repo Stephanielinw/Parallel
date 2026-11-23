@@ -667,8 +667,8 @@ test('9. Surveillance remains a proposed solo itinerary; meeting location needs 
   assert.ok(endMeeting.meetingRecord, 'Meeting card archived');
   const slotsAfter = endMeeting.surveillance.unlockedSlots;
   assert.ok(
-    slotsAfter.some((s: any) => s.source === 'meeting' && s.location === enterMeeting.meeting_location),
-    'Completed meeting is written into today surveillance footprint'
+    !slotsAfter.some((s: any) => s.source === 'meeting'),
+    'Opening without any player action stays a candidate scene, not a witnessed meeting footprint'
   );
 });
 
