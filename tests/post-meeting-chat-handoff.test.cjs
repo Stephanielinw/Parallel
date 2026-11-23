@@ -67,6 +67,7 @@ good.data.meetings[0].ai_summary=good.data.meetings[0].summary;
 engine.importData(JSON.stringify(good));
 const after=engine.buildPromptPreview(profile.id,cid,'chat',{latestText:'今天小狗好安静啊～',simulatedAt:current})[0].content;
 assert(after.includes('线下见面结束 → 当前手机聊天'),'successful digest also needs a hard boundary');
-assert(after.includes('约定稍后通过短信继续聊天'),'successful digest still used');
+assert(after.includes('今天先这样，我们晚点手机上聊'),'original witnessed closing remains available');
+assert(!after.includes('两人在宿舍外廊露台喝汤，并且约定稍后通过短信继续聊天'),'M05 generated digest cannot be treated as primary-source fact');
 assert(!after.includes('现场原文 #'),'ordinary messages should not fetch detailed meeting excerpts');
 console.log('Post-meeting SMS continuity: hard historical boundary, missing-summary raw ending, and intact saved scene passed.');

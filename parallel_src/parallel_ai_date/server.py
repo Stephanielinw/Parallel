@@ -1185,7 +1185,7 @@ def get_current_surveillance_slot(db,p,c,at=0):
     slots=rec.get('slots') or []
     idx=active_slot_index(slots,now_m)
     active=slots[idx] if idx>=0 else (slots[-1] if slots else None)
-    return dict(verified_surveillance_slot(c,active),isCurrent=True) if active else {
+    return dict(verified_surveillance_slot(c,active,p),isCurrent=True) if active else {
         'start':'00:00','end':'23:59','location':f"{c['name']}的常去街角",'status':'日常活动','activity':'正在处理日常事务','scene':f"{c['name']}正在日常活动中。",'source':'schedule','isCurrent':True
     }
 
@@ -1258,7 +1258,9 @@ def observed_meeting_segments(p,c,meeting_rec,date_str,live=False):
     return segments
 
 def sync_surveillance_on_meeting_end(db,p,c,meeting_rec):
-    if not meeting_rec:return
+    if not meeting_rec or not any(e.get('sender')=='user' for e in
+            (parse_json(meeting_rec.get('entries'),[]) if isinstance(meeting_rec.get('entries'),str)
+             else meeting_rec.get('entries') or [])):return
     started=str(meeting_rec.get('started_at') or '')
     ended=str(meeting_rec.get('ended_at') or utc())
     try:
@@ -1303,6 +1305,9 @@ def anchor_remaining_day_after_meeting(db,p,c,meeting_rec,from_dt=None):
     return rec
 
 def replan_remaining_day_after_meeting(db,p,c,meeting_rec,from_dt=None):
+    if not meeting_rec or not any(e.get('sender')=='user' for e in
+            (parse_json(meeting_rec.get('entries'),[]) if isinstance(meeting_rec.get('entries'),str)
+             else meeting_rec.get('entries') or [])):return None
     if public_connection()['mode']!='live':return None
     try:
         original=datetime.fromisoformat(str(meeting_rec['ended_at']).replace('Z','+00:00')).astimezone()
@@ -1582,7 +1587,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
             prev.append(dict(s,end=observed[0]['start']) if hhmm_to_min(s['end'])>cut else s)
         slots=prev+observed
     for stored_slot in slots:
-        s=verified_surveillance_slot(c,stored_slot)
+        s=verified_surveillance_slot(c,stored_slot,p)
         start_m=hhmm_to_min(s['start'])
         end_m=hhmm_to_min(s['end'])
         if (not is_today) or start_m<=now_m:
@@ -1592,7 +1597,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
                 state='current' if is_cur else 'past'
             ))
     if is_today and not unlocked and slots:
-        unlocked.append(dict(verified_surveillance_slot(c,slots[0]),isCurrent=True,state='current'))
+        unlocked.append(dict(verified_surveillance_slot(c,slots[0],p),isCurrent=True,state='current'))
     return {
         'date':rec['date'],
         'today':today,
@@ -1623,13 +1628,16 @@ def build_default_diary(db,p,c,date_str,surv_rec):
     slots=(surv_rec or {}).get('slots') or build_default_surveillance_slots(c,p,date_str)
     intimacy=compute_intimacy_info(db,p,c)
     day_msgs=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND date(created_at,'localtime')=? AND engine!='recalled'",(p['id'],c['id'],date_str)).fetchall()
-    day_meets=db.execute("SELECT * FROM meetings WHERE profile_id=? AND character_id=? AND substr(started_at,1,10)=?",(p['id'],c['id'],date_str)).fetchall()
+    day_meets=[m for m in db.execute("SELECT * FROM meetings WHERE profile_id=? AND character_id=? AND substr(started_at,1,10)=?",(p['id'],c['id'],date_str)).fetchall()
+        if any(e.get('sender')=='user' for e in parse_json(m['entries'],[]))]
     s_morning=slots[1] if len(slots)>1 else slots[0]
     s_afternoon=slots[3] if len(slots)>3 else slots[-1]
     s_evening=slots[4] if len(slots)>4 else slots[-1]
     title=f"《{s_morning['location']}与{s_evening['location']}》"
-    p1=f"上午在{s_morning['location']}完成了「{s_morning['activity']}」，花了不少精力把积压的细节逐一核对清楚。作为习惯了按自己节奏行事的人，这种井然有序的日常让我觉得踏实。"
-    p2=f"下午去了{s_afternoon['location']}处理手头的安排，傍晚才在{s_evening['location']}歇了口气。白天的紧绷感散去之后，难得有一段完全属于自己的独处时间。"
+    # Inferred surveillance is not a camera record and must not be
+    # written into a character diary as completed activity.
+    p1=f"原本的上午日程计划在{s_morning['location']}处理「{s_morning['activity']}」。这只是个人计划，没有可核对的亲历证据证明已经完成。"
+    p2=f"下午与傍晚的推演分别安排在{s_afternoon['location']}和{s_evening['location']}。具体是否成行，需要后来真正发生的行动才能确认。"
     if intimacy['stage']=='deep_love':
         p3=f"不过今天最让我放不下的依然是 {p['name']}。明明白天忙工作的时候还能保持冷静，可一到夜里安静下来，脑海里全都是和 {p['name']} 相处的细节。大概是真的彻底栽在这段关系里了。"
     elif day_meets:
@@ -1638,7 +1646,7 @@ def build_default_diary(db,p,c,date_str,surv_rec):
         p3=f"今天办事的间隙收到了 {p['name']} 的消息，简单聊了几句。我的生活依然沿着原本的轨道运转，不过偶尔有这样一个聊得来的朋友穿插在日常里，倒也不赖。"
     else:
         p3=f"今天一整天都扑在自己的事情上，回到住处后整理好随身装备，翻了几页旧书。明天还有早起的安排，准备休息。"
-    footprints=[f"{s['start']} {s['location']}（{s['activity'][:20]}）" for s in slots[1:5]]
+    footprints=[f"{s['start']} {s['location']}（{s['activity'][:20]} · {'亲历记录' if s.get('source') in ('meeting','chat_update') else '日程推演，未核实'}）" for s in slots[1:5]]
     return {
         'id':f"diary_{c['id']}_{date_str}",
         'date':date_str,
@@ -1771,7 +1779,8 @@ def clean_scene_place(raw,is_english=False):
     return value
 
 def location_from_report(raw):
-    text=normalize_scene_text(raw)
+    text=re.sub(r'^我(?:就|还|仍然)(?:站)?在','我现在在',normalize_scene_text(raw))
+    text=re.sub(r"^(i(?:'m| am))\s+right\s+outside\b",r'\1 outside',text,flags=re.I)
     if not text or re.match(r'^[「『“"*>]',text) or re.search(r'[?？]$',text) or SCENE_RULES['uncertain'].search(text):return ''
     en=SCENE_RULES['stateEn'].search(text)
     if en:return clean_scene_place(en.group(1),True)
@@ -1948,20 +1957,22 @@ def sync_live_meeting_scene_location(db,p,c):
 def infer_meeting_location(db,pid,cid,custom_loc=''):
     clean_custom=str(custom_loc or '').strip()
     if clean_custom:return clean_custom[:40]
-    for m in reversed(current_plan_rows(db,pid,cid)[-16:]):
-        loc=proposal_location(m['text']) or (explicit_arrival_place(m['text']) if m['sender']=='user' else location_from_report(m['text']))
+    recent=current_plan_rows(db,pid,cid)[-24:]
+    # Newer physical location claims outrank a proposed appointment venue.
+    # The user's whereabouts never prove that the character moved there.
+    for m in reversed(recent):
+        loc=location_from_report(m['text']) if m['sender']=='ai' else explicit_arrival_place(m['text'])
         if loc:return loc
-        if SCENE_RULES['cancel'].search(normalize_scene_text(m['text'])):break
-    try:
-        p=profile_get(db,pid)
-        c=BY_ID.get(cid)
-        if p and c:
-            cur_slot=get_current_surveillance_slot(db,p,c)
-            if cur_slot and cur_slot.get('location'):
-                return str(cur_slot['location'])[:32]
-    except Exception:
-        pass
-    return '约定的街角咖啡馆'
+    for m in reversed(recent):
+        line=normalize_scene_text(m['text'])
+        if SCENE_RULES['cancel'].search(line) or re.search(
+                r"没去|未赴约|没赴约|没有去|放鸽子|没能赴约|没赶上|no.show|didn.t go|never went",line,re.I):
+            break
+        loc=proposal_location(line)
+        if loc:return loc
+    # Speculative surveillance cannot authoritatively set the meeting scene.
+    return '见面地点待确认'
+
 
 def meeting_summary_chunks(m_msgs,p,c):
     """Keep every chronological message, with manageable JSON-generation windows."""
@@ -2070,6 +2081,10 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
         'message_ids':msg_ids,
         'entries':entries
     }
+    # An AI-only opening shot proves the character waited, not the player arrived.
+    # Keep the scene card without creating an "experienced together" memory.
+    if not any(m.get('sender')=='user' and m.get('mode')=='meeting' for m in m_msgs):
+        return rec
     append_episodic_memory(
         db,
         owner_id=c['id'],
@@ -2253,6 +2268,21 @@ def retrieve_relevant_memories(db,pid,cid,query_text='',exclude_msg_ids=None,lim
     rows=db.execute('SELECT * FROM episodic_memories WHERE owner_id=? AND profile_id=? ORDER BY event_at DESC',(cid,pid)).fetchall()
     if not rows:return []
     all_items=[dict(r)|{'tags':parse_json(r['tags'],[]),'raw_msg_ids':parse_json(r['raw_msg_ids'],[])} for r in rows]
+    generated={'meeting_summary','episode-summary','daily-summary'}
+    user_meeting_msgs={r['id'] for r in db.execute(
+        "SELECT id FROM messages WHERE profile_id=? AND character_id=? AND sender='user' AND mode='meeting' AND engine!='recalled'",
+        (pid,cid)).fetchall()}
+    valid_msgs={r['id'] for r in db.execute(
+        "SELECT id FROM messages WHERE profile_id=? AND character_id=? AND engine!='recalled'",
+        (pid,cid)).fetchall()}
+    canonical_meetings={r['id'] for r in db.execute(
+        "SELECT id FROM meetings WHERE profile_id=? AND character_id=?",
+        (pid,cid)).fetchall()}
+    all_items=[x for x in all_items if x['source_type'] not in generated or (
+        bool(x['raw_msg_ids']) and all(mid in valid_msgs for mid in x['raw_msg_ids']) and (
+        x['source_type']!='meeting_summary' or
+        str(x['source_key'] or '').removeprefix('meeting:') in canonical_meetings and
+        any(mid in user_meeting_msgs for mid in x['raw_msg_ids'])))]
     if as_of:
         cutoff=datetime.fromtimestamp(as_of/1000,timezone.utc).isoformat(timespec='microseconds')
         allowed={r['id'] for r in db.execute('SELECT id FROM messages WHERE profile_id=? AND character_id=? AND julianday(created_at)<=julianday(?)',(pid,cid,cutoff))}
@@ -2303,7 +2333,7 @@ def retrieve_relevant_memories(db,pid,cid,query_text='',exclude_msg_ids=None,lim
             orig=by_id[item['clarifies_id']]
             entry['disputed_original']=orig['summary']
             used_ids.add(orig['id'])
-        if overlap_score>=6 and item['raw_msg_ids']:
+        if (overlap_score>=6 or item['source_type'] in generated) and item['raw_msg_ids']:
             placeholders=','.join('?' for _ in item['raw_msg_ids'][:2])
             raw_rows=db.execute(f"SELECT sender,text FROM messages WHERE id IN ({placeholders}) ORDER BY created_at LIMIT 2",tuple(item['raw_msg_ids'][:2])).fetchall()
             if raw_rows:
@@ -2325,6 +2355,10 @@ def format_episodic_entry(entry):
         'clarified':'[已澄清纠正]'
     }.get(entry.get('knowledge_mode'),'[过往记录]')
     date_part=str(entry.get('event_at',''))[:10]
+    if entry.get('source_type') in ('meeting_summary','episode-summary','daily-summary'):
+        return (f"- {date_part} [原文证据·摘要仅作检索线索] "
+                +str(entry.get('raw_excerpt') or '原文未找到，不得据此回忆细节')
+                +"（原文是实际发送的文字，不代表谈话里规划的事情已经发生。）")
     if entry.get('disputed'):
         line=f"- {date_part} [旧记录·已被澄清存疑] {entry['summary']}"
         if entry.get('correction_note'):
@@ -2958,6 +2992,9 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
     candidates=[]
     for row in rows:
         if row['id']==active:continue
+        if not any(e.get('sender')=='user' for e in parse_json(row['entries'],[])):
+            # Candidate scene with no player action is not a shared encounter.
+            continue
         try:
             ended=datetime.fromisoformat(str(row['ended_at']).replace('Z','+00:00'))
             if ended.tzinfo is None:ended=ended.replace(tzinfo=timezone.utc)
@@ -2970,15 +3007,31 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
         candidates.sort(key=lambda m:sum(1 for t in terms if str(t).lower() in (str(m.get('ai_summary') or '')+' '+str(m.get('summary') or '')+' '+str(m.get('entries') or '')).lower()),reverse=True)
     meeting=candidates[0]
     summary=str(meeting.get('ai_summary') or meeting.get('summary') or '').strip()[:500]
-    overview=("\n\n【过去真实见面的事实小结 · 默认记忆】\n"
+    overview=("\n\n【过去真实见面的原始记录索引 · 不是 AI 生成的事实小结】\n"
               +str(meeting.get('started_at',''))[:16]+" 至 "+str(meeting.get('ended_at',''))[:16]
-              +"，与 "+p['name']+" 的这场见面："+(summary or '见面原文已归档，小结等待重建。')
-              +"\n这是已发生的经历，原定计划不等于实际完成；无法从小结确认的具体细节不能编造。"
-              +"只有有必要提及具体现场细节时才参考下列可核对的原文。")
-    if not detail:return overview
+              +"，与 "+p['name']+" 有一场保存了现场原文的见面。AI 整理摘要可能有推断，已从提示词移除。"
+              +"共同到访、吃饭、回家和具体台词，必须由保存的现场原文证实；约定、监控与总结均不是证据。")
     entries=[e for e in parse_json(meeting.get('entries'),[]) if isinstance(e,dict) and e.get('sender') in ('user','ai')
         and str(e.get('text') or '').strip() and not (e['sender']=='user' and re.search(r'心想|心里|内心独白|默念|梦见|如果|假如',str(e['text'])))]
     if not entries:return overview
+    overview+='\n【最近现场原文末尾（实际说过/写过，不代表其中的计划完成）】\n'+'\n'.join(
+        '- '+(p['name'] if e['sender']=='user' else c['name'])+'：'+
+        re.sub(r'\s+',' ',str(e['text'])).strip()[:200] for e in entries[-4:])
+    # Normal SMS still receives a few high-impact saved scene excerpts, not
+    # unverified model-written recap claims. Preserve real shared experiences.
+    patterns=(r'没(?:有)?(?:去|看|做)|电影并没有看|取消|改了行程|改成|改为',
+              r'相拥睡|睡着|睡了|睡醒|午睡|入睡',
+              r'亲密相处|吻|亲了|拥抱',
+              r'下车|送.{0,14}(?:到|回)|告别|再见')
+    grounded=[]
+    for pattern in patterns:
+        match=next((e for e in entries if re.search(pattern,str(e.get('text') or ''))),None)
+        if match is not None and match not in grounded:grounded.append(match)
+    if grounded:
+        overview+='\n【从存档原文核对的关键片段 · 提及计划不表示已发生】\n'+'\n'.join(
+            '- '+(p['name'] if e['sender']=='user' else c['name'])+'：'
+            +re.sub(r'\s+',' ',str(e['text'])).strip()[:220] for e in grounded[:4])
+    if not detail:return overview
     terms=[t for t in extract_query_terms(query) if len(str(t))>=2]
     salient=re.compile(r'本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见')
     n=len(entries)
@@ -3034,8 +3087,21 @@ def incompatible_character_slot(c,slot):
     body=' '.join(str(slot.get(key) or '') for key in ('location','status','activity','scene'))
     return c.get('id')=='re-game:leon:re2' and bool(re.search(r'\bDSO\b|特工|联邦调查|华盛顿特区|安全公寓|防窃听|总统护卫|加密终端|政府机密',body,re.I))
 
-def verified_surveillance_slot(c,slot):
-    if not incompatible_character_slot(c,slot):return slot
+def verified_surveillance_slot(c,slot,p=None):
+    if not incompatible_character_slot(c,slot):
+        if slot and slot.get('source')=='schedule':
+            result=dict(slot,is_planned=True)
+            body=' '.join(str(slot.get(k) or '') for k in ('location','status','activity','scene'))
+            shared=bool(re.search(r'两人|双方|我们俩|一起|共同|共进|相伴|和你|与你|跟你|陪你',body)) or (
+                bool(p and p.get('name') and p['name'] in body) and
+                bool(re.search(r'见面|约会|吃饭|晚餐|回家|接送|接到|送回|进屋|相拥|拥抱|抵达',body)))
+            if shared:
+                result.update(location='地点未确认',status='约定待核实',
+                              activity='双方是否实际见面、同行或用餐均未确认',
+                              scene=c['name']+'的个人安排可能改变；预约与推演不代表两人已实际见面。',
+                              is_unconfirmed=True)
+            return result
+        return slot
     return dict(slot,location='地点未确认',status='日程待核实',activity='原日程与本角色时期冲突，不作为已发生事实',
         scene=c['name']+'的此时位置尚无有效证据。',source='unverified')
 
@@ -3083,8 +3149,9 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         elif total_msgs<=8:
             system+="\n关系阶段提示：你们刚通过交友软件匹配不久，请保持角色自然的社交边界、幽默感或分寸，不要过度自来熟，也不要像客服一样生硬盘问或长篇解释个人设定。"
     if mode=='meeting' and cur_surv:
-        system+=f"\n\n【此刻你的真实位置与状态（实时监控同步）】\n当前时段：{cur_surv['start']}–{cur_surv['end']}｜你所在地点：{cur_surv['location']}｜状态：{cur_surv['status']}｜正在做的事：{cur_surv['activity']}。当对方问你在哪、在干什么或提出见面时，请自然地与你此刻的真实位置和状态保持一致。"
+        system+=f"\n\n【现场互动确认的位置（不是监控推演）】\n当前时段：{cur_surv['start']}–{cur_surv['end']}｜你所在地点：{cur_surv['location']}｜状态：{cur_surv['status']}｜正在做的事：{cur_surv['activity']}。进入见面模式不表示玩家已出现、双方已接触或共同移动；不能按监控推演决定现场。"
     if mode=='chat':system+=recent_actual_meeting_context(db,p,c,query_seed,simulated_at)
+    system+="\n【共同经历事实优先级】实际现场与消息原文 > 带时间戳的角色位置陈述 > 已确认而未发生的预约 > 监控日程推演。共同吃饭、接送和回家须有现场原文证实；禁止编造用户过去说过的台词。AI 摘要仅供检索，不能被当成亲历事实。"
     if recalled:
         system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n"+"\n".join(format_episodic_entry(e) for e in recalled)
     else:
@@ -3123,7 +3190,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     if mode=='meeting':
         messages=[{'role':'system','content':system}]
         m_state=MEETING_STATE.get((p['id'],c['id']),{})
-        meet_loc=(cur_surv and cur_surv.get('location')) or infer_meeting_location(db,p['id'],c['id'],m_state.get('meeting_location',''))
+        meet_loc=m_state.get('meeting_location') or infer_meeting_location(db,p['id'],c['id'])
         has_trailing_user=(len(history_turns)>0 and history_turns[-1]['role']=='user' and not trigger_opening and not is_continue)
         prior_turns=history_turns[:-1] if has_trailing_user else history_turns
         final_user_turn=history_turns[-1] if has_trailing_user else None
@@ -3140,7 +3207,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         if final_user_turn:
             messages.append(final_user_turn)
         elif trigger_opening or len(history_turns)==0:
-            messages.append({'role':'user','content':f"【场景开启】{p['name']} 与 {c['name']} 刚刚在「{meet_loc}」线下碰面。请严格按照当前面对面小说预设的所有规则与目标篇幅，从 {c['name']} 的视角与反应切入，描写双方刚刚照面时的环境氛围、神态动作与开场互动正文（不要替 {p['name']} 决定台词或心理）。"})
+            messages.append({'role':'user','content':f"【场景开启】【第一幕 · 候场镜头】角色 {c['name']} 当前场景：「{meet_loc}」。只描写角色独立等待或在做什么，以及环境、衣着和动作；不替 {p['name']} 决定是否到达、站位、动作、台词、心理或与角色接触。地点若待确认则自然候场，不擅自传送到室内。玩家将在下一条现场行动中决定如何接触。遵守所有已启用预设的文风和篇幅。"})
         else:
             messages.append({'role':'user','content':f"【继续推进】请承接上一轮在「{meet_loc}」的现场氛围与动作，严格按照当前面对面小说预设的所有规则与目标篇幅，继续推进下一段细腻的面对面互动正文（不要替 {p['name']} 决定台词或心理）。"})
         return messages
@@ -3648,7 +3715,7 @@ class Handler(BaseHTTPRequestHandler):
                                 rec['slots']=[x for x in rec['slots'] if not (x.get('source')=='meeting_shift' and x.get('meeting_id')==resume_mid)]
                                 for key in ('post_meeting_anchor','post_meeting_location','post_meeting_id'):rec.pop(key,None)
                             sync_surveillance_on_meeting_start(db,p,c,m_state['meeting_location'],m_state['active_meeting_id'])
-                            if not resume_mid:log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 在线下见面')
+                            if not resume_mid:log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 进入面对面候场（接触待确认）')
                             api_error=None
                             if not resume_mid and data.get('triggerOpening') is True and public_connection()['mode']!='normal':
                                 engine='demo';settings=load_connection();reply_txt=''

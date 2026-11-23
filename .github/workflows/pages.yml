@@ -61,6 +61,9 @@ jobs:
           node tests/m03d-cutover-safety.test.cjs
           node tests/m03-meeting-memory-reference.test.cjs
           node tests/m04-incremental-safety.test.cjs
+          node tests/m05-event-authority.test.cjs
+          node tests/m05-pending-meeting-not-memory.test.cjs
+          python3 parallel_src/parallel_ai_date/tests/test_m05_fact_authority.py
           python3 parallel_src/parallel_ai_date/tests/test_meeting_checkpoints.py
           node tests/meeting-edit-refusal.test.cjs
           node tests/preset-mobile-groups.test.cjs

@@ -607,7 +607,7 @@ test('Parallel v0.5 Daily Mode message bundling (preserving scheduled dueAt & ti
   assert.ok(flushed.reply && flushed.replies.length >= 1, 'Flushes bundled messages and replies');
 });
 
-test('9. Surveillance (实时监控) silently generates full-day schedule, unlocks slots up to current time, syncs into prompt & meeting location, and rewrites timeline after meeting', async () => {
+test('9. Surveillance remains a proposed solo itinerary; meeting location needs dialogue evidence and actual scenes override monitoring', async () => {
   const { engine } = createPortableEngine();
   const p = (
     await engine.request('/profile', {
@@ -642,7 +642,7 @@ test('9. Surveillance (实时监控) silently generates full-day schedule, unloc
   assert.match(promptPreview, /以亲历现场为准/, 'Confirmed scene actions outrank generated surveillance');
   assert.ok(promptPreview.includes(initialLocation), 'Prompt includes current surveillance slot location');
 
-  // 3. Entering meeting mode without an explicit location in chat defaults to current surveillance location
+  // 3. No chat location proof: starting a scene must not teleport to a monitored plan.
   const enterMeeting = await engine.request('/mode', {
     profileId: p.id,
     characterId: cid,
@@ -650,7 +650,7 @@ test('9. Surveillance (实时监控) silently generates full-day schedule, unloc
     triggerOpening: true,
   });
   assert.equal(enterMeeting.mode, 'meeting');
-  assert.equal(enterMeeting.meeting_location, initialLocation, 'Meeting location defaults to current surveillance slot location');
+  assert.equal(enterMeeting.meeting_location, '见面地点待确认', 'M05 unverified surveillance cannot decide an actual scene location');
   assert.ok(
     enterMeeting.surveillance.current.status.includes('见面中'),
     'Live surveillance status immediately reflects active meeting with user'
@@ -667,8 +667,8 @@ test('9. Surveillance (实时监控) silently generates full-day schedule, unloc
   assert.ok(endMeeting.meetingRecord, 'Meeting card archived');
   const slotsAfter = endMeeting.surveillance.unlockedSlots;
   assert.ok(
-    slotsAfter.some((s: any) => s.source === 'meeting' && s.location === initialLocation),
-    'Completed meeting is written into today surveillance footprint'
+    !slotsAfter.some((s: any) => s.source === 'meeting'),
+    'Opening without any player action stays a candidate scene, not a witnessed meeting footprint'
   );
 });
 
