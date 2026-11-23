@@ -170,6 +170,15 @@
         for(let i=0;i<arr.length;i++){
           rows.put(arr[i],[section,i]);
           written++;
+          // A deterministic QuotaExceededError *simulation* for M03-C. This
+          // exercises transactional abort handling, not the real iOS quota.
+          if(fault==='simulated-quota-abort'&&written>=Math.max(1,Math.floor(pack.data.messages.length/2))){
+            tx.abort();
+            try{await done;}catch{}
+            const err=Error('Simulated QuotaExceededError (not a real storage quota limit)');
+            err.name='QuotaExceededError';
+            throw err;
+          }
           if(fault==='mid-write-abort'&&written>=Math.max(1,Math.floor(pack.data.messages.length/2))){
             tx.abort();await done;throw Error('injected failure');
           }
