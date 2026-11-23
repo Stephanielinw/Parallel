@@ -2,7 +2,7 @@ import {defineConfig} from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /m0[23]-(?:safari-smoke|backup-preflight)\.spec\.ts/,
+  testMatch: /(?:m02-safari-smoke|m03-backup-preflight|m03b-indexeddb-shadow)\.spec\.ts/,
   timeout: 45_000,
   expect: {timeout: 15_000},
   fullyParallel: false,
