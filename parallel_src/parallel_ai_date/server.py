@@ -3187,7 +3187,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         if final_user_turn:
             messages.append(final_user_turn)
         elif trigger_opening or len(history_turns)==0:
-            messages.append({'role':'user','content':f"【第一幕 · 候场镜头】角色 {c['name']} 当前场景：「{meet_loc}」。只描写角色独立等待或在做什么，以及环境、衣着和动作；不替 {p['name']} 决定是否到达、站位、动作、台词、心理或与角色接触。地点若待确认则自然候场，不擅自传送到室内。玩家将在下一条现场行动中决定如何接触。遵守所有已启用预设的文风和篇幅。"})
+            messages.append({'role':'user','content':f"【场景开启】【第一幕 · 候场镜头】角色 {c['name']} 当前场景：「{meet_loc}」。只描写角色独立等待或在做什么，以及环境、衣着和动作；不替 {p['name']} 决定是否到达、站位、动作、台词、心理或与角色接触。地点若待确认则自然候场，不擅自传送到室内。玩家将在下一条现场行动中决定如何接触。遵守所有已启用预设的文风和篇幅。"})
         else:
             messages.append({'role':'user','content':f"【继续推进】请承接上一轮在「{meet_loc}」的现场氛围与动作，严格按照当前面对面小说预设的所有规则与目标篇幅，继续推进下一段细腻的面对面互动正文（不要替 {p['name']} 决定台词或心理）。"})
         return messages
