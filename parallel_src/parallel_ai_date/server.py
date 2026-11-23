@@ -3669,7 +3669,7 @@ class Handler(BaseHTTPRequestHandler):
                                 rec['slots']=[x for x in rec['slots'] if not (x.get('source')=='meeting_shift' and x.get('meeting_id')==resume_mid)]
                                 for key in ('post_meeting_anchor','post_meeting_location','post_meeting_id'):rec.pop(key,None)
                             sync_surveillance_on_meeting_start(db,p,c,m_state['meeting_location'],m_state['active_meeting_id'])
-                            if not resume_mid:log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 在线下见面')
+                            if not resume_mid:log_event(db,p['id'],cid,'meeting','与 '+p['name']+' 进入面对面候场（接触待确认）')
                             api_error=None
                             if not resume_mid and data.get('triggerOpening') is True and public_connection()['mode']!='normal':
                                 engine='demo';settings=load_connection();reply_txt=''
