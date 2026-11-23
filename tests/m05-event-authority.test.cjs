@@ -4,6 +4,9 @@ const root=path.join(__dirname,'..'),read=p=>fs.readFileSync(path.join(root,p),'
 const src=read('public/parallel/offline.js');
 assert.equal(src,read('parallel_src/parallel_ai_date/static/offline.js'));
 new Function(src);
+const parse=new Function(src.slice(src.indexOf('  const SCENE_RULES='),src.indexOf('  function currentPlanRows('))+'return {locationFromReport};')();
+assert.equal(parse.locationFromReport('我就在你家门口等你。'),'你家门口');
+assert.equal(parse.locationFromReport("I'm right outside your door."),'your door');
 let now=Date.parse('2026-11-22T22:00:00-08:00'),serial=0;
 class Clock extends Date{constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
 const storage=new Map(),window={};
