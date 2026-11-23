@@ -228,8 +228,11 @@ async function bootstrap(){
 function renderChrome(){const nav=x=>`<button type="button" class="${x.id===state.tab?'active ':''}nav-link" data-action="nav" data-tab="${x.id}">${I(x.icon)}<span>${x.detail}</span></button>`;$('side-nav').innerHTML=tabs.map(nav).join('');$('mobile-nav').innerHTML=tabs.map(x=>`<button type="button" class="${x.id===state.tab?'active':''}" data-action="nav" data-tab="${x.id}">${I(x.icon)}<span>${x.label}</span></button>`).join('');const p=activeProfile();$('sidebar-current').innerHTML=p?`${avatar(p)}<span><span class="subtle" style="font-size:9px">正在扮演</span><br>${esc(p.name)}</span>`:`<span class="mini-avatar empty-dog">${I('paw')}</span><span class="subtle">尚未创建角色</span>`;const mode=$('mode-pill');mode.textContent=getModeLabel(state.settings);mode.classList.toggle('live',state.settings.mode==='live');$('section-title').textContent=tabs.find(x=>x.id===state.tab)?.detail||'Parallel';$('section-eyebrow').textContent=({profile:'YOUR IDENTITY',discover:'DISCOVER ANOTHER WORLD',messages:'CONNECTIONS THAT REMEMBER',terminal:'YOUR CREATIVE CONTROL'})[state.tab];const ctx=({profile:[['dog','不同 Profile 可以扮演完全不同的人。'],['shield','原作人物身份与其世界观背景将保持独立。']],discover:[['sparkleheart','每次刷新尝试展示 10 位已有作品角色。'],['clock','重复相遇，记忆不会重置。']],messages:[['letter','消息气泡与面对面小说使用不同预设。'],['book','解除匹配后再次相遇，旧消息仍然存在。']],terminal:[['lock','API Key 仅存放在本机服务的数据目录。'],['sliders','文字 Prompt 可以按模式分开编辑。']]})[state.tab];$('side-info').innerHTML=`<h3>一点关于这里的事</h3>${ctx.map(v=>`<div class="side-fact">${I(v[0])}<span>${v[1]}</span></div>`).join('')}`;updateNavUnread()}
 async function navigate(tab){
   const existingInput=$('chat-input');
-  if(existingInput&&state.threadId)state.draftInputs[state.threadId]=existingInput.value;
+  if(existingInput&&state.renderedThreadId)state.draftInputs[state.renderedThreadId]=existingInput.value;
   state.profileMenuOpen=false;
+  ++modalRequestSeq;
+  if($('modal-root'))$('modal-root').innerHTML='';
+  state.activeErrorContext=null;
   state.tab=tab;
   const navigationProfile=state.activeId;
   ++threadRequestSeq;
@@ -474,6 +477,13 @@ const READ_CURSOR_KEY='parallel-incoming-read-v1';
 let readCursors=(()=>{try{const x=JSON.parse(localStorage.getItem(READ_CURSOR_KEY)||'{}');return x&&typeof x==='object'&&!Array.isArray(x)?x:{};}catch{return {};}})();
 let inboxSnapshot={profileId:'',threads:[]};
 let inboxRequestSeq=0,threadRequestSeq=0;
+// UI epoch isolates asynchronously opened character drawers from navigation,
+// profile changes and other modal requests. It never touches persistent saves.
+let modalRequestSeq=0;
+const beginPairModalRequest=(pid,cid)=>({pid,cid,seq:++modalRequestSeq});
+const ownsPairModalRequest=scope=>Boolean(scope&&scope.seq===modalRequestSeq&&
+  state.tab==='messages'&&state.activeId===scope.pid&&state.threadId===scope.cid);
+
 const isIncoming=m=>Boolean(m&&m.id&&m.sender==='ai'&&m.engine!=='error'&&m.engine!=='recalled'&&!m.recalled&&!(m.mode!=='meeting'&&/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(String(m.text||''))));
 const saveReadCursors=()=>{try{localStorage.setItem(READ_CURSOR_KEY,JSON.stringify(readCursors));}catch{}};
 function applyInboxSnapshot(pid,threads){
@@ -567,12 +577,18 @@ async function loadThread(cid,render=true){
   const pid=state.activeId,seq=++threadRequestSeq;
   const r=await api('/thread?profileId='+encodeURIComponent(pid)+'&characterId='+encodeURIComponent(cid));
   if(seq!==threadRequestSeq||state.tab!=='messages'||state.activeId!==pid)return;
+  const nextPair=typingPair(pid,cid);
+  if(loadedThreadPair!==nextPair){
+    ++modalRequestSeq;
+    state.lastMemoriesData=null;
+    state.memoryCategory='all';
+  }
   state.threadId=cid;
-  loadedThreadPair=typingPair(pid,cid);
+  loadedThreadPair=nextPair;
   state.messages=r.messages||[];
   state.translations=r.translations||{};
   state.meetings=r.meetings||[];
-  if(r.surveillance)state.surveillanceMap[cid]=r.surveillance;
+  if(r.surveillance)state.surveillanceMap[typingPair(pid,cid)]=r.surveillance;
   if(r.diarySummary)state.diarySummaryMap[cid]=r.diarySummary;
   const tItem=state.threads.find(x=>x.character.id===cid);
   if(tItem){
@@ -593,7 +609,7 @@ async function loadThread(cid,render=true){
   if(state.settings?.mode==='live'&&r.surveillance?.engine!=='live'){
     const pid=state.activeId;
     api('/surveillance',{profileId:pid,characterId:cid}).then(surv=>{
-      if(surv&&state.activeId===pid)state.surveillanceMap[cid]=surv;
+      if(surv&&state.activeId===pid)state.surveillanceMap[typingPair(pid,cid)]=surv;
     }).catch(()=>{});
   }
   if(render)renderMessages();else renderMessages();
@@ -1136,7 +1152,7 @@ function renderMessages(){
   // Surgical update when staying on the same thread so typing in #chat-input is never interrupted
   const layoutEl=document.querySelector('#view .messages-layout');
   const chatBodyEl=$('chat-body');
-  if(selected&&layoutEl&&chatBodyEl&&existingInput&&state.renderedThreadId===state.threadId){
+  if(selected&&layoutEl&&chatBodyEl&&existingInput&&state.renderedThreadId===typingPair(state.activeId,state.threadId)){
     const threadsEl=layoutEl.querySelector('.threads');
     if(threadsEl)threadsEl.innerHTML=renderMessagesListItems();
     const meeting=state.chatMode==='meeting';
@@ -1178,15 +1194,15 @@ function renderMessages(){
     updateQueueCountdown();
     return;
   }
-  state.renderedThreadId=selected?state.threadId:'';
+  state.renderedThreadId=selected?typingPair(state.activeId,state.threadId):'';
   $('view').innerHTML=state.threads.length?`<div class="messages-layout ${selected?'has-chat':''}"><div class="threads">${renderMessagesListItems()}</div><div class="chat-view ${state.chatMode==='meeting'?'meeting-mode':''}">${selected?renderChat(selected):'<div class="empty-state"><div class="empty-illustration">'+I('letter')+'</div><h2>选一段对话</h2><p>每次相遇都有延续的故事。</p></div>'}</div></div>`:empty('letter','还没有匹配对象','去发现页滑动卡片；右滑喜欢后，对方也有自己的选择。','去发现','discover');
   const body=$('chat-body');if(body){scheduleChatScroll(body,bindChatScroll(body));void hydrateChatPhotos();}
   updateQueueCountdown();
   const input=$('chat-input');
   if(input){
-    const draft=state.draftInputs[state.threadId]||'';
+    const draft=state.draftInputs[typingPair(state.activeId,state.threadId)]||'';
     if(draft)input.value=draft;
-    input.addEventListener('input',e=>{if(state.threadId){state.draftInputs[state.threadId]=e.target.value;state.lastSendAt=Date.now()}});
+    input.addEventListener('input',e=>{if(state.threadId){state.draftInputs[typingPair(state.activeId,state.threadId)]=e.target.value;state.lastSendAt=Date.now()}});
     input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.keyCode!==229){e.preventDefault();$('chat-form').requestSubmit()}});
     $('chat-form').addEventListener('submit',sendMessage);
     if(wasFocused){
@@ -1215,9 +1231,9 @@ function openCharacterHubModal(editingNick=false){
   const c=thread.character;
   const dName=displayName(c);
   const hasNick=Boolean(c.nickname&&c.nickname.trim());
-  const surv=state.surveillanceMap[c.id];
+  const surv=state.surveillanceMap[typingPair(state.activeId,c.id)];
   const curLoc=surv?.current?.location||'';
-  const dSum=state.diarySummaryMap[c.id];
+  const dSum=state.diarySummaryMap[typingPair(state.activeId,c.id)];
   const latestDiaryHint=dSum?.latestDate?`最新：${dSum.latestDate} 日记`:'每日 00:00 自动生成';
   const html=`<div class="kicker">CHARACTER POCKET · 角色专属空间</div>
     <div class="char-hub-header">
@@ -1291,7 +1307,7 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
   const dName=displayName(c);
   try{
     const data=await api('/surveillance',{profileId:state.activeId,characterId:c.id,date:selectedDate||'',refresh:Boolean(forceRefresh)});
-    if(data.isToday!==false)state.surveillanceMap[c.id]=data;
+    if(data.isToday!==false)state.surveillanceMap[typingPair(state.activeId,c.id)]=data;
     if(forceRefresh&&data.apiError){
       showApiErrorModal(data.apiError,null,{type:'surveillance',characterId:c.id,date:selectedDate||''});
       return;
@@ -1369,8 +1385,8 @@ async function openDiaryModal(selectedDate='',forceRefresh=false){
   const dName=displayName(c);
   try{
     const data=await api('/diary',{profileId:state.activeId,characterId:c.id,date:selectedDate||'',refresh:Boolean(forceRefresh)});
-    state.diaryMap[c.id]=data;
-    state.diarySummaryMap[c.id]={latestDate:data.latestDate,availableDates:data.availableDates,latestTitle:data.diary?.title||''};
+    state.diaryMap[typingPair(state.activeId,c.id)]=data;
+    state.diarySummaryMap[typingPair(state.activeId,c.id)]={latestDate:data.latestDate,availableDates:data.availableDates,latestTitle:data.diary?.title||''};
     if(forceRefresh&&data.apiError){
       showApiErrorModal(data.apiError,null,{type:'diary',characterId:c.id,date:selectedDate||''});
       return;
@@ -1796,8 +1812,8 @@ async function tickChatQueue(){
     if(state.threadId){
       api('/diary',{profileId:state.activeId,characterId:state.threadId}).then(d=>{
         if(d){
-          state.diaryMap[state.threadId]=d;
-          state.diarySummaryMap[state.threadId]={latestDate:d.latestDate,availableDates:d.availableDates,latestTitle:d.diary?.title||''};
+          state.diaryMap[typingPair(pid,cid)]=d;
+          state.diarySummaryMap[typingPair(pid,cid)]={latestDate:d.latestDate,availableDates:d.availableDates,latestTitle:d.diary?.title||''};
         }
         if(d&&!d.bgError)toast('已过零点 · 已根据前日监控自动生成角色最新日记');
       }).catch(()=>{});
@@ -1862,7 +1878,7 @@ async function sendMessage(e){e.preventDefault();if(state.chatBusy)return;
   const input=$('chat-input'),txt=input?.value.trim();if(!txt)return;
   state.chatBusy=true;const id=state.threadId,mode=state.chatMode,profileId=state.activeId,quote=mode==='chat'?activeQuote():null;
   const wasPaused=isCurrentThreadPaused();
-  input.value='';state.draftInputs[id]='';state.lastSendAt=Date.now();
+  input.value='';state.draftInputs[typingPair(profileId,id)]='';state.lastSendAt=Date.now();
   pinCurrentChat();
   const now=new Date().toISOString();state.messages.push({id:'pending',sender:'user',mode,text:txt,created_at:now,engine:'human',quote:quote?{id:quote.id,sender:quote.sender,text:quote.text}:null});
   if(mode==='meeting'&&!wasPaused)state.messages.push({id:'typing',sender:'ai',mode,text:'…',created_at:now,engine:'human'});
@@ -2030,7 +2046,7 @@ async function changeMode(){
     try{
       if(draftTxt){
         input.value='';
-        state.draftInputs[id]='';
+        state.draftInputs[typingPair(profileId,id)]='';
         state.messages.push({id:'pending',sender:'user',mode:'chat',text:draftTxt,created_at:new Date().toISOString(),engine:'human'});
         renderMessages();
         await api('/message',{profileId,characterId:id,text:draftTxt});
@@ -2071,7 +2087,7 @@ async function changeMode(){
 }
 function confirmUnmatch(){const t=state.threads.find(x=>x.character.id===state.threadId);if(!t)return;modal(`<h2>要解除与 ${esc(t.character.name)} 的匹配吗？</h2><p>这会把对方从消息列表移除，但不会删除你们的聊天记录或角色的记忆。以后再次匹配时还会认得你。</p>`,`<button class="btn soft" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-unmatch">解除匹配</button>`)}
 // Terminal
-async function loadTerminal(){const [a,b,c]=await Promise.all([api('/settings'),api('/presets'),api('/system-logs').catch(()=>({logs:[]}))]);state.settings=a;state.presets=b.entries||[];state.presetDiagnostics=b.diagnostics||{};state.systemLogs=c?.logs||[];state.logEnabled=c?.enabled!==false;state.logStorage=c?.storage||'session';renderChrome();renderTerminal()}
+async function loadTerminal(){const pid=state.activeId,requestSeq=threadRequestSeq;const [a,b,c]=await Promise.all([api('/settings'),api('/presets'),api('/system-logs').catch(()=>({logs:[]}))]);if(state.tab!=='terminal'||pid!==state.activeId||requestSeq!==threadRequestSeq)return;state.settings=a;state.presets=b.entries||[];state.presetDiagnostics=b.diagnostics||{};state.systemLogs=c?.logs||[];state.logEnabled=c?.enabled!==false;state.logStorage=c?.storage||'session';renderChrome();renderTerminal()}
 function renderTerminal(){$('topbar-actions').innerHTML=`<span class="status-pill ${state.settings.mode==='live'?'live':''}">${state.settings.mode==='live'?'LIVE API':(state.settings.mode==='normal'?'NORMAL · 未连接 API':'DEMO MODE')}</span>`;const tabBody=state.terminalTab==='api'?renderApiSettings():(state.terminalTab==='presets'?renderPresets():renderSystemLogs());$('view').innerHTML=`<div class="terminal-screen"><div class="terminal-tabs"><button class="terminal-tab ${state.terminalTab==='api'?'active':''}" data-action="term-tab" data-tab="api">${I('link')} 连接与模型</button><button class="terminal-tab ${state.terminalTab==='presets'?'active':''}" data-action="term-tab" data-tab="presets">${I('book')} 文字预设</button><button class="terminal-tab ${state.terminalTab==='logs'?'active':''}" data-action="term-tab" data-tab="logs">${I('monitor')} 生成日志${state.systemLogs.length?` (${state.systemLogs.length})`:''}</button></div>${tabBody}${globalThis.ParallelOffline&&state.terminalTab==='api'?renderPortableBackup():''}</div>`;if(state.terminalTab==='api'){const form=$('api-settings-form');form.addEventListener('submit',saveSettings);$('api-temperature').addEventListener('input',e=>$('temp-output').textContent=e.target.value);$('api-top-p').addEventListener('input',e=>$('topp-output').textContent=e.target.value);const langSel=$('api-char-lang-pref');if(langSel){langSel.addEventListener('change',e=>{const wrap=$('api-char-lang-custom-wrap');if(wrap)wrap.hidden=e.target.value!=='custom';});}bindModelPickers()} }
 // M03 backup preflight: intentionally pure/read-only. This function only
 // inspects supplied JSON; it does not access or alter the active game save.
@@ -2613,8 +2629,9 @@ async function savePreset(id){
 }
 async function togglePreset(id){const p=state.presets.find(x=>x.id===id);if(!p)return;await api('/preset', {...p,enabled:!p.enabled});await refreshPresets()}
 async function movePreset(id,dir){const list=state.presets.filter(x=>x.mode===state.presetMode).sort((a,b)=>a.sort_order-b.sort_order),idx=list.findIndex(x=>x.id===id);if(idx<0||idx+dir<0||idx+dir>=list.length)return;[list[idx],list[idx+dir]]=[list[idx+dir],list[idx]];await api('/preset',{action:'order',ids:list.map(x=>x.id)});await refreshPresets()}
-function modal(html,buttons){$('modal-root').innerHTML=`<div class="modal-overlay" id="modal-overlay"><div class="modal" role="dialog" aria-modal="true"><button class="icon-btn modal-close" data-action="close-modal">${I('x')}</button>${html}<div class="modal-actions">${buttons||`<button class="btn soft" data-action="close-modal">好的</button>`}</div></div></div>`}
+function modal(html,buttons){++modalRequestSeq;$('modal-root').innerHTML=`<div class="modal-overlay" id="modal-overlay"><div class="modal" role="dialog" aria-modal="true"><button class="icon-btn modal-close" data-action="close-modal">${I('x')}</button>${html}<div class="modal-actions">${buttons||`<button class="btn soft" data-action="close-modal">好的</button>`}</div></div></div>`}
 function closeModal(){
+  ++modalRequestSeq;
   if(state.activeErrorContext){
     state.activeErrorContext=null;
     if(state.tab==='messages')renderMessages();
@@ -2622,6 +2639,7 @@ function closeModal(){
   $('modal-root').innerHTML='';
 }
 function showApiErrorModal(apiError,taskState=null,retryContext=null){
+  if(retryContext?.profileId&&retryContext?.characterId&&!isCurrentPair(retryContext.profileId,retryContext.characterId))return;
   const ts=taskState||state.taskState||state.queue?.taskState||null;
   const err=apiError||ts?.last_error||{
     error_code:'API_ERROR',
@@ -3106,7 +3124,7 @@ addEventListener('change',async e=>{
     try{
       const updated=await saving;
       if(isCurrentPair(profileId,characterId)){
-        if(updated.surveillance)state.surveillanceMap[characterId]=updated.surveillance;
+        if(updated.surveillance)state.surveillanceMap[typingPair(profileId,characterId)]=updated.surveillance;
         toast('见面地点已同步到监控与后续剧情');
       }
     }catch(error){toast('地点同步失败：'+error.message);}
