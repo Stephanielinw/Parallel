@@ -1948,20 +1948,22 @@ def sync_live_meeting_scene_location(db,p,c):
 def infer_meeting_location(db,pid,cid,custom_loc=''):
     clean_custom=str(custom_loc or '').strip()
     if clean_custom:return clean_custom[:40]
-    for m in reversed(current_plan_rows(db,pid,cid)[-16:]):
-        loc=proposal_location(m['text']) or (explicit_arrival_place(m['text']) if m['sender']=='user' else location_from_report(m['text']))
+    recent=current_plan_rows(db,pid,cid)[-24:]
+    # Newer physical location claims outrank a proposed appointment venue.
+    # The user's whereabouts never prove that the character moved there.
+    for m in reversed(recent):
+        loc=location_from_report(m['text']) if m['sender']=='ai' else explicit_arrival_place(m['text'])
         if loc:return loc
-        if SCENE_RULES['cancel'].search(normalize_scene_text(m['text'])):break
-    try:
-        p=profile_get(db,pid)
-        c=BY_ID.get(cid)
-        if p and c:
-            cur_slot=get_current_surveillance_slot(db,p,c)
-            if cur_slot and cur_slot.get('location'):
-                return str(cur_slot['location'])[:32]
-    except Exception:
-        pass
-    return '约定的街角咖啡馆'
+    for m in reversed(recent):
+        line=normalize_scene_text(m['text'])
+        if SCENE_RULES['cancel'].search(line) or re.search(
+                r"没去|未赴约|没赴约|没有去|放鸽子|没能赴约|没赶上|no.show|didn.t go|never went",line,re.I):
+            break
+        loc=proposal_location(line)
+        if loc:return loc
+    # Speculative surveillance cannot authoritatively set the meeting scene.
+    return '见面地点待确认'
+
 
 def meeting_summary_chunks(m_msgs,p,c):
     """Keep every chronological message, with manageable JSON-generation windows."""
@@ -2253,6 +2255,17 @@ def retrieve_relevant_memories(db,pid,cid,query_text='',exclude_msg_ids=None,lim
     rows=db.execute('SELECT * FROM episodic_memories WHERE owner_id=? AND profile_id=? ORDER BY event_at DESC',(cid,pid)).fetchall()
     if not rows:return []
     all_items=[dict(r)|{'tags':parse_json(r['tags'],[]),'raw_msg_ids':parse_json(r['raw_msg_ids'],[])} for r in rows]
+    generated={'meeting_summary','episode-summary','daily-summary'}
+    valid_msgs={r['id'] for r in db.execute(
+        "SELECT id FROM messages WHERE profile_id=? AND character_id=? AND engine!='recalled'",
+        (pid,cid)).fetchall()}
+    canonical_meetings={r['id'] for r in db.execute(
+        "SELECT id FROM meetings WHERE profile_id=? AND character_id=?",
+        (pid,cid)).fetchall()}
+    all_items=[x for x in all_items if x['source_type'] not in generated or (
+        bool(x['raw_msg_ids']) and all(mid in valid_msgs for mid in x['raw_msg_ids']) and (
+        x['source_type']!='meeting_summary' or
+        str(x['source_key'] or '').removeprefix('meeting:') in canonical_meetings))]
     if as_of:
         cutoff=datetime.fromtimestamp(as_of/1000,timezone.utc).isoformat(timespec='microseconds')
         allowed={r['id'] for r in db.execute('SELECT id FROM messages WHERE profile_id=? AND character_id=? AND julianday(created_at)<=julianday(?)',(pid,cid,cutoff))}
@@ -2303,7 +2316,7 @@ def retrieve_relevant_memories(db,pid,cid,query_text='',exclude_msg_ids=None,lim
             orig=by_id[item['clarifies_id']]
             entry['disputed_original']=orig['summary']
             used_ids.add(orig['id'])
-        if overlap_score>=6 and item['raw_msg_ids']:
+        if (overlap_score>=6 or item['source_type'] in generated) and item['raw_msg_ids']:
             placeholders=','.join('?' for _ in item['raw_msg_ids'][:2])
             raw_rows=db.execute(f"SELECT sender,text FROM messages WHERE id IN ({placeholders}) ORDER BY created_at LIMIT 2",tuple(item['raw_msg_ids'][:2])).fetchall()
             if raw_rows:
@@ -2325,6 +2338,10 @@ def format_episodic_entry(entry):
         'clarified':'[已澄清纠正]'
     }.get(entry.get('knowledge_mode'),'[过往记录]')
     date_part=str(entry.get('event_at',''))[:10]
+    if entry.get('source_type') in ('meeting_summary','episode-summary','daily-summary'):
+        return (f"- {date_part} [原文证据·摘要仅作检索线索] "
+                +str(entry.get('raw_excerpt') or '原文未找到，不得据此回忆细节')
+                +"（原文是实际发送的文字，不代表谈话里规划的事情已经发生。）")
     if entry.get('disputed'):
         line=f"- {date_part} [旧记录·已被澄清存疑] {entry['summary']}"
         if entry.get('correction_note'):
@@ -2970,15 +2987,17 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
         candidates.sort(key=lambda m:sum(1 for t in terms if str(t).lower() in (str(m.get('ai_summary') or '')+' '+str(m.get('summary') or '')+' '+str(m.get('entries') or '')).lower()),reverse=True)
     meeting=candidates[0]
     summary=str(meeting.get('ai_summary') or meeting.get('summary') or '').strip()[:500]
-    overview=("\n\n【过去真实见面的事实小结 · 默认记忆】\n"
+    overview=("\n\n【过去真实见面的原始记录索引 · 不是 AI 生成的事实小结】\n"
               +str(meeting.get('started_at',''))[:16]+" 至 "+str(meeting.get('ended_at',''))[:16]
-              +"，与 "+p['name']+" 的这场见面："+(summary or '见面原文已归档，小结等待重建。')
-              +"\n这是已发生的经历，原定计划不等于实际完成；无法从小结确认的具体细节不能编造。"
-              +"只有有必要提及具体现场细节时才参考下列可核对的原文。")
-    if not detail:return overview
+              +"，与 "+p['name']+" 有一场保存了现场原文的见面。AI 整理摘要可能有推断，已从提示词移除。"
+              +"共同到访、吃饭、回家和具体台词，必须由保存的现场原文证实；约定、监控与总结均不是证据。")
     entries=[e for e in parse_json(meeting.get('entries'),[]) if isinstance(e,dict) and e.get('sender') in ('user','ai')
         and str(e.get('text') or '').strip() and not (e['sender']=='user' and re.search(r'心想|心里|内心独白|默念|梦见|如果|假如',str(e['text'])))]
     if not entries:return overview
+    overview+='\n【最近现场原文末尾（实际说过/写过，不代表其中的计划完成）】\n'+'\n'.join(
+        '- '+(p['name'] if e['sender']=='user' else c['name'])+'：'+
+        re.sub(r'\s+',' ',str(e['text'])).strip()[:200] for e in entries[-4:])
+    if not detail:return overview
     terms=[t for t in extract_query_terms(query) if len(str(t))>=2]
     salient=re.compile(r'本来|原本|没(?:有)?(?:去|看|做)|没有|后来|随后|最终|最后|决定|离开|送.{0,14}(?:到|回|去)|接.{0,12}(?:到|回)|下车|车门|抵达|到达|相拥|拥抱|抱着|睡着|睡了|亲吻|接吻|亲密|亲了|吻痕|衣服|外套|生气|吃醋|告别|再见')
     n=len(entries)
@@ -3035,7 +3054,8 @@ def incompatible_character_slot(c,slot):
     return c.get('id')=='re-game:leon:re2' and bool(re.search(r'\bDSO\b|特工|联邦调查|华盛顿特区|安全公寓|防窃听|总统护卫|加密终端|政府机密',body,re.I))
 
 def verified_surveillance_slot(c,slot):
-    if not incompatible_character_slot(c,slot):return slot
+    if not incompatible_character_slot(c,slot):
+        return dict(slot,is_planned=True) if slot and slot.get('source')=='schedule' else slot
     return dict(slot,location='地点未确认',status='日程待核实',activity='原日程与本角色时期冲突，不作为已发生事实',
         scene=c['name']+'的此时位置尚无有效证据。',source='unverified')
 
@@ -3083,8 +3103,9 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         elif total_msgs<=8:
             system+="\n关系阶段提示：你们刚通过交友软件匹配不久，请保持角色自然的社交边界、幽默感或分寸，不要过度自来熟，也不要像客服一样生硬盘问或长篇解释个人设定。"
     if mode=='meeting' and cur_surv:
-        system+=f"\n\n【此刻你的真实位置与状态（实时监控同步）】\n当前时段：{cur_surv['start']}–{cur_surv['end']}｜你所在地点：{cur_surv['location']}｜状态：{cur_surv['status']}｜正在做的事：{cur_surv['activity']}。当对方问你在哪、在干什么或提出见面时，请自然地与你此刻的真实位置和状态保持一致。"
+        system+=f"\n\n【现场互动确认的位置（不是监控推演）】\n当前时段：{cur_surv['start']}–{cur_surv['end']}｜你所在地点：{cur_surv['location']}｜状态：{cur_surv['status']}｜正在做的事：{cur_surv['activity']}。进入见面模式不表示玩家已出现、双方已接触或共同移动；不能按监控推演决定现场。"
     if mode=='chat':system+=recent_actual_meeting_context(db,p,c,query_seed,simulated_at)
+    system+="\n【共同经历事实优先级】实际现场与消息原文 > 带时间戳的角色位置陈述 > 已确认而未发生的预约 > 监控日程推演。共同吃饭、接送和回家须有现场原文证实；禁止编造用户过去说过的台词。AI 摘要仅供检索，不能被当成亲历事实。"
     if recalled:
         system+="\n\n【第三层 · 按需检索命中的过往记忆 (Retrieved Episodic Memories)】\n"+"\n".join(format_episodic_entry(e) for e in recalled)
     else:
@@ -3123,7 +3144,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     if mode=='meeting':
         messages=[{'role':'system','content':system}]
         m_state=MEETING_STATE.get((p['id'],c['id']),{})
-        meet_loc=(cur_surv and cur_surv.get('location')) or infer_meeting_location(db,p['id'],c['id'],m_state.get('meeting_location',''))
+        meet_loc=m_state.get('meeting_location') or infer_meeting_location(db,p['id'],c['id'])
         has_trailing_user=(len(history_turns)>0 and history_turns[-1]['role']=='user' and not trigger_opening and not is_continue)
         prior_turns=history_turns[:-1] if has_trailing_user else history_turns
         final_user_turn=history_turns[-1] if has_trailing_user else None
@@ -3140,7 +3161,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         if final_user_turn:
             messages.append(final_user_turn)
         elif trigger_opening or len(history_turns)==0:
-            messages.append({'role':'user','content':f"【场景开启】{p['name']} 与 {c['name']} 刚刚在「{meet_loc}」线下碰面。请严格按照当前面对面小说预设的所有规则与目标篇幅，从 {c['name']} 的视角与反应切入，描写双方刚刚照面时的环境氛围、神态动作与开场互动正文（不要替 {p['name']} 决定台词或心理）。"})
+            messages.append({'role':'user','content':f"【第一幕 · 候场镜头】角色 {c['name']} 当前场景：「{meet_loc}」。只描写角色独立等待或在做什么，以及环境、衣着和动作；不替 {p['name']} 决定是否到达、站位、动作、台词、心理或与角色接触。地点若待确认则自然候场，不擅自传送到室内。玩家将在下一条现场行动中决定如何接触。遵守所有已启用预设的文风和篇幅。"})
         else:
             messages.append({'role':'user','content':f"【继续推进】请承接上一轮在「{meet_loc}」的现场氛围与动作，严格按照当前面对面小说预设的所有规则与目标篇幅，继续推进下一段细腻的面对面互动正文（不要替 {p['name']} 决定台词或心理）。"})
         return messages
