@@ -1305,6 +1305,9 @@ def anchor_remaining_day_after_meeting(db,p,c,meeting_rec,from_dt=None):
     return rec
 
 def replan_remaining_day_after_meeting(db,p,c,meeting_rec,from_dt=None):
+    if not meeting_rec or not any(e.get('sender')=='user' for e in
+            (parse_json(meeting_rec.get('entries'),[]) if isinstance(meeting_rec.get('entries'),str)
+             else meeting_rec.get('entries') or [])):return None
     if public_connection()['mode']!='live':return None
     try:
         original=datetime.fromisoformat(str(meeting_rec['ended_at']).replace('Z','+00:00')).astimezone()
