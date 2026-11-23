@@ -1634,7 +1634,7 @@
     return rec;
   };
   const syncSurveillanceOnMeetingEnd=(p,c,meetingRecord)=>{
-    if(!meetingRecord)return null;
+    if(!meetingRecord||!meetingRecord.entries?.some(m=>m.sender==='user'))return null;
     const begin=Date.parse(meetingRecord.started_at),finish=Date.parse(meetingRecord.ended_at);
     if(!Number.isFinite(begin)||!Number.isFinite(finish)||finish<begin)return null;
     const loc=meetingRecord.location||'约定的街角咖啡馆';
@@ -1679,7 +1679,7 @@
   // At most one model call per character while resuming an unfinished replan.
   const pendingPostMeetingPlans=new Map();
   async function replanRemainingDayAfterMeeting(p,c,meetingRecord,fromMs=Date.parse(meetingRecord?.ended_at||'')){
-    if(pub().mode!=='live'||!Number.isFinite(fromMs)||!meetingRecord?.id)return null;
+    if(pub().mode!=='live'||!Number.isFinite(fromMs)||!meetingRecord?.id||!meetingRecord.entries?.some(m=>m.sender==='user'))return null;
     const originalFinish=Date.parse(meetingRecord.ended_at||'');
     if(!Number.isFinite(originalFinish))return null;
     const anchor=Math.max(fromMs,originalFinish);
@@ -2046,7 +2046,7 @@
     const all=Array.isArray(survRec?.slots)?survRec.slots:[];
     const actual=all.filter(isDiaryObservedSlot);
     const projected=all.filter(s=>s&&!isDiaryObservedSlot(s));
-    const meetingRecords=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&
+    const meetingRecords=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&Array.isArray(m.entries)&&m.entries.some(e=>e.sender==='user')&&
       m.started_at&&(localDateStr(m.started_at)===dateStr||localDateStr(m.ended_at||m.finished_at||m.started_at)===dateStr));
     const messages=messagesOf(p.id,c.id).filter(m=>m.created_at&&localDateStr(m.created_at)===dateStr&&
       m.engine!=='recalled'&&!m.recalled);
@@ -2601,6 +2601,9 @@
     for(const m of mMsgs)m.meeting_id=meetingId;
     if(existing)Object.assign(existing,rec);
     else db.meetings.push(rec);
+    // An AI-only holding shot is not proof that the player ever arrived.
+    // Keep the original card/transcript, but do not mint an experienced memory.
+    if(!mMsgs.some(m=>m.sender==='user'&&m.mode==='meeting'&&!m.recalled&&m.engine!=='recalled'))return rec;
     const oldMemory=db.episodicMemories.find(x=>x.owner_id===c.id&&x.profile_id===p.id&&x.source_key==='meeting:'+meetingId);
     if(oldMemory?.disputed)return rec; // preserve explicit user corrections
     appendEpisodicMemory({
@@ -2954,7 +2957,9 @@
       )))return false;
       if(item.source_type==='meeting_summary'){
         const mid=item.meeting_id||String(item.source_key||'').replace(/^meeting:/,'');
-        return db.meetings.some(m=>m.id===mid&&m.profile_id===pid&&m.character_id===cid);
+        return db.meetings.some(m=>m.id===mid&&m.profile_id===pid&&m.character_id===cid)&&
+          ids.some(id=>db.messages.some(m=>m.id===id&&m.profile_id===pid&&m.character_id===cid&&m.sender==='user'&&m.mode==='meeting'));
+
       }
       return true;
     };
@@ -3375,7 +3380,7 @@
   };
   function recentActualMeetingContext(p,c,query='',at=Date.now()){
     const rel=relation(p.id,c.id),active=rel?.mode==='meeting'?rel.active_meeting_id:'';
-    const candidates=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&m.id!==active)
+    const candidates=(db.meetings||[]).filter(m=>m.profile_id===p.id&&m.character_id===c.id&&m.id!==active&&Array.isArray(m.entries)&&m.entries.some(e=>e.sender==='user'))
       .filter(m=>{const end=Date.parse(m.finished_at||m.ended_at||'');return Number.isFinite(end)&&end<=at;})
       .sort((a,b)=>Date.parse(b.finished_at||b.ended_at)-Date.parse(a.finished_at||a.ended_at));
     if(!candidates.length)return '';
