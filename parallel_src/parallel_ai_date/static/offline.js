@@ -5199,7 +5199,7 @@
             r.meeting_location_history=[{at:r.meeting_started_at,location:r.meeting_location,source:'start'}];
             r.updated_at=stamp();
             syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
-            event(p.id,c.id,'meeting','与 '+p.name+' 开始面对面见面');
+            event(p.id,c.id,'meeting','与 '+p.name+' 进入面对面候场（尚未确认双方接触）');
             db.events.at(-1).meeting_id=r.active_meeting_id;
             save(); // the real start survives a failed or interrupted opening
             if(data.triggerOpening===true&&pub().mode!=='normal'){
