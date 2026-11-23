@@ -94,6 +94,25 @@ test('M03-B: atomically partition synthetic legacy save, photos, meetings and me
   expect(result.restored.data.diaries['m03b-p|re-game:leon:re6'].byDate['2026-11-22'].content)
     .toContain('随后各自安排生活');
   expect(result.restored.chatPhotoFiles[0].ref).toBe('synthetic-gallery-1');
+  // Missing photos and unrelated exports are not valid migration candidates.
+  // Existing verified candidate and old localStorage must both remain intact.
+  const guards=await page.evaluate(async backup=>{
+    const lab=(window as any).M03BShadowLab;
+    const source=localStorage.getItem('parallel-portable-v2');
+    const missing=JSON.parse(backup);missing.chatPhotoFiles=[];
+    const wrong=JSON.parse(backup);wrong.data.messages[0].text='CHANGED OUTSIDE THE ACTIVE SAVE';
+    const errors:string[]=[];
+    for(const value of [missing,wrong]){
+      try{await lab.stage({name:'parallel-m03b-lab-full',backup:JSON.stringify(value)});}
+      catch(e){errors.push(String((e as Error).message));}
+    }
+    const still=(await lab.loadLab('parallel-m03b-lab-full')).pack;
+    return {errors,sameSource:localStorage.getItem('parallel-portable-v2')===source,still};
+  },start.backup);
+  expect(guards.errors[0]).toContain('missing referenced photo');
+  expect(guards.errors[1]).toContain('differs from the active source');
+  expect(guards.sameSource).toBe(true);
+  expect(guards.still).toEqual(JSON.parse(start.backup));
   expect(errors).toEqual([]);
 });
 
