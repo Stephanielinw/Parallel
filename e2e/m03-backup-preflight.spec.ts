@@ -7,7 +7,9 @@ test('M03: two JSON copies are checked locally without changing the active save'
   await page.goto('/Parallel/');
   await expect.poll(()=>page.evaluate(()=>Boolean((window as any).ParallelOffline))).toBe(true);
   const prompt=page.locator('#modal-overlay [data-action="choose-api-mode"][data-demo="no"]');
-  if(await prompt.isVisible()){await prompt.click();await expect(page.locator('#modal-overlay')).toHaveCount(0);}
+  await prompt.waitFor({state:'visible',timeout:10000});
+  await prompt.click();
+  await expect(page.locator('#modal-overlay')).toHaveCount(0);
   await page.locator('#mobile-nav [data-action="nav"][data-tab="terminal"]').click();
   await expect(page.locator('#portable-backup-check')).toHaveCount(1);
   const snapshot=await page.evaluate(()=>JSON.parse((window as any).ParallelOffline.exportData()).data);
