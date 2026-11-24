@@ -120,47 +120,106 @@
       participants,summary,keywords,details,key_dialogues:keyDialogues,message_ids:src.map(x=>x.id),
       source_signature:signature,created_at:stamp()};
   }
-  async function runMeetingCheckpoints(p,c,mid){
-    if(!mid)return [];
-    const groups=completedMeetingGroups(p.id,c.id,mid),total=Math.floor(groups.length/50),done=[];
-    for(let index=1;index<=total;index++){
-      const block=groups.slice((index-1)*50,index*50),signature=meetingBlockSignature(block);
-      const current=(db.meetingCheckpoints||[]).find(x=>x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid&&x.block_index===index);
-      if(current?.source_signature===signature){done.push(current);continue;}
-      let data;
-      if(pub().mode==='live'){
-        const raw=await llm([
-          {role:'system',content:'你是小说见面场景的事实档案员，只总结真实写出的事实。严格按时间顺序，记录场景地点、实际行为、重要对话、尚未解决的事情、改约/取消、状态变化，不得替玩家补写动作或臆测。只输出 JSON：{"summary":"300至500字中文纪实","participants":["真实出场人物"],"keywords":["2至14个准确的具体事件关键词"],"key_dialogues":[{"message_id":"原文ID","quote":"从该条原文复制的准确连续短句"}],"details":["5至18条清楚具体、有后续意义的已发生事件"]}。关键对话逐字摘录并带来源ID，不得编造。'},
-          {role:'user',content:'第'+index+'段，完整互动50组。人物：'+p.name+'、'+c.name+'。每行附原文ID、时间。\n'+meetingCheckpointSource(block,p,c)}
-        ],{json_mode:true,profile:p,character:c,mode:'archive',entry_point:'meeting_checkpoint',background:true,temperature:0.25});
-        data=JSON.parse(raw);
-      }else{
-        const first=block[0][0],last=block.at(-1).at(-1);
-        data={summary:'与 '+p.name+' 进行50组面对面互动。开头「'+String(first.text||'').replace(/\s+/g,' ').slice(0,80)+'」，结束于「'+String(last.text||'').replace(/\s+/g,' ').slice(0,80)+'」。离线暂存小结，细节须核对现场原文。',keywords:extractMemoryTags(block.map(g=>g.find(m=>m.sender==='user')?.text||'').join(' '),10),details:[],key_dialogues:[]};
+  // M11: one factual scene recap is generated AFTER an observed location
+  // transition, not after an arbitrary number of conversational turns.
+  async function generateMeetingSceneSummary(p,c,stage){
+    if(pub().mode!=='live'){
+      return {summary:'在「'+stage.from_location+'」的这一段现场原文已保存（'+stage.messages.length+
+        '条）；这是离线占位记录，具体互动请核对对应原文。',source:'fallback'};
+    }
+    const chunks=meetingSummaryChunks(stage.messages,p,c);
+    const pieces=[];
+    for(let i=0;i<chunks.length;i++){
+      const raw=await llm([
+        {role:'system',content:'你是见面现场的纪实档案员，只依据原始现场记录小结刚结束的这一段场景。严格按发生顺序概括真实动作、双方确实说过的话、未完成的安排以及重要情绪变化。不要杜撰台词、地点、移动或身体接触。提议不等于行动，不能把未来路线写成已经发生。只输出 JSON {"summary":"120–350字纪实小结"}。'},
+        {role:'user',content:'这一场景的实际位置是「'+stage.from_location+'」，后来有现场证据确认进入「'+stage.to_location+'」。本次只总结转场之前的原始互动，第'+(i+1)+'/'+chunks.length+'段：\n'+chunks[i]}
+      ],{json_mode:true,profile:p,character:c,mode:'archive',entry_point:'meeting_scene_checkpoint',
+        background:true,temperature:0.2,max_tokens:1300,min_output_tokens:320});
+      const parsed=JSON.parse(raw),part=stripProtocolTags(String(parsed?.summary||''),{preserveParagraphs:false}).trim();
+      if(part.length<12)throw Error('地点变更阶段小结缺少有效内容');
+      pieces.push(part);
+    }
+    if(pieces.length===1)return {summary:pieces[0].slice(0,850),source:'ai'};
+    const raw=await llm([
+      {role:'system',content:'以下是同一实际地点内按顺序记录的真实片段。只合并已发生的事实，保持关键对话和未完成问题。严禁补写没有发生的动作。只输出 JSON {"summary":"200–450字纪实小结"}。'},
+      {role:'user',content:'地点：「'+stage.from_location+'」。\n'+pieces.join('\n')}
+    ],{json_mode:true,profile:p,character:c,mode:'archive',entry_point:'meeting_scene_checkpoint_merge',
+      background:true,temperature:0.2,max_tokens:1300,min_output_tokens:320});
+    const combined=stripProtocolTags(String(JSON.parse(raw)?.summary||''),{preserveParagraphs:false}).trim();
+    if(combined.length<12)throw Error('合并阶段小结缺少有效内容');
+    return {summary:combined.slice(0,850),source:'ai'};
+  }
+  async function runMeetingSceneSummaries(p,c,mid){
+    const done=[];
+    for(const stage of meetingSceneStages(p,c,mid)){
+      // An empty holding shot alone is not a witnessed shared encounter.
+      if(!stage.messages.length||!stage.messages.some(m=>m.sender==='user'))continue;
+      const existing=(db.meetingCheckpoints||[]).find(cp=>cp.kind==='scene_transition'&&
+        cp.profile_id===p.id&&cp.character_id===c.id&&cp.meeting_id===mid&&
+        cp.transition_message_id===stage.transition_message_id);
+      if(existing&&isValidMeetingSceneCheckpoint(existing,p.id,c.id,mid)){
+        done.push(existing);continue;
       }
-      if(!archiveStoredCurrent())throw Error('阶段小结生成期间其他标签页改变了存档');
-      const latest=completedMeetingGroups(p.id,c.id,mid).slice((index-1)*50,index*50);
-      if(latest.length!==50||meetingBlockSignature(latest)!==signature)throw Error('阶段小结生成期间原文已变化');
-      const cp=normalizedMeetingCheckpoint(data,p,c,mid,index,latest,signature);
-      db.meetingCheckpoints=db.meetingCheckpoints.filter(x=>!(x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid&&x.block_index===index));
+      let generated;
+      try{generated=await generateMeetingSceneSummary(p,c,stage);}
+      catch(err){
+        recordBgError(p.id,c.id,'meeting_scene_checkpoint',err.apiError||{message:String(err.message||err)});
+        generated={source:'fallback',summary:'在「'+stage.from_location+'」的这一段原始互动已完整保存。阶段小结生成失败，请以这段现场原文为准。'};
+      }
+      if(!archiveStoredCurrent())throw Error('场景阶段小结生成期间其他标签页改变了存档');
+      const current=meetingSceneStages(p,c,mid).find(x=>x.transition_message_id===stage.transition_message_id);
+      const r=relation(p.id,c.id);
+      if(!current||current.source_signature!==stage.source_signature||
+        !r||r.active_meeting_id!==mid||r.mode!=='meeting')return done;
+      const cp={
+        id:'scene:'+mid+':'+stage.transition_message_id,kind:'scene_transition',
+        profile_id:p.id,character_id:c.id,meeting_id:mid,block_index:stage.index,
+        transition_message_id:stage.transition_message_id,
+        from_location:stage.from_location,to_location:stage.to_location,
+        round_start:Math.max(1,stage.index),round_end:stage.index,
+        started_at:stage.messages[0].created_at,ended_at:stage.messages.at(-1).created_at,
+        participants:[p.name,c.name],summary:generated.summary,
+        keywords:extractMemoryTags(stage.messages.map(m=>m.text).join(' ').slice(0,3500),10),
+        details:[],key_dialogues:[],message_ids:stage.message_ids,
+        source_signature:stage.source_signature,summary_source:generated.source,created_at:stamp()
+      };
+      db.meetingCheckpoints=db.meetingCheckpoints.filter(x=>!(
+        x.kind==='scene_transition'&&x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid&&
+        x.transition_message_id===stage.transition_message_id));
       db.meetingCheckpoints.push(cp);
-      appendEpisodicMemory({owner_id:c.id,profile_id:p.id,source_type:'meeting_checkpoint',source_key:'meeting-checkpoint:'+mid+':'+index,
-        meeting_id:mid,knowledge_mode:'experienced',summary:'与 '+p.name+' 的第'+cp.round_start+'–'+cp.round_end+'组见面：'+cp.summary,
-        tags:['见面',...cp.keywords],importance:4,emotional_weight:3,raw_msg_ids:cp.message_ids,
-        meeting_data:{block_index:index,key_dialogues:cp.key_dialogues,details:cp.details},event_at:cp.ended_at});
+      if(generated.source==='ai'){
+        appendEpisodicMemory({owner_id:c.id,profile_id:p.id,source_type:'meeting_checkpoint',
+          source_key:'meeting-scene:'+mid+':'+stage.transition_message_id,
+          meeting_id:mid,knowledge_mode:'experienced',
+          summary:'与 '+p.name+' 在「'+stage.from_location+'」的真实见面片段：'+cp.summary,
+          tags:['见面',stage.from_location,...cp.keywords],importance:4,emotional_weight:3,
+          raw_msg_ids:stage.message_ids,event_at:stage.ended_at,
+          meeting_data:{scene_transition:stage.transition_message_id,from_location:stage.from_location,to_location:stage.to_location}});
+      }
+      const monitor=getOrInitSurveillance(p,c,localDateStr(stage.transition.created_at));
+      if(monitor.live_override?.meeting_id===mid){
+        monitor.live_override.location=stage.to_location;
+        monitor.live_override.last_scene_summary=cp.summary;
+      }
+      monitor.updated_at=stamp();
       save();done.push(cp);
     }
     return done;
   }
-  async function ensureMeetingCheckpoints(p,c,mid){
+  async function ensureMeetingSceneSummaries(p,c,mid){
     if(!mid)return [];
     const key=pairKey(p.id,c.id)+'|'+mid;
     const prior=meetingCheckpointJobs.get(key);
     if(prior)return await prior;
-    const job=runMeetingCheckpoints(p,c,mid);
+    const job=runMeetingSceneSummaries(p,c,mid);
     meetingCheckpointJobs.set(key,job);
     try{return await job;}
     finally{if(meetingCheckpointJobs.get(key)===job)meetingCheckpointJobs.delete(key);}
+  }
+  // Historical 50-group checkpoint records remain readable and exportable;
+  // the old threshold is no longer an automatic generation trigger.
+  async function ensureMeetingCheckpoints(p,c,mid){
+    return mid?validMeetingCheckpoints(p.id,c.id,mid):[];
   }
   function meetingCheckpointPromptContext(p,c,mid,query=''){
     const groups=completedMeetingGroups(p.id,c.id,mid),records=validMeetingCheckpoints(p.id,c.id,mid,groups);
