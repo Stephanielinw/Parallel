@@ -27,13 +27,19 @@
     const full=groups||completedMeetingGroups(pid,cid,mid),valid=[];
     for(const cp of db.meetingCheckpoints||[]){
       if(cp.profile_id!==pid||cp.character_id!==cid||cp.meeting_id!==mid)continue;
-      const part=full.slice((cp.block_index-1)*50,cp.block_index*50);
-      if(part.length!==50||cp.source_signature!==meetingBlockSignature(part)){
-        const mem=db.episodicMemories.find(m=>m.owner_id===cid&&m.profile_id===pid&&m.source_key==='meeting-checkpoint:'+mid+':'+cp.block_index);
+      const validSource=cp.kind==='scene_transition'
+        ?isValidMeetingSceneCheckpoint(cp,pid,cid,mid)
+        :(full.slice((cp.block_index-1)*50,cp.block_index*50).length===50&&
+          cp.source_signature===meetingBlockSignature(full.slice((cp.block_index-1)*50,cp.block_index*50)));
+      if(!validSource){
+        const source=cp.kind==='scene_transition'
+          ?'meeting-scene:'+mid+':'+cp.transition_message_id
+          :'meeting-checkpoint:'+mid+':'+cp.block_index;
+        const mem=db.episodicMemories.find(m=>m.owner_id===cid&&m.profile_id===pid&&m.source_key===source);
         if(mem)mem.archive_stale=true;
       }else valid.push(cp);
     }
-    return valid.sort((x,y)=>x.block_index-y.block_index);
+    return valid.sort((x,y)=>Date.parse(x.ended_at)-Date.parse(y.ended_at));
   }
   function pruneMeetingCheckpoints(pid,cid,mid=''){
     const groupsByMeeting=new Map(),removed=[];
@@ -42,12 +48,52 @@
       if(!groupsByMeeting.has(cp.meeting_id))groupsByMeeting.set(cp.meeting_id,completedMeetingGroups(pid,cid,cp.meeting_id));
       const full=groupsByMeeting.get(cp.meeting_id);
       const part=full.slice((cp.block_index-1)*50,cp.block_index*50);
-      const valid=part.length===50&&cp.source_signature===meetingBlockSignature(part);
-      if(!valid)removed.push('meeting-checkpoint:'+cp.meeting_id+':'+cp.block_index);
+      const valid=cp.kind==='scene_transition'
+        ?isValidMeetingSceneCheckpoint(cp,pid,cid,cp.meeting_id)
+        :(part.length===50&&cp.source_signature===meetingBlockSignature(part));
+      if(!valid)removed.push(cp.kind==='scene_transition'
+        ?'meeting-scene:'+cp.meeting_id+':'+cp.transition_message_id
+        :'meeting-checkpoint:'+cp.meeting_id+':'+cp.block_index);
       return valid;
     });
     if(removed.length)db.episodicMemories=db.episodicMemories.filter(m=>m.profile_id!==pid||m.owner_id!==cid||!removed.includes(m.source_key));
     return removed.length;
+  }
+  // Scene transitions replace the old fixed 50-group trigger. Each section is
+  // sourced from the recorded message IDs and the *actual meeting* location
+  // history (not a projected surveillance slot).
+  function meetingSceneStages(p,c,mid){
+    const rows=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid&&
+      m.engine!=='recalled'&&!m.recalled&&!isChatArtifact(m));
+    const relationRow=relation(p.id,c.id);
+    const active=relationRow?.mode==='meeting'&&relationRow.active_meeting_id===mid;
+    const record=(db.meetings||[]).find(m=>m.id===mid&&m.profile_id===p.id&&m.character_id===c.id);
+    const history=active?activeMeetingLocationHistory(p,c):(record?.location_history||[]);
+    let start=0,from=history[0]?.location||record?.location||'见面地点待确认';
+    const results=[];
+    for(const event of history.slice(1)){
+      if(!event.message_id||!['scene','ai_scene'].includes(event.source))continue;
+      const index=rows.findIndex(m=>m.id===event.message_id);
+      if(index<start||index<0||!event.location||event.location===from)continue;
+      const segment=rows.slice(start,index),transition=rows[index],location=event.location;
+      results.push({
+        index:results.length+1,from_location:from,to_location:location,
+        transition_message_id:event.message_id,transition,
+        messages:segment,message_ids:segment.map(m=>m.id),
+        source_signature:meetingBlockSignature([segment, [transition]])+'|'+from+'|'+location
+      });
+      start=index;from=location;
+    }
+    return results;
+  }
+  function isValidMeetingSceneCheckpoint(cp,pid,cid,mid){
+    const p=db.profiles.find(x=>x.id===pid),c=byId.get(cid);
+    if(!p||!c||cp.kind!=='scene_transition')return false;
+    const matching=meetingSceneStages(p,c,mid).find(s=>s.transition_message_id===cp.transition_message_id);
+    return Boolean(matching&&matching.messages.length&&
+      matching.from_location===cp.from_location&&matching.to_location===cp.to_location&&
+      matching.source_signature===cp.source_signature&&
+      JSON.stringify(matching.message_ids)===JSON.stringify(cp.message_ids));
   }
   function meetingCheckpointSource(groups,p,c){
     return groups.flat().map(m=>{
