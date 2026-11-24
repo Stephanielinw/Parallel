@@ -3339,7 +3339,69 @@ def verified_surveillance_slot(c,slot,p=None):
     return dict(slot,location='地点未确认',status='日程待核实',activity='原日程与本角色时期冲突，不作为已发生事实',
         scene=c['name']+'的此时位置尚无有效证据。',source='unverified')
 
-def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_ids=None,trigger_opening=False,is_continue=False,exclude_ids=None,simulated_at=0):
+def meeting_clock_context(state,history,now=None,current_input_id=''):
+    d=(now or datetime.now().astimezone()).astimezone()
+    def parse(value):
+        try:return datetime.fromisoformat(str(value).replace('Z','+00:00')).astimezone()
+        except (ValueError,TypeError,OverflowError):return None
+    start=parse(state.get('meeting_started_at')) or (parse(history[0].get('created_at')) if history else None) or d
+    start=min(start,d)
+    past=[parse(m.get('created_at')) for m in history if m.get('id')!=current_input_id and m.get('engine')!='recalled' and not m.get('recalled')]
+    last=max((t for t in past if t is not None and start<=t<=d),default=None)
+    elapsed=int((d-start).total_seconds())
+    period='凌晨' if d.hour<5 else '上午' if d.hour<12 else '下午' if d.hour<18 else '晚上'
+    zone=d.strftime('%z')
+    label=lambda t:t.strftime('%Y-%m-%d %H:%M')
+    gap='没有更早的有效现场记录。' if last is None else f'上一条已发生现场记录：{label(last)}；距上一条现场记录 {int((d-last).total_seconds())} 秒（不含本轮刚发送的输入）。'
+    return f'【面对面现实时间规则 · 强制 1:1 · 系统事实最高优先级】应用本地现实时间：{label(d)}；本次见面实际开始：{label(start)}；本幕时间：{label(d)}（{period}，UTC{zone[:3]}:{zone[3:]}）；本幕距见面开始 {elapsed} 秒（约 {elapsed//60} 分钟），{gap}本幕时间是唯一可用的现在，优先于预设的紧接最后一秒、历史正文、角色习惯和日程。角色看钟表或直接报时必须与本幕时间一致；无须报时则省略。跨日以完整日期区分今天昨天。长间隔只说明真实时间流逝，不证明角色何时醒来、做过什么或玩家一直维持某个姿势；不得倒填未经确认的精确时间、共同经历或用户状态。允许角色从现在起自主行动，不得替玩家补写空白期间的行动。现实时间不改变原作年份、年龄或科技。禁止擅自跳时、结束见面或在正文输出时间元数据。'
+
+
+def meeting_current_clock_conflict(text,anchor):
+    d=anchor.astimezone()
+    digits='零一二三四五六七八九'
+    def number(value):
+        if value.isascii() and value.isdigit():return int(value)
+        if value=='两':return 2
+        if '十' in value:
+            a,_,b=value.partition('十')
+            return (digits.index(a) if a in digits and a else 1)*10+(digits.index(b) if b in digits and b else 0)
+        return digits.index(value) if len(value)==1 and value in digits else -1
+    expr=r'(?:(凌晨|早上|上午|中午|下午|傍晚|晚上|夜里)\s*)?([0-9零一二两三四五六七八九十]{1,3})(?:[:：]([0-9]{2})|[点時时](?:([0-9零一二三四五六七八九十]{1,3})分|(半|一刻|三刻))?)'
+    source=str(text or '')
+    for m in re.finditer(expr,source):
+        before=source[max(0,m.start()-140):m.start()]
+        after=source[m.end():m.end()+24]
+        direct=re.search(r'(?:现在|此刻|这会儿)(?:已经|刚过|才|都|是|已到|正好|快到)?\s*$',before) and not re.match(r'(?:见面|出发|回来|开门|结束|睡觉|起床|吃饭|开始)',after)
+        watch=re.search(r'(?:手表|腕表|钟表|挂钟|时钟|表盘|手机时间)',before) and re.search(r'[“「]\s*$',before) and re.match(r'[。！!，,？?]?[”」]',after)
+        if not (direct or watch):continue
+        period,h,colon,minute,fraction=m.groups()
+        h=number(h)
+        minute=int(colon) if colon is not None else number(minute) if minute is not None else {'半':30,'一刻':15,'三刻':45}.get(fraction)
+        if not 0<=h<=23 or (minute is not None and not 0<=minute<=59):continue
+        hours=[h]
+        if 1<=h<=12:
+            if period in ('下午','傍晚','晚上','夜里'):hours=[0 if h==12 else h+12]
+            elif period in ('凌晨','早上','上午'):hours=[0 if h==12 else h]
+            elif not period:hours=[h%12,h%12+12]
+        if d.hour not in hours or (minute is not None and d.minute!=minute):return m.group()
+    return ''
+
+
+def complete_meeting_with_clock(db,p,c,log_meta,**options):
+    # Freeze the scene clock before request, including any corrective retry.
+    anchor=datetime.now().astimezone()
+    messages=compile_messages(db,p,c,'meeting',clock_now=anchor,**options)
+    raw=completion(messages,json_mode=True,log_meta=log_meta)
+    current=MEETING_STATE.get((p['id'],c['id']),{}).get('meeting_location','')
+    if meeting_current_clock_conflict(parse_meeting_scene_turn(raw,current)['text'],anchor):
+        correction={'role':'system','content':'【报时纠错】上一候选未保存，与系统本幕时间冲突。唯一当前时间为 '+anchor.strftime('%Y-%m-%d %H:%M')+'。重新完整生成同一幕 JSON；不引用未保存候选，不补写空白时间内事件；无需报时则省略。'}
+        raw=completion([*messages[:-1],correction,messages[-1]],json_mode=True,log_meta=log_meta)
+        if meeting_current_clock_conflict(parse_meeting_scene_turn(raw,current)['text'],anchor):
+            raise ValueError('当前场景报时仍与系统时间冲突，未保存回复，请重试。')
+    return raw
+
+
+def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_ids=None,trigger_opening=False,is_continue=False,exclude_ids=None,simulated_at=0,clock_now=None):
     ordered=[preset_row_dict(r) for r in db.execute('SELECT * FROM presets WHERE mode=? AND enabled=1 ORDER BY sort_order,id',(mode,)).fetchall()]
     macros=lambda t:expand_preset_macros(t,p,c)
     core_presets=[x for x in ordered if x['role']=='system' and not is_post_history_system_preset(x)] if mode=='meeting' else [x for x in ordered if x['role']=='system']
@@ -3400,7 +3462,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             for m in pre_chat:
                 who=c['name'] if m['sender']=='ai' else p['name']
                 txt_clean=(str(m.get('text','')).strip() if m['sender']=='user' else clean_chat_bubble_text(m['text']))[:100]
-                chat_lines.append(f"- [{fmt_hhmm(m.get('created_at')) or '--:--'} {who}]: {txt_clean}")
+                chat_lines.append(f"- [{chat_clock_label(m.get('created_at'))} {who}]: {txt_clean}")
             system+="\n\n【见面前的近期手机联系脉络（仅供剧情前情参考，严禁模仿手机短信的简短篇幅或气泡格式）】\n"+"\n".join(chat_lines)
     timeline_lines=[]
     history_turns=[]
@@ -3409,7 +3471,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         if msg.get('engine')=='recalled':
             history_turns.append({'role':role,'content':'[系统提示：对方刚刚撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'})
         else:
-            t_tag=chat_clock_label(msg.get('created_at')) if mode=='chat' else (fmt_hhmm(msg.get('created_at')) or '--:--')
+            t_tag=chat_clock_label(msg.get('created_at'))
             m_label='线下见面' if msg['mode']=='meeting' else '线上短信'
             who=c['name'] if msg['sender']=='ai' else p['name']
             timeline_lines.append(f"#{idx+1} {t_tag}（{m_label}·{who}）")
@@ -3436,7 +3498,9 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         non_sys_post_presets=[x for x in post_presets if x['role']!='system']
         meeting_state_line=f"【第四层 · 当前状态 (Current State)】角色最近经现场实际行动确认的地点为「{meet_loc}」，这是此前的事实锚点而非固定舞台。若本轮实际移至新地点，按物理过程继续，后续监控将以新地点为准；绝不能因为提议、路过提及或计划前往就当作已经到达。任何旧行程或旧地名都不可覆盖更新的现场行动。请严格遵循上方导入的面对面小说预设中的文风、叙事视角、人物边界、篇幅区间与创作铁律，不要替 {p['name']} 说话、行动或决定内心感受，不要在正文开头添加任何时间或模式标签，直接输出小说正文。"
         scene_schema='【每轮见面回复结构化契约】只输出一个 JSON 对象：{"text":"完整的第三人称小说正文","location":"本轮角色真实所在地","location_evidence":"如果已实际换地点，从本条角色正文或玩家最新原文逐字引用已经到达的短句，否则填空字符串"}。必须每轮填 location，即使没有移动也要填写原地点。只描述角色实际完成的移动；计划、约定、猜测和监控日程不能改地点。text 要遵守全部已有预设的小说篇幅、文风及不得替玩家行动的限制，JSON 外不能输出解释。'
-        messages.append({'role':'system','content':'\n\n'.join([*post_sys_parts,meeting_state_line,scene_schema])})
+        clock_input=working_history[-1]['id'] if has_trailing_user and working_history else ''
+        clock_context=meeting_clock_context(m_state,working_history,clock_now,clock_input)
+        messages.append({'role':'system','content':'\n\n'.join([*post_sys_parts,clock_context,meeting_state_line,scene_schema])})
         for x in non_sys_post_presets:
             messages.append({'role':x['role'],'content':macros(x['content'])})
         if final_user_turn:
@@ -4023,7 +4087,7 @@ class Handler(BaseHTTPRequestHandler):
                                 engine='demo';settings=load_connection();reply_txt=''
                                 if all(settings.get(k) for k in ('base_url','api_key','model')):
                                     try:
-                                        reply_txt=completion(compile_messages(db,p,c,'meeting',trigger_opening=True),json_mode=True,log_meta={'mode':'meeting','task_type':'meeting','entryPoint':'meeting-opening','profile':p,'character':c})
+                                        reply_txt=complete_meeting_with_clock(db,p,c,{'mode':'meeting','task_type':'meeting','entryPoint':'meeting-opening','profile':p,'character':c},trigger_opening=True)
                                         engine='live'
                                     except Exception as e:
                                         warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
@@ -4345,7 +4409,7 @@ class Handler(BaseHTTPRequestHandler):
                     engine='demo';warning='';settings=load_connection();api_error=None;reply=''
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
                         try:
-                            reply=completion(compile_messages(db,p,c,mode,is_continue=(mode=='meeting')),json_mode=(mode=='meeting'),log_meta={'mode':mode,'task_type':mode,'entryPoint':'meeting-continue' if mode=='meeting' else 'chat-reply','profile':p,'character':c,'parseFn':(lambda raw:' / '.join(split_chat_bubbles(raw))) if mode=='chat' else None})
+                            reply=complete_meeting_with_clock(db,p,c,{'mode':mode,'task_type':mode,'entryPoint':'meeting-continue','profile':p,'character':c},is_continue=True) if mode=='meeting' else completion(compile_messages(db,p,c,mode),json_mode=False,log_meta={'mode':mode,'task_type':mode,'entryPoint':'chat-reply','profile':p,'character':c,'parseFn':lambda raw:' / '.join(split_chat_bubbles(raw))})
                             engine='live'
                         except Exception as e:
                             warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
@@ -4392,7 +4456,7 @@ class Handler(BaseHTTPRequestHandler):
                     engine='demo';warning='';settings=load_connection();api_error=None;reply=''
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
                         try:
-                            reply=completion(compile_messages(db,p,c,mode,latest=txt),json_mode=True,log_meta={'mode':mode,'task_type':'meeting','entryPoint':'meeting-message','profile':p,'character':c})
+                            reply=complete_meeting_with_clock(db,p,c,{'mode':mode,'task_type':'meeting','entryPoint':'meeting-message','profile':p,'character':c},latest=txt)
                             engine='live'
                         except Exception as e:
                             warning=str(e);engine='error';api_error=getattr(e,'api_error',None)

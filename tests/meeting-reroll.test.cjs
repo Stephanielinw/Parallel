@@ -2,11 +2,11 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const root=path.join(__dirname,'..'),src=fs.readFileSync(path.join(root,'public/parallel/offline.js'),'utf8');
 process.env.TZ='America/Los_Angeles';
 const store=new Map(),calls=[];let n=0,now=new Date(2026,10,20,23,58,0).getTime(),answer='初始见面：他把蓝色雨伞放在椅边。';
-let error=false,deferred=null;
+let error=false,deferred=null,answers=[];
 class Clock extends Date{constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
 const mock=async(url,opts)=>{const body=JSON.parse(opts.body);calls.push(body);if(deferred)await deferred;
   const text=body.messages[0].content;
-  const content=body.response_format?JSON.stringify({location:'屋顶',summary:'在屋顶见面并自然告别。'}):answer;
+  const content=body.response_format?JSON.stringify({location:'屋顶',summary:'在屋顶见面并自然告别。'}):(answers.length?answers.shift():answer);
   return {ok:!error,status:error?503:200,json:async()=>error?{error:{message:'mock outage'}}:{choices:[{message:{content},finish_reason:'stop'}]}};
 };
 function start(){const window={};vm.runInNewContext(src,{window,localStorage:{getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)},crypto:{randomUUID:()=> 'm'+(++n)},URLSearchParams,Date:Clock,JSON,Math,TextEncoder,AbortController,setTimeout:()=>0,clearTimeout:()=>{},console,fetch:mock});return window.ParallelOffline}
@@ -51,6 +51,12 @@ assert.equal(clockHelpers.meetingCurrentClockConflict('他昨晚十二点半才�
  answer='他听完她的话，笑了一下。';const msg=await e.request('/message',{...pair,text:'你好。',location:'屋顶'});
  assert(msg.reply);assert(JSON.stringify(calls.at(-1)).includes('本幕距见面开始 210 秒'));
  assert(!JSON.stringify(calls.at(-1)).includes('蓝色雨伞'));assert(!JSON.stringify(calls.at(-1)).includes('把围巾折好'));
+ // The first invalid current-clock candidate must not reach storage.
+ const invalid='他扫了一眼手表。“十二点半。”';
+ answers=[JSON.stringify({text:invalid,location:'屋顶',location_evidence:''}),JSON.stringify({text:'他看向窗外，没有报时。',location:'屋顶',location_evidence:''})];
+ const timeFixed=await e.request('/message',{...pair,text:'几点了？',location:'屋顶'});
+ assert(timeFixed.reply&&timeFixed.reply.text.includes('没有报时'));
+ assert(!JSON.stringify((await e.request(uri)).messages).includes('十二点半'));
  let guard=false;try{await e.request('/message-regenerate',{...pair,messageId:again.reply.id})}catch{guard=true}assert(guard);
  now+=30000;
  const closed=await e.request('/mode',{...pair,mode:'chat',finalizeMeeting:true});
