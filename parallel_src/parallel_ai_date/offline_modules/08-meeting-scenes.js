@@ -365,18 +365,25 @@
     if(!mMsgs.length)return null;
     const mid=mMsgs[0]?.meeting_id||'';
     const groups=mid?completedMeetingGroups(p.id,c.id,mid):[];
-    const expected=Math.floor(groups.length/50);
-    const checkpoints=expected?validMeetingCheckpoints(p.id,c.id,mid,groups):[];
-    const reuse=expected>0&&checkpoints.length===expected;
-    const trailing=reuse?groups.slice(expected*50).flat():mMsgs;
+    const checkpoints=mid?validMeetingCheckpoints(p.id,c.id,mid,groups):[];
+    const sceneRecaps=checkpoints.filter(x=>x.kind==='scene_transition'&&x.summary_source==='ai');
+    const legacy=sceneRecaps.length?[]:checkpoints.filter(x=>x.kind!=='scene_transition');
+    const legacyExpected=Math.floor(groups.length/50);
+    const reuseLegacy=legacyExpected>0&&legacy.length===legacyExpected;
+    const reused=sceneRecaps.length?sceneRecaps:(reuseLegacy?legacy:[]);
+    const lastStage=reused.at(-1);
+    const split=sceneRecaps.length
+      ?mMsgs.findIndex(m=>m.id===lastStage.transition_message_id)
+      :reuseLegacy?groups.slice(0,legacyExpected*50).flat().length:0;
+    const trailing=split>=0?mMsgs.slice(split):mMsgs;
     const chunks=meetingSummaryChunks(trailing,p,c);
     const opts={json_mode:true,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true,temperature:0.25};
     const instruction='你是见面剧情的事实归档员。输出可供下次见面准确接续的纪实摘要，不得用第一句和最后一句拼凑。只记录原文实际发生的动作、人物之间的关键对话、感情和态度变化、具体物品去向、场景转换、约定、拒绝与未解决事件。区分玩笑、提议和真正承诺；绝不凭空补写台词、行为或人物心理。亲密场景概括实际互动即可，不要重复露骨身体细节。严格按时间顺序保留关键转折；跨午夜要保留睡前与次日醒来的变化。只输出一个完整 JSON 对象，唯一字段 summary。';
-    const partSummaries=reuse?checkpoints.map(cp=>
-      '第'+cp.round_start+'–'+cp.round_end+'组（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary+
-      '；具体事件：'+cp.details.join('；')+
-      '；关键对话：'+cp.key_dialogues.map(x=>x.speaker+'「'+x.quote+'」').join('；')
-    ):[];
+    const partSummaries=reused.map(cp=>cp.kind==='scene_transition'
+      ?'在「'+cp.from_location+'」的现场（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary
+      :'历史第'+cp.round_start+'–'+cp.round_end+'组（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary+
+        '；具体事件：'+(cp.details||[]).join('；')+
+        '；关键对话：'+(cp.key_dialogues||[]).map(x=>x.speaker+'「'+x.quote+'」').join('；'));
     for(let i=0;i<chunks.length;i++){
       const part=await reliableMeetingSummaryJson([
         {role:'system',content:instruction+'这次只整理第 '+(i+1)+'/'+chunks.length+' 段确实发生的事情（建议160–260字），着重保留重要行为及其后果，而不是首尾引言。'},
