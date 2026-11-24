@@ -227,11 +227,11 @@
     if(!records.length)return '';
     const summaries=records.map(cp=>cp.kind==='scene_transition'
       ?'场景「'+cp.from_location+'」→「'+cp.to_location+'」｜'+cp.started_at+' 至 '+cp.ended_at+
-        '\\n小结（原始对话优先）：'+cp.summary+'\\n关键词：'+(cp.keywords||[]).join('、')+
-        '\\n来源消息数：'+cp.message_ids.length
+        '\n小结（原始对话优先）：'+cp.summary+'\n关键词：'+(cp.keywords||[]).join('、')+
+        '\n来源消息数：'+cp.message_ids.length
       :'历史第'+cp.round_start+'–'+cp.round_end+'组（旧版50组归档）｜'+cp.started_at+' 至 '+cp.ended_at+
-        '\\n小结：'+cp.summary+'\\n关键词：'+cp.keywords.join('、')+
-        '\\n具体内容：'+(cp.details||[]).join('；')).join('\\n\\n');
+        '\n小结：'+cp.summary+'\n关键词：'+cp.keywords.join('、')+
+        '\n具体内容：'+(cp.details||[]).join('；')).join('\n\n');
     const text=String(query||'').toLowerCase(),excerpts=[];
     const matches=records.map(cp=>({cp,hits:(cp.keywords||[]).filter(k=>k.length>=2&&
       !['我们','你们','他们','自己','这个','那个','见面','现在','刚才','今天','昨天'].includes(k)&&
@@ -244,9 +244,9 @@
       const found=subset.filter(m=>hits.some(k=>String(m.text||'').toLowerCase().includes(k.toLowerCase()))).slice(-3);
       for(const m of found)excerpts.push('来源原文 ['+m.id+'] '+(m.sender==='user'?p.name:c.name)+'：'+String(m.text||'').slice(0,800));
     }
-    return '\\n\\n【本次见面 · 按实际地点切换归档的阶段小结（含旧版历史记录）】\\n'+summaries+
-      '\\n小结只帮助记忆，现场原文优先于任何摘要；当前最近的真实互动决定现在身在何处，不得让旧小结或监控推演覆盖实际行动。'+
-      (excerpts.length?'\\n\\n【关键词命中的现场原文 · 带原始消息ID】\\n'+excerpts.join('\\n'):'');
+    return '\n\n【本次见面 · 按实际地点切换归档的阶段小结（含旧版历史记录）】\n'+summaries+
+      '\n小结只帮助记忆，现场原文优先于任何摘要；当前最近的真实互动决定现在身在何处，不得让旧小结或监控推演覆盖实际行动。'+
+      (excerpts.length?'\n\n【关键词命中的现场原文 · 带原始消息ID】\n'+excerpts.join('\n'):'');
   }
 
   // Keep complete user/assistant bursts under a soft character budget. The latest
