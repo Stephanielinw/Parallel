@@ -4016,13 +4016,15 @@ class Handler(BaseHTTPRequestHandler):
                                 engine='demo';settings=load_connection();reply_txt=''
                                 if all(settings.get(k) for k in ('base_url','api_key','model')):
                                     try:
-                                        reply_txt=clean_meeting_novel_text(completion(compile_messages(db,p,c,'meeting',trigger_opening=True),log_meta={'mode':'meeting','task_type':'meeting','entryPoint':'meeting-opening','profile':p,'character':c,'parseFn':clean_meeting_novel_text}))
+                                        reply_txt=completion(compile_messages(db,p,c,'meeting',trigger_opening=True),json_mode=True,log_meta={'mode':'meeting','task_type':'meeting','entryPoint':'meeting-opening','profile':p,'character':c})
                                         engine='live'
                                     except Exception as e:
                                         warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
                                 else:reply_txt=clean_meeting_novel_text(demo_text(db,p,c,'meeting'))
                                 if engine!='error' and reply_txt:
-                                    opening_reply=write_message(db,p['id'],cid,'ai','meeting',reply_txt,engine)
+                                    scene_turn=parse_meeting_scene_turn(reply_txt,m_state.get('meeting_location',''))
+                                    reply_txt=scene_turn['text']
+                                    opening_reply=write_message(db,p['id'],cid,'ai','meeting',reply_txt,engine,scene_turn=scene_turn)
                                     log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply_txt[:180])
                                     meeting_record=upsert_meeting_record(db,p,c,m_state['active_meeting_id'],[opening_reply],m_state['meeting_location'])
                         else:
@@ -4336,7 +4338,7 @@ class Handler(BaseHTTPRequestHandler):
                     engine='demo';warning='';settings=load_connection();api_error=None;reply=''
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
                         try:
-                            reply=completion(compile_messages(db,p,c,mode,is_continue=(mode=='meeting')),log_meta={'mode':mode,'task_type':mode,'entryPoint':'meeting-continue' if mode=='meeting' else 'chat-reply','profile':p,'character':c,'parseFn':clean_meeting_novel_text if mode=='meeting' else (lambda raw:' / '.join(split_chat_bubbles(raw)))})
+                            reply=completion(compile_messages(db,p,c,mode,is_continue=(mode=='meeting')),json_mode=(mode=='meeting'),log_meta={'mode':mode,'task_type':mode,'entryPoint':'meeting-continue' if mode=='meeting' else 'chat-reply','profile':p,'character':c,'parseFn':(lambda raw:' / '.join(split_chat_bubbles(raw))) if mode=='chat' else None})
                             engine='live'
                         except Exception as e:
                             warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
@@ -4345,8 +4347,9 @@ class Handler(BaseHTTPRequestHandler):
                         t_state['status']='error';t_state['last_error']=api_error;t_state['updated_at']=utc()
                         return self.respond({'reply':None,'replies':[],'mode':mode,'warning':warning,'apiError':api_error,'taskState':t_state})
                     clear_task_state(p['id'],cid,mode)
-                    bubble_texts=split_chat_bubbles(reply) if mode=='chat' else [clean_meeting_novel_text(reply)]
-                    replies=[write_message(db,p['id'],cid,'ai',mode,b_txt,engine) for b_txt in bubble_texts]
+                    scene_turn=parse_meeting_scene_turn(reply,MEETING_STATE.get((p['id'],cid),{}).get('meeting_location','')) if mode=='meeting' else None
+                    bubble_texts=split_chat_bubbles(reply) if mode=='chat' else [scene_turn['text']]
+                    replies=[write_message(db,p['id'],cid,'ai',mode,b_txt,engine,scene_turn=scene_turn) for b_txt in bubble_texts]
                     ai_msg=replies[-1] if replies else None
                     if ai_msg:
                         combined_txt=' / '.join(bubble_texts)
@@ -4382,7 +4385,7 @@ class Handler(BaseHTTPRequestHandler):
                     engine='demo';warning='';settings=load_connection();api_error=None;reply=''
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
                         try:
-                            reply=clean_meeting_novel_text(completion(compile_messages(db,p,c,mode,latest=txt),log_meta={'mode':mode,'task_type':'meeting','entryPoint':'meeting-message','profile':p,'character':c,'parseFn':clean_meeting_novel_text}))
+                            reply=completion(compile_messages(db,p,c,mode,latest=txt),json_mode=True,log_meta={'mode':mode,'task_type':'meeting','entryPoint':'meeting-message','profile':p,'character':c})
                             engine='live'
                         except Exception as e:
                             warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
@@ -4390,8 +4393,10 @@ class Handler(BaseHTTPRequestHandler):
                     if engine=='error':
                         t_state['status']='error';t_state['last_error']=api_error;t_state['updated_at']=utc()
                         db.commit();return self.respond({'user':user_msg,'reply':None,'replies':[],'auto_meeting':auto,'mode':mode,'warning':warning,'apiError':api_error,'taskState':t_state})
+                    scene_turn=parse_meeting_scene_turn(reply,MEETING_STATE.get((p['id'],cid),{}).get('meeting_location',''))
+                    reply=scene_turn['text']
                     clear_task_state(p['id'],cid,'meeting')
-                    ai_msg=write_message(db,p['id'],cid,'ai',mode,reply,engine)
+                    ai_msg=write_message(db,p['id'],cid,'ai',mode,reply,engine,scene_turn=scene_turn)
                     log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply[:180])
                     record_dialogue_episode(db,p,c,[user_msg],ai_msg,mode)
                     db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),p['id'],cid))
