@@ -3319,6 +3319,56 @@ def generate_bios(db,characters,force_refresh=False):
         print('Optional bio generation unavailable:',str(err)[:160],file=sys.stderr)
         return 'catalog-demo'
 
+# M08: same recap write contract for the Python/SQLite compatibility backend.
+# Browser-hosted Parallel remains a separate localStorage save, never auto-migrated.
+def meeting_source_messages(db,p,c,rec):
+    wanted=set(parse_json(rec['message_ids'],[]))
+    all_rows=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' ORDER BY rowid",(p['id'],c['id'])).fetchall()
+    return [dict(row) for row in all_rows if row['id'] in wanted]
+
+def meeting_record_for_request(db,data):
+    p=profile_get(db,data.get('profileId'))
+    cid=str(data.get('characterId') or '')
+    c=BY_ID.get(cid)
+    if not c:raise ValueError('角色不存在')
+    meeting_id=str(data.get('meetingId') or '').strip()
+    rec=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(meeting_id,p['id'],cid)).fetchone()
+    if not rec:raise ValueError('未找到当前角色的见面记录')
+    return p,c,meeting_id,rec
+
+def save_meeting_summary_request(db,data):
+    p,c,mid,rec=meeting_record_for_request(db,data)
+    relation=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
+    if relation and relation['mode']=='meeting' and MEETING_STATE.get((p['id'],c['id']),{}).get('active_meeting_id')==mid:
+        raise ValueError('这场见面仍在进行，请结束后编辑最终总结')
+    summary=str(data.get('summary') or '').strip()
+    if not 6<=len(summary)<=4000:raise ValueError('见面总结须为 6–4000 字，请检查粘贴的内容')
+    m_msgs=meeting_source_messages(db,p,c,rec)
+    if not m_msgs:raise ValueError('原始见面记录不可用，无法保存总结')
+    record=upsert_meeting_record(db,p,c,mid,m_msgs,rec['location'] or '',summary,'manual')
+    db.commit()
+    return {'ok':True,'meetingRecord':record}
+
+def refresh_meeting_summary_request(db,data):
+    p,c,mid,rec=meeting_record_for_request(db,data)
+    overwrite=data.get('overwriteManual') is True or str(data.get('overwriteManual') or '').lower() in ('true','1')
+    if rec['summary_source']=='manual' and not overwrite:
+        raise ValueError('已存在手动总结，需要确认后才能让 AI 覆盖')
+    original_edit=str(rec['summary_edited_at'] or '')
+    m_msgs=meeting_source_messages(db,p,c,rec)
+    if not m_msgs:raise ValueError('原始见面记录不可用，无法重新整理')
+    original=[(m['id'],m['text']) for m in m_msgs]
+    result=summarize_complete_meeting(p,c,m_msgs,rec['location'] or '',db=db)
+    latest=meeting_source_messages(db,p,c,rec)
+    if [(m['id'],m['text']) for m in latest]!=original:
+        raise ValueError('整理期间原始见面记录变化，未覆盖旧梗概')
+    current=db.execute('SELECT summary_edited_at FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone()
+    if not current or str(current['summary_edited_at'] or '')!=original_edit:
+        raise ValueError('整理期间手动总结已更新，已取消本次覆盖')
+    record=upsert_meeting_record(db,p,c,mid,latest,rec['location'] or '',result['summary'])
+    db.commit()
+    return {'ok':True,'meetingRecord':record}
+
 class Handler(BaseHTTPRequestHandler):
     server_version='Parallel/0.5'
     def log_message(self,fmt,*args):
@@ -3464,26 +3514,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond({'models':models})
                     except urllib.error.HTTPError as e:raise ValueError('图片模型列表请求失败：HTTP '+str(e.code))
                 if route=='/api/meeting-summary-refresh':
-                    p=profile_get(db,data.get('profileId'))
-                    cid=str(data.get('characterId') or '')
-                    c=BY_ID.get(cid)
-                    if not c:raise ValueError('角色不存在')
-                    meeting_id=str(data.get('meetingId') or '')
-                    rec=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(meeting_id,p['id'],cid)).fetchone()
-                    if not rec:raise ValueError('未找到当前角色的见面记录')
-                    wanted=set(parse_json(rec['message_ids'],[]))
-                    all_rows=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' ORDER BY rowid",(p['id'],cid)).fetchall()
-                    m_msgs=[dict(row) for row in all_rows if row['id'] in wanted]
-                    if not m_msgs:raise ValueError('原始见面记录不可用，无法重新整理')
-                    original=[(m['id'],m['text']) for m in m_msgs]
-                    summary=summarize_complete_meeting(p,c,m_msgs,rec['location'] or '',db=db)
-                    after=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode=? ORDER BY rowid',(p['id'],cid,'meeting')).fetchall()
-                    latest=[dict(row) for row in after if row['id'] in wanted]
-                    if [(m['id'],m['text']) for m in latest]!=original:
-                        raise ValueError('整理期间原始见面记录变化，未覆盖旧梗概')
-                    updated=upsert_meeting_record(db,p,c,meeting_id,latest,rec['location'] or '',summary['summary'])
-                    db.commit()
-                    return self.respond({'ok':True,'meetingRecord':updated})
+                    payload={k:arg(k) for k in ('profileId','characterId','meetingId','overwriteManual')}
+                    return self.respond(refresh_meeting_summary_request(db,payload))
                 if route=='/api/task-state':
                     pid=arg('profileId').strip();cid=arg('characterId').strip();mode=arg('mode').strip() or 'chat'
                     return self.respond({'taskState':get_task_state(pid,cid,mode),'queue':queue_view(db,pid,cid) if (pid and cid) else None})
@@ -3506,6 +3538,10 @@ class Handler(BaseHTTPRequestHandler):
                     if not c:raise ValueError('角色不存在')
                     ensure_live_surveillance(db,p,c,force=bool(data.get('refresh')),target_date=req_date)
                     return self.respond(build_surveillance_payload(db,p,c,req_date))
+                if route=='/api/meeting-summary-save':
+                    return self.respond(save_meeting_summary_request(db,data))
+                if route=='/api/meeting-summary-refresh':
+                    return self.respond(refresh_meeting_summary_request(db,data))
                 if route=='/api/diary':
                     p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId',''));c=BY_ID.get(cid);req_date=str(data.get('date','')).strip()
                     if not c:raise ValueError('角色不存在')
