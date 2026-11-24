@@ -2099,9 +2099,15 @@ def summarize_complete_meeting(p,c,m_msgs,location,db=None):
     mid=m_msgs[0].get('meeting_id') or ''
     groups=completed_meeting_groups(db,p['id'],c['id'],mid) if db is not None and mid else []
     expected=len(groups)//MEETING_CHECKPOINT_INTERVAL
-    checkpoints=valid_meeting_checkpoints(db,p['id'],c['id'],mid,groups) if expected else []
-    reuse=bool(expected and len(checkpoints)==expected)
-    trailing=[m for g in groups[expected*MEETING_CHECKPOINT_INTERVAL:] for m in g] if reuse else m_msgs
+    legacy=valid_meeting_checkpoints(db,p['id'],c['id'],mid,groups) if expected else []
+    stage_recs=valid_meeting_scene_summaries(db,p,c,mid) if db is not None and mid else []
+    ai_stages=[x for x in stage_recs if x.get('summary_source')=='ai']
+    reused=ai_stages if ai_stages else (legacy if expected and len(legacy)==expected else [])
+    if ai_stages:
+        cut=next((i for i,m in enumerate(m_msgs) if m.get('id')==ai_stages[-1]['transition_message_id']),0)
+        trailing=m_msgs[cut:]
+    elif reused:trailing=[m for g in groups[expected*MEETING_CHECKPOINT_INTERVAL:] for m in g]
+    else:trailing=m_msgs
     chunks=meeting_summary_chunks(trailing,p,c)
     instruction=(
         '你是小说见面剧情的事实归档员。生成下次能准确接续故事的纪实梗概，不是首尾对话摘抄。'
@@ -2110,7 +2116,10 @@ def summarize_complete_meeting(p,c,m_msgs,location,db=None):
         '亲密场景概括互动即可，不要反复记录露骨身体细节。跨午夜保留睡前和次日醒来后的变化。'
         '只输出 JSON 对象，唯一字段 summary。'
     )
-    notes=([f"第{cp['block_index']*50-49}–{cp['block_index']*50}组（{cp['started_at']}至{cp['ended_at']}）：{cp['summary']}；具体事件：{'；'.join(cp['details'])}；关键对话：{'；'.join(q['speaker']+'「'+q['quote']+'」' for q in cp['key_dialogues'])}" for cp in checkpoints] if reuse else [])
+    notes=[("场景「"+cp['from_location']+"」在"+cp['started_at']+"至"+cp['ended_at']+"的实际记录："+cp['summary'])
+           if 'from_location' in cp else
+           ("历史第"+str(cp['block_index']*50-49)+"–"+str(cp['block_index']*50)+"组："+cp['summary'])
+           for cp in reused]
     for idx,chunk in enumerate(chunks):
         part=reliable_meeting_summary_json([
             {'role':'system','content':instruction+f'这是第 {idx+1}/{len(chunks)} 段连续记录。建议用160–260字记录本段的关键事实和转折；禁止只拼贴起止两句。'},
