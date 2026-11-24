@@ -222,23 +222,31 @@
     return mid?validMeetingCheckpoints(p.id,c.id,mid):[];
   }
   function meetingCheckpointPromptContext(p,c,mid,query=''){
-    const groups=completedMeetingGroups(p.id,c.id,mid),records=validMeetingCheckpoints(p.id,c.id,mid,groups);
+    const groups=completedMeetingGroups(p.id,c.id,mid);
+    const records=validMeetingCheckpoints(p.id,c.id,mid,groups);
     if(!records.length)return '';
-    const summaries=records.map(cp=>'第'+cp.round_start+'–'+cp.round_end+'组｜'+cp.started_at+' 至 '+cp.ended_at+
-      '｜人物：'+cp.participants.join('、')+'\n小结：'+cp.summary+
-      '\n关键词：'+cp.keywords.join('、')+'\n关键对话：'+cp.key_dialogues.map(q=>q.speaker+'「'+q.quote+'」').join('；')+
-      '\n具体内容：'+cp.details.join('；')).join('\n\n');
+    const summaries=records.map(cp=>cp.kind==='scene_transition'
+      ?'场景「'+cp.from_location+'」→「'+cp.to_location+'」｜'+cp.started_at+' 至 '+cp.ended_at+
+        '\\n小结（原始对话优先）：'+cp.summary+'\\n关键词：'+(cp.keywords||[]).join('、')+
+        '\\n来源消息数：'+cp.message_ids.length
+      :'历史第'+cp.round_start+'–'+cp.round_end+'组（旧版50组归档）｜'+cp.started_at+' 至 '+cp.ended_at+
+        '\\n小结：'+cp.summary+'\\n关键词：'+cp.keywords.join('、')+
+        '\\n具体内容：'+(cp.details||[]).join('；')).join('\\n\\n');
     const text=String(query||'').toLowerCase(),excerpts=[];
-    const matches=records.map(cp=>({cp,hits:cp.keywords.filter(k=>k.length>=2&&!['我们','你们','他们','自己','这个','那个','见面','现在','刚才','今天','昨天'].includes(k)&&text.includes(k.toLowerCase()))})).filter(x=>x.hits.length);
+    const matches=records.map(cp=>({cp,hits:(cp.keywords||[]).filter(k=>k.length>=2&&
+      !['我们','你们','他们','自己','这个','那个','见面','现在','刚才','今天','昨天'].includes(k)&&
+      text.includes(k.toLowerCase()))})).filter(x=>x.hits.length);
     for(const {cp,hits} of matches.slice(-3)){
-      const offset=(cp.block_index-1)*50,segment=groups.slice(offset,offset+50);
-      const candidates=segment.map((g,i)=>({g,i,score:g.reduce((n,m)=>n+hits.filter(k=>String(m.text||'').toLowerCase().includes(k.toLowerCase())).length,0)}))
-        .filter(x=>x.score).sort((x,y)=>y.score-x.score).slice(0,2).sort((x,y)=>x.i-y.i);
-      for(const x of candidates)excerpts.push('第'+(offset+x.i+1)+'组附近原文（'+hits.join('、')+'）：\n'+meetingCheckpointSource(segment.slice(Math.max(0,x.i-1),Math.min(50,x.i+2)),p,c).slice(0,2600));
+      const originals=messagesOf(p.id,c.id).filter(m=>m.meeting_id===mid&&!m.recalled&&m.engine!=='recalled');
+      const subset=cp.kind==='scene_transition'
+        ?originals.filter(m=>(cp.message_ids||[]).includes(m.id))
+        :groups.slice((cp.block_index-1)*50,cp.block_index*50).flat();
+      const found=subset.filter(m=>hits.some(k=>String(m.text||'').toLowerCase().includes(k.toLowerCase()))).slice(-3);
+      for(const m of found)excerpts.push('来源原文 ['+m.id+'] '+(m.sender==='user'?p.name:c.name)+'：'+String(m.text||'').slice(0,800));
     }
-    return '\n\n【本次见面 · 已归档的全部50组阶段小结】\n'+summaries+
-      '\n这些是已发生的事实；最近五组对话决定当前状态，不能用旧档案覆盖当前行动。'+
-      (excerpts.length?'\n\n【关键词命中的现场原文 · 带原始消息ID】\n'+excerpts.join('\n\n'):'');
+    return '\\n\\n【本次见面 · 按实际地点切换归档的阶段小结（含旧版历史记录）】\\n'+summaries+
+      '\\n小结只帮助记忆，现场原文优先于任何摘要；当前最近的真实互动决定现在身在何处，不得让旧小结或监控推演覆盖实际行动。'+
+      (excerpts.length?'\\n\\n【关键词命中的现场原文 · 带原始消息ID】\\n'+excerpts.join('\\n'):'');
   }
 
   // Keep complete user/assistant bursts under a soft character budget. The latest
