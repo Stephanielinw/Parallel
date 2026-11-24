@@ -42,8 +42,9 @@
 
 1. `node tests/m08-version-parity.test.cjs`：镜像逐字节一致、故意注入漂移必须被拒绝，Pages / Python shell 关键 DOM 锚点存在，路由清单与例外严格匹配；
 2. `python3 -m unittest parallel_src/parallel_ai_date/tests/test_api.py`：隔离临时数据库中，验证 Python 手动粘贴超过 850 字可原样保存、跨 Profile/角色越权被拒绝、空摘要不能覆盖、AI 未确认不可覆写、刷新线程不损失手动小结、原文修改使旧总结失效；
-3. M00–M07 全量既有测试，以及移动视口 WebKit 回归和正式构建必须继续通过；
-4. 合并前确认目标基线仍为 PR #43 后的 `main`，无旁支混入；合并后核验 Pages CI/部署。
+3. `npm run build -- --base=/Parallel/` 后运行 `node tests/m08-release-output.test.cjs`，逐字节对比真实生成的 Pages 文件、两份可直开的完整 HTML 与当前 canonical JS/CSS；不得只检查构建脚本的字符串；
+4. M00–M07 全量既有测试，以及移动视口 WebKit 回归和正式构建必须继续通过；
+5. 合并前确认目标基线仍为 PR #43 后的 `main`，无旁支混入；合并后核验 Pages CI/部署.
 
 **回滚**：若新功能失败，可回退 M08 提交，三份共享前端仍由 M07 产物提供；Python SQLite 新增的两个字段可留存而不影响旧版读取（无破坏性回滚脚本）。不要为了回退而删除字段或重建用户数据库。真实手机数据、实际 API 密钥、照片文件均未在测试中访问。
 
