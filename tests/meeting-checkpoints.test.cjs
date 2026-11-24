@@ -44,6 +44,13 @@ const signature=rows=>{
  pack.data.meetingCheckpoints=[historical];e.importData(JSON.stringify(pack));
  const preview=e.buildPromptPreview(p.id,pair.characterId,'meeting',{latestText:'铜钥匙在哪里？'});
  const prompt=preview.map(x=>String(x.content||'')).join('\n');
+ if(!prompt.includes('历史兼容')){
+   const saved=JSON.parse(e.exportData()).data;
+   console.error('M11 legacy fixture diagnostic:',JSON.stringify({cp:saved.meetingCheckpoints.length,
+     sig:saved.meetingCheckpoints[0]?.source_signature,expected:historical.source_signature,
+     hasActive:saved.relations[p.id+'|'+pair.characterId]?.active_meeting_id,
+     promptLast:prompt.slice(-450)}));
+ }
  assert(prompt.includes('历史兼容'),'legacy 50-group archive must still load');
  assert(prompt.includes('铜钥匙'),'historical detail survives');
  assert(!preview.slice(1).some(x=>String(x.content||'').includes('把铜钥匙藏在书包里')),
