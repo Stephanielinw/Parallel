@@ -40,11 +40,12 @@ async function setupTwoProfiles(page:any){
   },CID);
   await page.reload();
   await expect.poll(()=>page.evaluate(()=>Boolean(window.ParallelOffline)),{timeout:12000}).toBe(true);
+  // An isolated browser intentionally has no provider settings. The app
+  // creates this dialog asynchronously after bootstrap, so never race it.
   const modeChoice=page.locator('#modal-overlay [data-action="choose-api-mode"][data-demo="no"]');
-  if(await modeChoice.isVisible().catch(()=>false))await modeChoice.click();
-  else if(await page.locator('#modal-overlay').isVisible().catch(()=>false)){
-    await page.locator('#modal-overlay [data-action="close-modal"]').first().click();
-  }
+  await modeChoice.waitFor({state:'visible',timeout:12000});
+  await modeChoice.click();
+  await expect(page.locator('#modal-overlay')).toHaveCount(0);
   await page.locator('#mobile-nav [data-action="nav"][data-tab="messages"]').click();
   await expect(page.locator('.thread-card')).toHaveCount(1);
   await page.locator('.thread-card').first().click();
