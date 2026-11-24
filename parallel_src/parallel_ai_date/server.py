@@ -504,10 +504,12 @@ def sanitize_stored_db(db):
         ce = strip_protocol_tags(r['summary'], preserve_paragraphs=False)
         if ce and ce != r['summary']:
             db.execute('UPDATE events SET summary=? WHERE id=?', (ce, r['id']))
-    meet_rows = db.execute('SELECT id,summary,ai_summary,entries FROM meetings').fetchall()
+    meet_rows = db.execute('SELECT id,summary,ai_summary,summary_source,entries FROM meetings').fetchall()
     for r in meet_rows:
-        cs = strip_protocol_tags(r['summary'], preserve_paragraphs=False) or r['summary']
-        cas = strip_protocol_tags(r['ai_summary'], preserve_paragraphs=False) if r['ai_summary'] else r['ai_summary']
+        # A human-edited recap is not model protocol output; retain exact pasted paragraphs.
+        manual = r['summary_source']=='manual'
+        cs = r['summary'] if manual else (strip_protocol_tags(r['summary'], preserve_paragraphs=False) or r['summary'])
+        cas = r['ai_summary'] if manual else (strip_protocol_tags(r['ai_summary'], preserve_paragraphs=False) if r['ai_summary'] else r['ai_summary'])
         entries = parse_json(r['entries'], [])
         ent_changed = False
         for e in entries:
