@@ -34,12 +34,19 @@ const signature=rows=>{
    '50-group summaries must no longer create new memory records');
  const rows=d.messages.filter(m=>m.mode==='meeting'&&m.meeting_id===mid);
  assert.equal(rows.length,102);
+ // Reuse the real grouping/hash functions, not the mocked array's order.
+ const srcPart=src.slice(src.indexOf('  function completedMeetingGroups('),src.indexOf('  function validMeetingCheckpoints('));
+ const getFns=new Function('messagesOf','isChatArtifact',srcPart+
+   '\nreturn {completedMeetingGroups,meetingBlockSignature};');
+ const helpers=getFns((pid,cid)=>d.messages.filter(m=>m.profile_id===pid&&m.character_id===cid),()=>false);
+ const groups=helpers.completedMeetingGroups(p.id,pair.characterId,mid);
+ assert.equal(groups.length,51);
  const historical={
    profile_id:p.id,character_id:pair.characterId,meeting_id:mid,block_index:1,
    round_start:1,round_end:50,started_at:rows[0].created_at,ended_at:rows[99].created_at,
-   source_signature:signature(rows.slice(0,100)),summary:'曾经在公园长椅谈起祖母赠送的铜钥匙。',
+   source_signature:helpers.meetingBlockSignature(groups.slice(0,50)),summary:'曾经在公园长椅谈起祖母赠送的铜钥匙。',
    keywords:['铜钥匙'],details:['书包里的铜钥匙'],key_dialogues:[],
-   message_ids:rows.slice(0,100).map(x=>x.id),participants:['Test','Carlos'],created_at:new Date().toISOString()
+   message_ids:groups.slice(0,50).flat().map(x=>x.id),participants:['Test','Carlos'],created_at:new Date().toISOString()
  };
  pack.data.meetingCheckpoints=[historical];e.importData(JSON.stringify(pack));
  const preview=e.buildPromptPreview(p.id,pair.characterId,'meeting',{latestText:'铜钥匙在哪里？'});
