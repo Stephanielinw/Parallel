@@ -18,7 +18,7 @@ assert(verifyOutputs(assembleOffline()).every(x=>x.matches),'M06 engine source m
 const staticApp=read('parallel_src/parallel_ai_date/static/app.js');
 const publicApp=read('public/parallel/app.js');
 assert.equal(staticApp,publicApp,'Python, downloaded HTML and Pages must use exactly one UI logic version');
-assert(staticApp.includes("data-action=\\\"save-meeting-summary\\\""),'Manual meeting editor remains present in all browsers');
+assert(staticApp.includes('data-action="save-meeting-summary"'),'Manual meeting editor remains present in all browsers');
 const pythonShell=read('parallel_src/parallel_ai_date/static/index.html');
 const publicShell=read('public/parallel/index.html');
 const reactShell=read('src/App.tsx');
@@ -36,8 +36,8 @@ for(const file of ['offline.js','app.js','style.css','index.html']){
 
 // Route names are compared, not semantic equivalence. Python SQLite and browser
 // storage are deliberately distinct and must never be silently interchanged.
-const routeRegexJS=/case '\\/([^']+)':/g;
-const routeRegexPY=/if route=='\\/api\\/([^']+)'/g;
+const routeRegexJS=/case '[/]([^']+)':/g;
+const routeRegexPY=/if route=='[/]api[/]([^']+)'/g;
 const browserRoutes=new Set([...read('parallel_src/parallel_ai_date/offline_modules/14-request-router.js').matchAll(routeRegexJS)].map(x=>x[1]));
 const pythonRoutes=new Set([...read('parallel_src/parallel_ai_date/server.py').matchAll(routeRegexPY)].map(x=>x[1]));
 const browserOnly=['chat-photo-read','chat-photos','discover-progress','discover-session','episode-archive-tick'];
