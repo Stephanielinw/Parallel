@@ -2703,9 +2703,13 @@ def ensure_meeting_scene_summaries(db,p,c,mid):
 
 
 def meeting_checkpoint_prompt_context(db,p,c,mid,query=''):
+    scene_recs=valid_meeting_scene_summaries(db,p,c,mid)
+    scene_text=("\n\n【本次见面按实际地点切换归档的小结】\n"+
+        "\n".join("场景「"+cp['from_location']+"」→「"+cp['to_location']+"」，原文时间"+cp['started_at']+"至"+cp['ended_at']+
+                  "： "+cp['summary']+"（原始场景原文优先）" for cp in scene_recs)) if scene_recs else ''
     groups=completed_meeting_groups(db,p['id'],c['id'],mid)
     checkpoints=valid_meeting_checkpoints(db,p['id'],c['id'],mid,groups)
-    if not checkpoints:return ''
+    if not checkpoints:return scene_text
     summaries=[]
     for cp in checkpoints:
         dialogues='；'.join(x['speaker']+'「'+x['quote']+'」' for x in cp['key_dialogues'])
@@ -2724,8 +2728,8 @@ def meeting_checkpoint_prompt_context(db,p,c,mid,query=''):
         for _,i in sorted(sorted(candidates,reverse=True)[:2],key=lambda x:x[1]):
             nearby=segment[max(0,i-1):min(50,i+2)]
             excerpts.append(f"第{offset+i+1}组附近原文（{'、'.join(hits)}）：\n"+meeting_checkpoint_source(nearby,p,c)[:2600])
-    return ("\n\n【本次见面 · 已归档的全部50组阶段小结】\n"+"\n\n".join(summaries)+
-            "\n以上为过去亲历事实，最新5组对话决定当下位置和动作，不得让旧场景覆盖当前现场。"+
+    return (scene_text+"\n\n【本次见面 · 已归档的全部50组阶段小结（历史兼容）】\n"+"\n\n".join(summaries)+
+            "\n以上为过去的档案；最新真实对话决定当前地点，不得让旧地点或监控推演覆盖现场。"+
             ("\n\n【关键词命中的历史现场原文 · 带来源消息ID】\n"+"\n\n".join(excerpts) if excerpts else ''))
 
 def select_turn_window(rows,mode,protected_ids=None,meeting_max_groups=10):
@@ -2761,7 +2765,9 @@ def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids
         m_state=MEETING_STATE.get((pid,cid),{})
         active_mid=m_state.get('active_meeting_id','')
         if active_mid:
-            checkpointed=bool(valid_meeting_checkpoints(db,pid,cid,active_mid))
+            p=profile_get(db,pid)
+            c=BY_ID.get(cid)
+            checkpointed=bool(valid_meeting_checkpoints(db,pid,cid,active_mid)) or (bool(c) and bool(valid_meeting_scene_summaries(db,p,c,active_mid)))
             return select_turn_window([m for m in chron if m['mode']=='meeting' and m.get('meeting_id')==active_mid],mode,protected_ids,5 if checkpointed else 10)
         started_after=m_state.get('started_after_rowid')
         if started_after is not None:
