@@ -2669,7 +2669,7 @@ def chat_quote_snapshot(db,pid,cid,quote_id):
     if not source or source['engine']=='recalled':raise ValueError('引用的原消息已失效，请重新选择')
     return {'id':source['id'],'sender':source['sender'],'text':str(source['text'] or '').replace('\n',' ').strip()[:220]}
 
-def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0,quote_id=''):
+def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0,quote_id='',scene_turn=None):
     clean_txt = (clean_meeting_novel_text(txt) if mode=='meeting' else (clean_chat_bubble_text(txt) or '…')) if (sender=='ai' and engine not in ('error','recalled')) else str(txt or '')
     meeting_id=MEETING_STATE.get((pid,cid),{}).get('active_meeting_id','') if mode=='meeting' else ''
     quote=chat_quote_snapshot(db,pid,cid,quote_id) if sender=='user' and mode=='chat' and quote_id else None
@@ -2688,20 +2688,24 @@ def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0,quote_id=''):
             # confirmed character position; do not let the answer prove itself.
             earlier=refresh_meeting_scene_history(db,p,c,exclude_message_id=item['id'])
             previous=earlier[-1]['location'] if earlier else MEETING_STATE.get((pid,cid),{}).get('meeting_location','')
-            found=classify_meeting_scene_location(p,c,clean_txt,previous)
-            if found:
-                item['scene_location']=found['location']
-                item['scene_location_evidence']=found['evidence']
-                item['scene_location_signature']=meeting_scene_signature(clean_txt)
-                db.execute('UPDATE messages SET scene_location=?,scene_location_evidence=?,scene_location_signature=? WHERE id=?',
-                    (item['scene_location'],item['scene_location_evidence'],item['scene_location_signature'],item['id']))
+            turn=scene_turn if isinstance(scene_turn,dict) else parse_meeting_scene_turn(clean_txt,previous)
+            found=resolve_meeting_scene_turn_location(p,c,turn,previous)
+            if not turn.get('structured') and found.get('location')==previous:
+                legacy=classify_meeting_scene_location(p,c,clean_txt,previous)
+                if legacy:found=legacy
+            # All AI turns carry an independent physical-location field.
+            item['scene_location']=found.get('location') or previous
+            item['scene_location_evidence']=found.get('evidence') or ''
+            item['scene_location_signature']=meeting_scene_signature(clean_txt)
+            db.execute('UPDATE messages SET scene_location=?,scene_location_evidence=?,scene_location_signature=? WHERE id=?',
+                (item['scene_location'],item['scene_location_evidence'],item['scene_location_signature'],item['id']))
         if c:
             # Both user moves and written AI movement must immediately update
             # the monitor before the next prompt. Neither is a new day plan.
             sync_live_meeting_scene_location(db,p,c)
             if sender=='ai' and engine in ('live','demo'):
                 try:
-                    ensure_meeting_checkpoints(db,p,c,meeting_id)
+                    ensure_meeting_scene_summaries(db,p,c,meeting_id)
                 except Exception as error:
                     log_event(db,pid,cid,'meeting_checkpoint_failed','阶段归档待重试：'+str(error)[:140])
                 # Persist the full witnessed scene itinerary for resume/restart.
