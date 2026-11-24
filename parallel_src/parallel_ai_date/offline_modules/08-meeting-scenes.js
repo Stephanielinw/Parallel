@@ -144,6 +144,50 @@
     }catch{return null;}
   }
 
+  // Every new meeting response is a structured narrative plus an independent
+  // physical location label. The label is NOT evidence of travel by itself;
+  // it must agree with a witnessed movement in the original player/AI text.
+  function parseMeetingSceneTurn(raw,current=''){
+    const source=String(raw??'').trim();
+    const clean=source.replace(/^\`\`\`(?:json)?\s*|\s*\`\`\`$/gi,'').trim();
+    let parsed=null;
+    if(clean.startsWith('{')){
+      try{parsed=JSON.parse(clean)}catch{
+        // Never show malformed JSON or partial protocol as meeting prose.
+        throw Error('见面回复结构化 JSON 不完整；已保留当前原文，等待重试');
+      }
+    }
+    const structured=Boolean(parsed&&typeof parsed==='object'&&!Array.isArray(parsed));
+    if(structured&&(typeof parsed.text!=='string'||typeof parsed.location!=='string'))
+      throw Error('见面回复缺少正文或每轮地点字段');
+    const text=cleanMeetingNovelText(structured?parsed.text:source).trim();
+    if(!text||/^[\\s.…。]+$/.test(text))throw Error('见面回复没有有效正文');
+    const location=structured?cleanScenePlace(parsed.location):cleanScenePlace(current);
+    if(structured&&!location)throw Error('见面回复未提供有效地点名称');
+    const evidence=structured?String(parsed.location_evidence||'').trim().slice(0,250):'';
+    return {text,location:location||String(current||'').slice(0,40),evidence,structured};
+  }
+  function resolveMeetingSceneTurnLocation(p,c,turn,current,userMsg=null){
+    const base=cleanScenePlace(current)||'见面地点待确认';
+    const claimed=cleanScenePlace(turn?.location);
+    if(!claimed||claimed===base)return {location:base,evidence:'',kind:'stable'};
+    const deterministic=sceneLocationFromCharacter(turn.text,base,p.name,c.name);
+    const evidence=String(turn.evidence||'').trim();
+    const fromNarration=evidence.length>=4&&turn.text.includes(evidence)&&
+      isPotentialMeetingMovement(evidence)&&!SCENE_NOT_ARRIVED_RE.test(evidence);
+    const playerPlace=userMsg?meetingPlaceInPlayerTurn(userMsg.text,p.name):'';
+    const fromPlayer=Boolean(playerPlace===claimed&&evidence.length>=4&&
+      String(userMsg.text||'').includes(evidence));
+    // A scene-specific room inferred from real action is authoritative even
+    // if the model picked a vague or wrong structured label.
+    if(deterministic&&deterministic.location!==base){
+      if(claimed===deterministic.location||fromNarration)
+        return {location:claimed,evidence:evidence||deterministic.evidence,kind:'structured'};
+      return deterministic;
+    }
+    if(fromNarration||fromPlayer)return {location:claimed,evidence,kind:'structured'};
+    return {location:base,evidence:'',kind:'unconfirmed'};
+  }
   function recoverPreMeetingPlace(p,c,began){
     // Reconstruct the original stop from the player's pre-meeting plans.
     // A concrete named venue is evidence; an AI-generated schedule is not.
@@ -238,12 +282,19 @@
       if(!Number.isFinite(begin)||!Number.isFinite(end)||end<begin)continue;
       const startLabel=fmtHHMM(begin),endLabel=fmtHHMM(end);
       if(startLabel===endLabel&&i<history.length-1)continue;
+      // The previous place gets the recap for its completed scene; do not
+      // put a later global digest into every historical monitor slot.
+      const sceneRecap=next?.message_id
+        ?(db.meetingCheckpoints||[]).find(cp=>cp.kind==='scene_transition'&&
+          cp.profile_id===p.id&&cp.character_id===c.id&&
+          cp.meeting_id===r.active_meeting_id&&cp.transition_message_id===next.message_id&&
+          isValidMeetingSceneCheckpoint(cp,p.id,c.id,r.active_meeting_id))?.summary:'';
       parts.push({
         id:'slot_meeting_'+i+'_'+date,
         start:startLabel,end:endLabel,
         location:e.location,status:'线下见面足迹',
         activity:'与 '+p.name+' 在「'+e.location+'」当面见面',
-        scene:summary||c.name+'此刻与 '+p.name+' 当面相处，暂无其他已确认行踪。',
+        scene:sceneRecap||c.name+'在「'+e.location+'」的现场原文已保存；阶段总结尚未生成。',
         source:'meeting',meeting_id:r.active_meeting_id||'',actual_started_at:r.meeting_started_at||'',
         isCurrent:i===history.length-1
       });
@@ -321,18 +372,25 @@
     if(!mMsgs.length)return null;
     const mid=mMsgs[0]?.meeting_id||'';
     const groups=mid?completedMeetingGroups(p.id,c.id,mid):[];
-    const expected=Math.floor(groups.length/50);
-    const checkpoints=expected?validMeetingCheckpoints(p.id,c.id,mid,groups):[];
-    const reuse=expected>0&&checkpoints.length===expected;
-    const trailing=reuse?groups.slice(expected*50).flat():mMsgs;
+    const checkpoints=mid?validMeetingCheckpoints(p.id,c.id,mid,groups):[];
+    const sceneRecaps=checkpoints.filter(x=>x.kind==='scene_transition'&&x.summary_source==='ai');
+    const legacy=sceneRecaps.length?[]:checkpoints.filter(x=>x.kind!=='scene_transition');
+    const legacyExpected=Math.floor(groups.length/50);
+    const reuseLegacy=legacyExpected>0&&legacy.length===legacyExpected;
+    const reused=sceneRecaps.length?sceneRecaps:(reuseLegacy?legacy:[]);
+    const lastStage=reused.at(-1);
+    const split=sceneRecaps.length
+      ?mMsgs.findIndex(m=>m.id===lastStage.transition_message_id)
+      :reuseLegacy?groups.slice(0,legacyExpected*50).flat().length:0;
+    const trailing=split>=0?mMsgs.slice(split):mMsgs;
     const chunks=meetingSummaryChunks(trailing,p,c);
     const opts={json_mode:true,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true,temperature:0.25};
     const instruction='你是见面剧情的事实归档员。输出可供下次见面准确接续的纪实摘要，不得用第一句和最后一句拼凑。只记录原文实际发生的动作、人物之间的关键对话、感情和态度变化、具体物品去向、场景转换、约定、拒绝与未解决事件。区分玩笑、提议和真正承诺；绝不凭空补写台词、行为或人物心理。亲密场景概括实际互动即可，不要重复露骨身体细节。严格按时间顺序保留关键转折；跨午夜要保留睡前与次日醒来的变化。只输出一个完整 JSON 对象，唯一字段 summary。';
-    const partSummaries=reuse?checkpoints.map(cp=>
-      '第'+cp.round_start+'–'+cp.round_end+'组（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary+
-      '；具体事件：'+cp.details.join('；')+
-      '；关键对话：'+cp.key_dialogues.map(x=>x.speaker+'「'+x.quote+'」').join('；')
-    ):[];
+    const partSummaries=reused.map(cp=>cp.kind==='scene_transition'
+      ?'在「'+cp.from_location+'」的现场（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary
+      :'历史第'+cp.round_start+'–'+cp.round_end+'组（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary+
+        '；具体事件：'+(cp.details||[]).join('；')+
+        '；关键对话：'+(cp.key_dialogues||[]).map(x=>x.speaker+'「'+x.quote+'」').join('；'));
     for(let i=0;i<chunks.length;i++){
       const part=await reliableMeetingSummaryJson([
         {role:'system',content:instruction+'这次只整理第 '+(i+1)+'/'+chunks.length+' 段确实发生的事情（建议160–260字），着重保留重要行为及其后果，而不是首尾引言。'},

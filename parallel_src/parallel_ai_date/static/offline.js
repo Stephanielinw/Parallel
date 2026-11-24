@@ -2385,6 +2385,50 @@
     }catch{return null;}
   }
 
+  // Every new meeting response is a structured narrative plus an independent
+  // physical location label. The label is NOT evidence of travel by itself;
+  // it must agree with a witnessed movement in the original player/AI text.
+  function parseMeetingSceneTurn(raw,current=''){
+    const source=String(raw??'').trim();
+    const clean=source.replace(/^\`\`\`(?:json)?\s*|\s*\`\`\`$/gi,'').trim();
+    let parsed=null;
+    if(clean.startsWith('{')){
+      try{parsed=JSON.parse(clean)}catch{
+        // Never show malformed JSON or partial protocol as meeting prose.
+        throw Error('见面回复结构化 JSON 不完整；已保留当前原文，等待重试');
+      }
+    }
+    const structured=Boolean(parsed&&typeof parsed==='object'&&!Array.isArray(parsed));
+    if(structured&&(typeof parsed.text!=='string'||typeof parsed.location!=='string'))
+      throw Error('见面回复缺少正文或每轮地点字段');
+    const text=cleanMeetingNovelText(structured?parsed.text:source).trim();
+    if(!text||/^[\\s.…。]+$/.test(text))throw Error('见面回复没有有效正文');
+    const location=structured?cleanScenePlace(parsed.location):cleanScenePlace(current);
+    if(structured&&!location)throw Error('见面回复未提供有效地点名称');
+    const evidence=structured?String(parsed.location_evidence||'').trim().slice(0,250):'';
+    return {text,location:location||String(current||'').slice(0,40),evidence,structured};
+  }
+  function resolveMeetingSceneTurnLocation(p,c,turn,current,userMsg=null){
+    const base=cleanScenePlace(current)||'见面地点待确认';
+    const claimed=cleanScenePlace(turn?.location);
+    if(!claimed||claimed===base)return {location:base,evidence:'',kind:'stable'};
+    const deterministic=sceneLocationFromCharacter(turn.text,base,p.name,c.name);
+    const evidence=String(turn.evidence||'').trim();
+    const fromNarration=evidence.length>=4&&turn.text.includes(evidence)&&
+      isPotentialMeetingMovement(evidence)&&!SCENE_NOT_ARRIVED_RE.test(evidence);
+    const playerPlace=userMsg?meetingPlaceInPlayerTurn(userMsg.text,p.name):'';
+    const fromPlayer=Boolean(playerPlace===claimed&&evidence.length>=4&&
+      String(userMsg.text||'').includes(evidence));
+    // A scene-specific room inferred from real action is authoritative even
+    // if the model picked a vague or wrong structured label.
+    if(deterministic&&deterministic.location!==base){
+      if(claimed===deterministic.location||fromNarration)
+        return {location:claimed,evidence:evidence||deterministic.evidence,kind:'structured'};
+      return deterministic;
+    }
+    if(fromNarration||fromPlayer)return {location:claimed,evidence,kind:'structured'};
+    return {location:base,evidence:'',kind:'unconfirmed'};
+  }
   function recoverPreMeetingPlace(p,c,began){
     // Reconstruct the original stop from the player's pre-meeting plans.
     // A concrete named venue is evidence; an AI-generated schedule is not.
@@ -2479,12 +2523,19 @@
       if(!Number.isFinite(begin)||!Number.isFinite(end)||end<begin)continue;
       const startLabel=fmtHHMM(begin),endLabel=fmtHHMM(end);
       if(startLabel===endLabel&&i<history.length-1)continue;
+      // The previous place gets the recap for its completed scene; do not
+      // put a later global digest into every historical monitor slot.
+      const sceneRecap=next?.message_id
+        ?(db.meetingCheckpoints||[]).find(cp=>cp.kind==='scene_transition'&&
+          cp.profile_id===p.id&&cp.character_id===c.id&&
+          cp.meeting_id===r.active_meeting_id&&cp.transition_message_id===next.message_id&&
+          isValidMeetingSceneCheckpoint(cp,p.id,c.id,r.active_meeting_id))?.summary:'';
       parts.push({
         id:'slot_meeting_'+i+'_'+date,
         start:startLabel,end:endLabel,
         location:e.location,status:'线下见面足迹',
         activity:'与 '+p.name+' 在「'+e.location+'」当面见面',
-        scene:summary||c.name+'此刻与 '+p.name+' 当面相处，暂无其他已确认行踪。',
+        scene:sceneRecap||c.name+'在「'+e.location+'」的现场原文已保存；阶段总结尚未生成。',
         source:'meeting',meeting_id:r.active_meeting_id||'',actual_started_at:r.meeting_started_at||'',
         isCurrent:i===history.length-1
       });
@@ -2562,18 +2613,25 @@
     if(!mMsgs.length)return null;
     const mid=mMsgs[0]?.meeting_id||'';
     const groups=mid?completedMeetingGroups(p.id,c.id,mid):[];
-    const expected=Math.floor(groups.length/50);
-    const checkpoints=expected?validMeetingCheckpoints(p.id,c.id,mid,groups):[];
-    const reuse=expected>0&&checkpoints.length===expected;
-    const trailing=reuse?groups.slice(expected*50).flat():mMsgs;
+    const checkpoints=mid?validMeetingCheckpoints(p.id,c.id,mid,groups):[];
+    const sceneRecaps=checkpoints.filter(x=>x.kind==='scene_transition'&&x.summary_source==='ai');
+    const legacy=sceneRecaps.length?[]:checkpoints.filter(x=>x.kind!=='scene_transition');
+    const legacyExpected=Math.floor(groups.length/50);
+    const reuseLegacy=legacyExpected>0&&legacy.length===legacyExpected;
+    const reused=sceneRecaps.length?sceneRecaps:(reuseLegacy?legacy:[]);
+    const lastStage=reused.at(-1);
+    const split=sceneRecaps.length
+      ?mMsgs.findIndex(m=>m.id===lastStage.transition_message_id)
+      :reuseLegacy?groups.slice(0,legacyExpected*50).flat().length:0;
+    const trailing=split>=0?mMsgs.slice(split):mMsgs;
     const chunks=meetingSummaryChunks(trailing,p,c);
     const opts={json_mode:true,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true,temperature:0.25};
     const instruction='你是见面剧情的事实归档员。输出可供下次见面准确接续的纪实摘要，不得用第一句和最后一句拼凑。只记录原文实际发生的动作、人物之间的关键对话、感情和态度变化、具体物品去向、场景转换、约定、拒绝与未解决事件。区分玩笑、提议和真正承诺；绝不凭空补写台词、行为或人物心理。亲密场景概括实际互动即可，不要重复露骨身体细节。严格按时间顺序保留关键转折；跨午夜要保留睡前与次日醒来的变化。只输出一个完整 JSON 对象，唯一字段 summary。';
-    const partSummaries=reuse?checkpoints.map(cp=>
-      '第'+cp.round_start+'–'+cp.round_end+'组（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary+
-      '；具体事件：'+cp.details.join('；')+
-      '；关键对话：'+cp.key_dialogues.map(x=>x.speaker+'「'+x.quote+'」').join('；')
-    ):[];
+    const partSummaries=reused.map(cp=>cp.kind==='scene_transition'
+      ?'在「'+cp.from_location+'」的现场（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary
+      :'历史第'+cp.round_start+'–'+cp.round_end+'组（'+cp.started_at+'至'+cp.ended_at+'）：'+cp.summary+
+        '；具体事件：'+(cp.details||[]).join('；')+
+        '；关键对话：'+(cp.key_dialogues||[]).map(x=>x.speaker+'「'+x.quote+'」').join('；'));
     for(let i=0;i<chunks.length;i++){
       const part=await reliableMeetingSummaryJson([
         {role:'system',content:instruction+'这次只整理第 '+(i+1)+'/'+chunks.length+' 段确实发生的事情（建议160–260字），着重保留重要行为及其后果，而不是首尾引言。'},
@@ -3115,13 +3173,19 @@
     const full=groups||completedMeetingGroups(pid,cid,mid),valid=[];
     for(const cp of db.meetingCheckpoints||[]){
       if(cp.profile_id!==pid||cp.character_id!==cid||cp.meeting_id!==mid)continue;
-      const part=full.slice((cp.block_index-1)*50,cp.block_index*50);
-      if(part.length!==50||cp.source_signature!==meetingBlockSignature(part)){
-        const mem=db.episodicMemories.find(m=>m.owner_id===cid&&m.profile_id===pid&&m.source_key==='meeting-checkpoint:'+mid+':'+cp.block_index);
+      const validSource=cp.kind==='scene_transition'
+        ?isValidMeetingSceneCheckpoint(cp,pid,cid,mid)
+        :(full.slice((cp.block_index-1)*50,cp.block_index*50).length===50&&
+          cp.source_signature===meetingBlockSignature(full.slice((cp.block_index-1)*50,cp.block_index*50)));
+      if(!validSource){
+        const source=cp.kind==='scene_transition'
+          ?'meeting-scene:'+mid+':'+cp.transition_message_id
+          :'meeting-checkpoint:'+mid+':'+cp.block_index;
+        const mem=db.episodicMemories.find(m=>m.owner_id===cid&&m.profile_id===pid&&m.source_key===source);
         if(mem)mem.archive_stale=true;
       }else valid.push(cp);
     }
-    return valid.sort((x,y)=>x.block_index-y.block_index);
+    return valid.sort((x,y)=>Date.parse(x.ended_at)-Date.parse(y.ended_at));
   }
   function pruneMeetingCheckpoints(pid,cid,mid=''){
     const groupsByMeeting=new Map(),removed=[];
@@ -3130,12 +3194,52 @@
       if(!groupsByMeeting.has(cp.meeting_id))groupsByMeeting.set(cp.meeting_id,completedMeetingGroups(pid,cid,cp.meeting_id));
       const full=groupsByMeeting.get(cp.meeting_id);
       const part=full.slice((cp.block_index-1)*50,cp.block_index*50);
-      const valid=part.length===50&&cp.source_signature===meetingBlockSignature(part);
-      if(!valid)removed.push('meeting-checkpoint:'+cp.meeting_id+':'+cp.block_index);
+      const valid=cp.kind==='scene_transition'
+        ?isValidMeetingSceneCheckpoint(cp,pid,cid,cp.meeting_id)
+        :(part.length===50&&cp.source_signature===meetingBlockSignature(part));
+      if(!valid)removed.push(cp.kind==='scene_transition'
+        ?'meeting-scene:'+cp.meeting_id+':'+cp.transition_message_id
+        :'meeting-checkpoint:'+cp.meeting_id+':'+cp.block_index);
       return valid;
     });
     if(removed.length)db.episodicMemories=db.episodicMemories.filter(m=>m.profile_id!==pid||m.owner_id!==cid||!removed.includes(m.source_key));
     return removed.length;
+  }
+  // Scene transitions replace the old fixed 50-group trigger. Each section is
+  // sourced from the recorded message IDs and the *actual meeting* location
+  // history (not a projected surveillance slot).
+  function meetingSceneStages(p,c,mid){
+    const rows=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid&&
+      m.engine!=='recalled'&&!m.recalled&&!isChatArtifact(m));
+    const relationRow=relation(p.id,c.id);
+    const active=relationRow?.mode==='meeting'&&relationRow.active_meeting_id===mid;
+    const record=(db.meetings||[]).find(m=>m.id===mid&&m.profile_id===p.id&&m.character_id===c.id);
+    const history=active?activeMeetingLocationHistory(p,c):(record?.location_history||[]);
+    let start=0,from=history[0]?.location||record?.location||'见面地点待确认';
+    const results=[];
+    for(const event of history.slice(1)){
+      if(!event.message_id||!['scene','ai_scene'].includes(event.source))continue;
+      const index=rows.findIndex(m=>m.id===event.message_id);
+      if(index<start||index<0||!event.location||event.location===from)continue;
+      const segment=rows.slice(start,index),transition=rows[index],location=event.location;
+      results.push({
+        index:results.length+1,from_location:from,to_location:location,
+        transition_message_id:event.message_id,transition,
+        messages:segment,message_ids:segment.map(m=>m.id),
+        source_signature:meetingBlockSignature([segment, [transition]])+'|'+from+'|'+location
+      });
+      start=index;from=location;
+    }
+    return results;
+  }
+  function isValidMeetingSceneCheckpoint(cp,pid,cid,mid){
+    const p=db.profiles.find(x=>x.id===pid),c=byId.get(cid);
+    if(!p||!c||cp.kind!=='scene_transition')return false;
+    const matching=meetingSceneStages(p,c,mid).find(s=>s.transition_message_id===cp.transition_message_id);
+    return Boolean(matching&&matching.messages.length&&
+      matching.from_location===cp.from_location&&matching.to_location===cp.to_location&&
+      matching.source_signature===cp.source_signature&&
+      JSON.stringify(matching.message_ids)===JSON.stringify(cp.message_ids));
   }
   function meetingCheckpointSource(groups,p,c){
     return groups.flat().map(m=>{
@@ -3162,66 +3266,133 @@
       participants,summary,keywords,details,key_dialogues:keyDialogues,message_ids:src.map(x=>x.id),
       source_signature:signature,created_at:stamp()};
   }
-  async function runMeetingCheckpoints(p,c,mid){
-    if(!mid)return [];
-    const groups=completedMeetingGroups(p.id,c.id,mid),total=Math.floor(groups.length/50),done=[];
-    for(let index=1;index<=total;index++){
-      const block=groups.slice((index-1)*50,index*50),signature=meetingBlockSignature(block);
-      const current=(db.meetingCheckpoints||[]).find(x=>x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid&&x.block_index===index);
-      if(current?.source_signature===signature){done.push(current);continue;}
-      let data;
-      if(pub().mode==='live'){
-        const raw=await llm([
-          {role:'system',content:'你是小说见面场景的事实档案员，只总结真实写出的事实。严格按时间顺序，记录场景地点、实际行为、重要对话、尚未解决的事情、改约/取消、状态变化，不得替玩家补写动作或臆测。只输出 JSON：{"summary":"300至500字中文纪实","participants":["真实出场人物"],"keywords":["2至14个准确的具体事件关键词"],"key_dialogues":[{"message_id":"原文ID","quote":"从该条原文复制的准确连续短句"}],"details":["5至18条清楚具体、有后续意义的已发生事件"]}。关键对话逐字摘录并带来源ID，不得编造。'},
-          {role:'user',content:'第'+index+'段，完整互动50组。人物：'+p.name+'、'+c.name+'。每行附原文ID、时间。\n'+meetingCheckpointSource(block,p,c)}
-        ],{json_mode:true,profile:p,character:c,mode:'archive',entry_point:'meeting_checkpoint',background:true,temperature:0.25});
-        data=JSON.parse(raw);
-      }else{
-        const first=block[0][0],last=block.at(-1).at(-1);
-        data={summary:'与 '+p.name+' 进行50组面对面互动。开头「'+String(first.text||'').replace(/\s+/g,' ').slice(0,80)+'」，结束于「'+String(last.text||'').replace(/\s+/g,' ').slice(0,80)+'」。离线暂存小结，细节须核对现场原文。',keywords:extractMemoryTags(block.map(g=>g.find(m=>m.sender==='user')?.text||'').join(' '),10),details:[],key_dialogues:[]};
+  // M11: one factual scene recap is generated AFTER an observed location
+  // transition, not after an arbitrary number of conversational turns.
+  async function generateMeetingSceneSummary(p,c,stage){
+    if(pub().mode!=='live'){
+      return {summary:'在「'+stage.from_location+'」的这一段现场原文已保存（'+stage.messages.length+
+        '条）；这是离线占位记录，具体互动请核对对应原文。',source:'fallback'};
+    }
+    const chunks=meetingSummaryChunks(stage.messages,p,c);
+    const pieces=[];
+    for(let i=0;i<chunks.length;i++){
+      const raw=await llm([
+        {role:'system',content:'你是见面现场的纪实档案员，只依据原始现场记录小结刚结束的这一段场景。严格按发生顺序概括真实动作、双方确实说过的话、未完成的安排以及重要情绪变化。不要杜撰台词、地点、移动或身体接触。提议不等于行动，不能把未来路线写成已经发生。只输出 JSON {"summary":"120–350字纪实小结"}。'},
+        {role:'user',content:'这一场景的实际位置是「'+stage.from_location+'」，后来有现场证据确认进入「'+stage.to_location+'」。本次只总结转场之前的原始互动，第'+(i+1)+'/'+chunks.length+'段：\n'+chunks[i]}
+      ],{json_mode:true,profile:p,character:c,mode:'archive',entry_point:'meeting_scene_checkpoint',
+        background:true,temperature:0.2,max_tokens:1300,min_output_tokens:320});
+      const parsed=JSON.parse(raw),part=stripProtocolTags(String(parsed?.summary||''),{preserveParagraphs:false}).trim();
+      if(part.length<12)throw Error('地点变更阶段小结缺少有效内容');
+      pieces.push(part);
+    }
+    if(pieces.length===1)return {summary:pieces[0].slice(0,850),source:'ai'};
+    const raw=await llm([
+      {role:'system',content:'以下是同一实际地点内按顺序记录的真实片段。只合并已发生的事实，保持关键对话和未完成问题。严禁补写没有发生的动作。只输出 JSON {"summary":"200–450字纪实小结"}。'},
+      {role:'user',content:'地点：「'+stage.from_location+'」。\n'+pieces.join('\n')}
+    ],{json_mode:true,profile:p,character:c,mode:'archive',entry_point:'meeting_scene_checkpoint_merge',
+      background:true,temperature:0.2,max_tokens:1300,min_output_tokens:320});
+    const combined=stripProtocolTags(String(JSON.parse(raw)?.summary||''),{preserveParagraphs:false}).trim();
+    if(combined.length<12)throw Error('合并阶段小结缺少有效内容');
+    return {summary:combined.slice(0,850),source:'ai'};
+  }
+  async function runMeetingSceneSummaries(p,c,mid){
+    const done=[];
+    for(const stage of meetingSceneStages(p,c,mid)){
+      // An empty holding shot alone is not a witnessed shared encounter.
+      if(!stage.messages.length||!stage.messages.some(m=>m.sender==='user'))continue;
+      const existing=(db.meetingCheckpoints||[]).find(cp=>cp.kind==='scene_transition'&&
+        cp.profile_id===p.id&&cp.character_id===c.id&&cp.meeting_id===mid&&
+        cp.transition_message_id===stage.transition_message_id);
+      if(existing&&isValidMeetingSceneCheckpoint(existing,p.id,c.id,mid)){
+        done.push(existing);continue;
       }
-      if(!archiveStoredCurrent())throw Error('阶段小结生成期间其他标签页改变了存档');
-      const latest=completedMeetingGroups(p.id,c.id,mid).slice((index-1)*50,index*50);
-      if(latest.length!==50||meetingBlockSignature(latest)!==signature)throw Error('阶段小结生成期间原文已变化');
-      const cp=normalizedMeetingCheckpoint(data,p,c,mid,index,latest,signature);
-      db.meetingCheckpoints=db.meetingCheckpoints.filter(x=>!(x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid&&x.block_index===index));
+      let generated;
+      try{generated=await generateMeetingSceneSummary(p,c,stage);}
+      catch(err){
+        recordBgError(p.id,c.id,'meeting_scene_checkpoint',err.apiError||{message:String(err.message||err)});
+        generated={source:'fallback',summary:'在「'+stage.from_location+'」的这一段原始互动已完整保存。阶段小结生成失败，请以这段现场原文为准。'};
+      }
+      if(!archiveStoredCurrent())throw Error('场景阶段小结生成期间其他标签页改变了存档');
+      const current=meetingSceneStages(p,c,mid).find(x=>x.transition_message_id===stage.transition_message_id);
+      const r=relation(p.id,c.id);
+      if(!current||current.source_signature!==stage.source_signature||
+        !r||r.active_meeting_id!==mid||r.mode!=='meeting')return done;
+      const cp={
+        id:'scene:'+mid+':'+stage.transition_message_id,kind:'scene_transition',
+        profile_id:p.id,character_id:c.id,meeting_id:mid,block_index:stage.index,
+        transition_message_id:stage.transition_message_id,
+        from_location:stage.from_location,to_location:stage.to_location,
+        round_start:Math.max(1,stage.index),round_end:stage.index,
+        started_at:stage.messages[0].created_at,ended_at:stage.messages.at(-1).created_at,
+        participants:[p.name,c.name],summary:generated.summary,
+        keywords:extractMemoryTags(stage.messages.map(m=>m.text).join(' ').slice(0,3500),10),
+        details:[],key_dialogues:[],message_ids:stage.message_ids,
+        source_signature:stage.source_signature,summary_source:generated.source,created_at:stamp()
+      };
+      db.meetingCheckpoints=db.meetingCheckpoints.filter(x=>!(
+        x.kind==='scene_transition'&&x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid&&
+        x.transition_message_id===stage.transition_message_id));
       db.meetingCheckpoints.push(cp);
-      appendEpisodicMemory({owner_id:c.id,profile_id:p.id,source_type:'meeting_checkpoint',source_key:'meeting-checkpoint:'+mid+':'+index,
-        meeting_id:mid,knowledge_mode:'experienced',summary:'与 '+p.name+' 的第'+cp.round_start+'–'+cp.round_end+'组见面：'+cp.summary,
-        tags:['见面',...cp.keywords],importance:4,emotional_weight:3,raw_msg_ids:cp.message_ids,
-        meeting_data:{block_index:index,key_dialogues:cp.key_dialogues,details:cp.details},event_at:cp.ended_at});
+      if(generated.source==='ai'){
+        appendEpisodicMemory({owner_id:c.id,profile_id:p.id,source_type:'meeting_checkpoint',
+          source_key:'meeting-scene:'+mid+':'+stage.transition_message_id,
+          meeting_id:mid,knowledge_mode:'experienced',
+          summary:'与 '+p.name+' 在「'+stage.from_location+'」的真实见面片段：'+cp.summary,
+          tags:['见面',stage.from_location,...cp.keywords],importance:4,emotional_weight:3,
+          raw_msg_ids:stage.message_ids,event_at:stage.ended_at,
+          meeting_data:{scene_transition:stage.transition_message_id,from_location:stage.from_location,to_location:stage.to_location}});
+      }
+      const monitor=getOrInitSurveillance(p,c,localDateStr(stage.transition.created_at));
+      if(monitor.live_override?.meeting_id===mid){
+        monitor.live_override.location=stage.to_location;
+        monitor.live_override.last_scene_summary=cp.summary;
+      }
+      monitor.updated_at=stamp();
       save();done.push(cp);
     }
     return done;
   }
-  async function ensureMeetingCheckpoints(p,c,mid){
+  async function ensureMeetingSceneSummaries(p,c,mid){
     if(!mid)return [];
     const key=pairKey(p.id,c.id)+'|'+mid;
     const prior=meetingCheckpointJobs.get(key);
     if(prior)return await prior;
-    const job=runMeetingCheckpoints(p,c,mid);
+    const job=runMeetingSceneSummaries(p,c,mid);
     meetingCheckpointJobs.set(key,job);
     try{return await job;}
     finally{if(meetingCheckpointJobs.get(key)===job)meetingCheckpointJobs.delete(key);}
   }
+  // Historical 50-group checkpoint records remain readable and exportable;
+  // the old threshold is no longer an automatic generation trigger.
+  async function ensureMeetingCheckpoints(p,c,mid){
+    return mid?validMeetingCheckpoints(p.id,c.id,mid):[];
+  }
   function meetingCheckpointPromptContext(p,c,mid,query=''){
-    const groups=completedMeetingGroups(p.id,c.id,mid),records=validMeetingCheckpoints(p.id,c.id,mid,groups);
+    const groups=completedMeetingGroups(p.id,c.id,mid);
+    const records=validMeetingCheckpoints(p.id,c.id,mid,groups);
     if(!records.length)return '';
-    const summaries=records.map(cp=>'第'+cp.round_start+'–'+cp.round_end+'组｜'+cp.started_at+' 至 '+cp.ended_at+
-      '｜人物：'+cp.participants.join('、')+'\n小结：'+cp.summary+
-      '\n关键词：'+cp.keywords.join('、')+'\n关键对话：'+cp.key_dialogues.map(q=>q.speaker+'「'+q.quote+'」').join('；')+
-      '\n具体内容：'+cp.details.join('；')).join('\n\n');
+    const summaries=records.map(cp=>cp.kind==='scene_transition'
+      ?'场景「'+cp.from_location+'」→「'+cp.to_location+'」｜'+cp.started_at+' 至 '+cp.ended_at+
+        '\n小结（原始对话优先）：'+cp.summary+'\n关键词：'+(cp.keywords||[]).join('、')+
+        '\n来源消息数：'+cp.message_ids.length
+      :'历史第'+cp.round_start+'–'+cp.round_end+'组（旧版50组归档）｜'+cp.started_at+' 至 '+cp.ended_at+
+        '\n小结：'+cp.summary+'\n关键词：'+cp.keywords.join('、')+
+        '\n具体内容：'+(cp.details||[]).join('；')).join('\n\n');
     const text=String(query||'').toLowerCase(),excerpts=[];
-    const matches=records.map(cp=>({cp,hits:cp.keywords.filter(k=>k.length>=2&&!['我们','你们','他们','自己','这个','那个','见面','现在','刚才','今天','昨天'].includes(k)&&text.includes(k.toLowerCase()))})).filter(x=>x.hits.length);
+    const matches=records.map(cp=>({cp,hits:(cp.keywords||[]).filter(k=>k.length>=2&&
+      !['我们','你们','他们','自己','这个','那个','见面','现在','刚才','今天','昨天'].includes(k)&&
+      text.includes(k.toLowerCase()))})).filter(x=>x.hits.length);
     for(const {cp,hits} of matches.slice(-3)){
-      const offset=(cp.block_index-1)*50,segment=groups.slice(offset,offset+50);
-      const candidates=segment.map((g,i)=>({g,i,score:g.reduce((n,m)=>n+hits.filter(k=>String(m.text||'').toLowerCase().includes(k.toLowerCase())).length,0)}))
-        .filter(x=>x.score).sort((x,y)=>y.score-x.score).slice(0,2).sort((x,y)=>x.i-y.i);
-      for(const x of candidates)excerpts.push('第'+(offset+x.i+1)+'组附近原文（'+hits.join('、')+'）：\n'+meetingCheckpointSource(segment.slice(Math.max(0,x.i-1),Math.min(50,x.i+2)),p,c).slice(0,2600));
+      const originals=messagesOf(p.id,c.id).filter(m=>m.meeting_id===mid&&!m.recalled&&m.engine!=='recalled');
+      const subset=cp.kind==='scene_transition'
+        ?originals.filter(m=>(cp.message_ids||[]).includes(m.id))
+        :groups.slice((cp.block_index-1)*50,cp.block_index*50).flat();
+      const found=subset.filter(m=>hits.some(k=>String(m.text||'').toLowerCase().includes(k.toLowerCase()))).slice(-3);
+      for(const m of found)excerpts.push('来源原文 ['+m.id+'] '+(m.sender==='user'?p.name:c.name)+'：'+String(m.text||'').slice(0,800));
     }
-    return '\n\n【本次见面 · 已归档的全部50组阶段小结】\n'+summaries+
-      '\n这些是已发生的事实；最近五组对话决定当前状态，不能用旧档案覆盖当前行动。'+
-      (excerpts.length?'\n\n【关键词命中的现场原文 · 带原始消息ID】\n'+excerpts.join('\n\n'):'');
+    return '\n\n【本次见面 · 按实际地点切换归档的阶段小结（含旧版历史记录）】\n'+summaries+
+      '\n小结只帮助记忆，现场原文优先于任何摘要；当前最近的真实互动决定现在身在何处，不得让旧小结或监控推演覆盖实际行动。'+
+      (excerpts.length?'\n\n【关键词命中的现场原文 · 带原始消息ID】\n'+excerpts.join('\n'):'');
   }
 
   // Keep complete user/assistant bursts under a soft character budget. The latest
@@ -3547,7 +3718,8 @@
     const relSummary=relationshipBaselineSummary(p.id,c.id,p.name);
     const interestsStr=(p.interests||[]).join('、')||'未填写';
     const intentStr=p.intent||'未填写';
-    const curSurv=getCurrentSurveillanceSlot(p,c,options.simulatedAt||Date.now());
+    // Face-to-face location must never be seeded from projected surveillance.
+    const curSurv=mode==='chat'?getCurrentSurveillanceSlot(p,c,options.simulatedAt||Date.now()):null;
     const meetingLoc=mode==='meeting'?(relation(p.id,c.id)?.meeting_location||'见面地点待确认'):(curSurv?.location||'地点待确认');
     let sys='你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n';
     sys+='现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。\n';
@@ -3599,7 +3771,10 @@
       const quoted=m.quote&&m.mode==='chat'?('[引用'+(m.quote.sender==='user'?'自己':'对方')+'的消息：「'+String(m.quote.text||'').slice(0,220)+'」]\n'):'';
       const cleanBody=quoted+originalBody;
       const useVision=mode==='chat'&&m.sender==='user'&&m.photo_kind==='gallery'&&m.photo_ref&&(protectedIds.includes(m.id)||(!protectedIds.length&&workingHistory.slice(idx+1).every(x=>x.sender==='user')));
-      historyTurns.push({role,content:cleanBody,...(useVision?{photo_ref:m.photo_ref}:{})});
+      const sceneMark=mode==='meeting'&&m.sender==='ai'&&m.scene_location&&
+        m.scene_location_signature===meetingSceneSignature(m.text)
+        ?'\n【此条角色正文结束时的现场地点】'+m.scene_location:'';
+      historyTurns.push({role,content:cleanBody+sceneMark,...(useVision?{photo_ref:m.photo_ref}:{})});
     });
     if(timelineLines.length){
       sys+=`\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n`+timelineLines.join(' ｜ ');
@@ -3633,6 +3808,10 @@
       postSystemParts.push(meetingClockContext(relation(p.id,c.id),workingHistory,Date.now(),options.rerollAt||0));
       if(isMeetingOpening)postSystemParts.push(meetingOpeningDirection(p,c,meetingLoc));
       postSystemParts.push(`【第四层 · 当前状态 (Current State)】角色最后经现场实际行动确认的地点：「${meetingLoc}」。此定位是过去确认的状态，不是不可更改的固定舞台；如果本轮角色确实移至新地点，应按真实移动过程继续，并使后续监控更新。不能因目的地被提及、打算过去、角色猜测而假定已经到达。必须优先承接最新现场行动，不得让旧日程或旧地名覆盖新的实际位置。请严格按照上方已启用的预设模块规则（含文风、视角、去油腻、连续性及正文篇幅要求）输出面对面小说正文；只决定 ${c.name} 自己与环境中合理的事，不要替 ${p.name} 说话、行动或决定心理，不要在正文开头添加任何时间或模式标签。`);
+      // Structured scene metadata travels out-of-band: only text becomes
+      // visible prose. Each response must explicitly state where the character
+      // really is, using actions in this scene rather than surveillance plans.
+      postSystemParts.push('【每轮见面回复的结构化契约 · 必须遵守】只返回一个 JSON 对象，字段恰好是 {"text":"完整的第三人称小说正文","location":"角色在本条正文结束时真实所在的具体地点","location_evidence":"如果地点变化，请从本条正文或玩家最新一条原文逐字复制证明确实已经到达的连续短句；没换地点则填空字符串"}。text 必须是完整自然的小说叙事，不要把地点标签写进 text。location 每轮必填，即使没有移动也必须重复上一轮已确认的地点。单纯讨论、邀约、计划、将来时、想象、监控推演或 NPC 在别处不构成移动；未实际到达则沿用上一轮地点。若真实走出或进入新地点，在正文里交代完成移动的动作，再填新的 location。不得替玩家行动或发言。JSON 外不要有解释、代码围栏或其他内容。');
       chat.push({role:'system',content:postSystemParts.join('\n\n')});
       for(const x of postPresets){
         if(x.role!=='system')chat.push({role:x.role,content:macros(x.content)});
@@ -4431,7 +4610,7 @@
       updated_at:stamp()
     };
     save();
-    let engine='demo',warning='',txt='',apiError=null;
+    let engine='demo',warning='',txt='',apiError=null,sceneTurn=null,sceneLocation=null;
     if(curMode==='live'){
       try{
         const compiled=prompt(p,c,mode,[],{entry_point:ep,latestText:userMsg?.text||(existingTs?.latest_text||'')});
@@ -4443,12 +4622,26 @@
           task_id:taskId,
           retry_of_task_id:retryOfTaskId,
           attempt,
-          signal:abortCtrl?.signal
+          signal:abortCtrl?.signal,
+          ...(mode==='meeting'?{json_mode:true,omit_response_format:true,skip_json_gateway:true}: {})
         });
         if(mode==='chat')txt=await verifyGeneratedMeetingDetail(p,c,compiled,txt,{
           profile:p,character:c,task_id:taskId,
           retry_of_task_id:retryOfTaskId,attempt,signal:abortCtrl?.signal
         });
+        if(mode==='meeting'){
+          const known=activeMeetingLocationHistory(p,c).at(-1)?.location||
+            r?.meeting_location||'约定的见面地点';
+          sceneTurn=parseMeetingSceneTurn(txt,known);
+          txt=sceneTurn.text;
+          sceneLocation=resolveMeetingSceneTurnLocation(p,c,sceneTurn,known,userMsg);
+          // Compatibility for older providers that ignore structured hints.
+          // Never let their raw text / a guessed schedule set the scene.
+          if(!sceneTurn.structured&&sceneLocation.location===known){
+            const actual=await classifyMeetingMovement(p,c,txt,known,{signal:abortCtrl?.signal});
+            if(actual?.location)sceneLocation=actual;
+          }
+        }
         engine='live';
       }catch(e){
         warning=String(e.message||e);
@@ -4456,13 +4649,11 @@
         engine='error';
       }
     }else txt=demo(p,c,mode);
-    // Evaluate every successful meeting reply for physical location changes.
-    // The inexpensive local check runs every turn; a second model is queried
-    // only when text indicates an ambiguous completed spatial transition.
-    let sceneLocation=null;
-    if(mode==='meeting'&&engine!=='error'&&txt){
+    if(mode==='meeting'&&engine==='demo'&&txt){
       const known=activeMeetingLocationHistory(p,c).at(-1)?.location||r?.meeting_location||'约定的见面地点';
-      sceneLocation=await classifyMeetingMovement(p,c,cleanMeetingNovelText(txt),known,{signal:abortCtrl?.signal});
+      sceneTurn=parseMeetingSceneTurn(txt,known);
+      txt=sceneTurn.text;
+      sceneLocation=resolveMeetingSceneTurnLocation(p,c,sceneTurn,known,userMsg);
     }
     inflightControllers.delete(tKey);
     const curRel=relation(p.id,c.id);
@@ -4501,12 +4692,14 @@
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai',mode,bTxt,engine));
     const reply=replies[replies.length-1]||null;
     if(reply&&mode==='meeting'){
-      if(sceneLocation?.location){
-        reply.scene_location=sceneLocation.location;
-        reply.scene_location_evidence=sceneLocation.evidence;
-        reply.scene_location_kind=sceneLocation.kind;
-        reply.scene_location_signature=meetingSceneSignature(reply.text);
-      }
+      // Every successful turn carries an explicit scene position, even if the
+      // character stayed put. The prose and label are stored separately.
+      reply.scene_location=sceneLocation?.location||
+        activeMeetingLocationHistory(p,c).at(-1)?.location||r.meeting_location;
+      reply.scene_location_evidence=sceneLocation?.evidence||'';
+      reply.scene_location_kind=sceneLocation?.kind||'stable';
+      reply.scene_location_signature=meetingSceneSignature(reply.text);
+      reply.scene_location_structured=Boolean(sceneTurn?.structured);
       const history=activeMeetingLocationHistory(p,c);
       const rec=getOrInitSurveillance(p,c,localDateStr(reply.created_at));
       if(rec.live_override&&rec.live_override.meeting_id===activeMid){
@@ -4524,8 +4717,8 @@
     }
     save();
     if(mode==='meeting'&&reply&&activeMid){
-      try{await ensureMeetingCheckpoints(p,c,activeMid);}
-      catch(err){recordBgError(p.id,c.id,'meeting_checkpoint',err.apiError||{message:String(err.message||err)});}
+      try{await ensureMeetingSceneSummaries(p,c,activeMid);}
+      catch(err){recordBgError(p.id,c.id,'meeting_scene_checkpoint',err.apiError||{message:String(err.message||err)});}
     }
     return {reply,replies,warning:'',apiError:null};
   }
@@ -4682,14 +4875,19 @@
       if(pub().mode==='live'){
         const ms=prompt(p,c,'meeting',[],{entry_point:'meeting_reroll',excludeMessageIds:[old.id],rerollAt:anchor});
         // Leave the user's original final turn and all preset roles in their original positions.
-        raw=await llm(ms,{profile:p,character:c,mode:'meeting',entry_point:'meeting_reroll',task_id:'task_'+roll.token,signal:controller?.signal,reject_truncated:true});
+        raw=await llm(ms,{profile:p,character:c,mode:'meeting',entry_point:'meeting_reroll',
+          task_id:'task_'+roll.token,signal:controller?.signal,reject_truncated:true,
+          json_mode:true,omit_response_format:true,skip_json_gateway:true});
         engine='live';
       }else raw=demo(p,c,'meeting');
-      const body=cleanMeetingNovelText(raw);
-      if(!body||/^[\s.…。]+$/.test(body))throw Error('未返回有效正文');
       const prev=activeMeetingLocationHistory(p,c).filter(e=>e.message_id!==old.id&&Date.parse(e.at)<=anchor).at(-1)?.location||
         r.meeting_location||'约定的见面地点';
-      const sceneLoc=await classifyMeetingMovement(p,c,body,prev,{signal:controller?.signal});
+      const turn=parseMeetingSceneTurn(raw,prev),body=turn.text;
+      let sceneLoc=resolveMeetingSceneTurnLocation(p,c,turn,prev);
+      if(!turn.structured&&sceneLoc.location===prev){
+        const actual=await classifyMeetingMovement(p,c,body,prev,{signal:controller?.signal});
+        if(actual?.location)sceneLoc=actual;
+      }
       const live=relation(p.id,c.id),current=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid&&!m.recalled&&m.engine!=='recalled');
       if(meetingRerolls.get(key)!==roll||live?.status!=='matched'||live.mode!=='meeting'||live.active_meeting_id!==mid||episodeSignature(current)!==before||!archiveStoredCurrent()){
         return {ok:false,removedIds:[],replies:[],reply:null,warning:'见面状态或原文已变化，已丢弃迟到的重 Roll 结果。'};
@@ -4699,8 +4897,9 @@
       const snapshot=JSON.stringify(db),id=uid();
       try{
         const replacement={...old,id,text:body,engine,created_at:old.created_at,rerolled_at:stamp(),reroll_count:(Number(old.reroll_count)||0)+1,
-          scene_location:sceneLoc?.location||'',scene_location_evidence:sceneLoc?.evidence||'',
-          scene_location_kind:sceneLoc?.kind||'',scene_location_signature:sceneLoc?meetingSceneSignature(body):''};
+          scene_location:sceneLoc?.location||prev,scene_location_evidence:sceneLoc?.evidence||'',
+          scene_location_kind:sceneLoc?.kind||'stable',scene_location_signature:meetingSceneSignature(body),
+          scene_location_structured:Boolean(turn.structured)};
         const index=db.messages.findIndex(m=>m.id===old.id&&m.profile_id===p.id&&m.character_id===c.id);
         if(index<0)throw Error('原文不存在');
         db.messages[index]=replacement;invalidateTranslation(old.id);
@@ -4721,8 +4920,8 @@
         activeMeetingLocationHistory(p,c);
         const updated=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid);
         upsertMeetingRecord(p,c,mid,updated,live.meeting_location||'');
-        try{await ensureMeetingCheckpoints(p,c,mid);}
-        catch(err){recordBgError(p.id,c.id,'meeting_checkpoint',err.apiError||{message:String(err.message||err)});}
+        try{await ensureMeetingSceneSummaries(p,c,mid);}
+        catch(err){recordBgError(p.id,c.id,'meeting_scene_checkpoint',err.apiError||{message:String(err.message||err)});}
         episodeList(p,c);live.updated_at=stamp();save();
         return {ok:true,removedIds:[old.id],replies:[replacement],reply:replacement,warning:'',apiError:null};
       }catch(error){db=JSON.parse(snapshot);throw error;}

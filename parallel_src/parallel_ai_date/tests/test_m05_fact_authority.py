@@ -115,7 +115,9 @@ class EventAuthorityTests(unittest.TestCase):
         self.assertNotIn('刚刚在「{meet_loc}」线下碰面',source)
         self.assertIn('第一幕 · 候场镜头',source)
         self.assertIn('玩家将在下一条现场行动中决定如何接触',source)
-        self.assertIn('现场互动确认的位置',source)
+        self.assertIn('现场实际地点，严禁参考监控推演',source)
+        self.assertIn("cur_surv=get_current_surveillance_slot(db,p,c,simulated_at) if mode=='chat' else None",source)
+        self.assertIn('每轮见面回复结构化契约',source)
 
     def test_old_generated_schedule_remains_marked_as_plan(self):
         slot={

@@ -205,6 +205,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS episodic_owner_profile ON episodic_memories(owner_id, profile_id, event_at);
         CREATE TABLE IF NOT EXISTS meetings (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, character_id TEXT NOT NULL, location TEXT NOT NULL DEFAULT '', time TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, ended_at TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', ai_summary TEXT NOT NULL DEFAULT '', message_ids TEXT NOT NULL DEFAULT '[]', entries TEXT NOT NULL DEFAULT '[]');
         CREATE TABLE IF NOT EXISTS meeting_checkpoints (profile_id TEXT NOT NULL,character_id TEXT NOT NULL,meeting_id TEXT NOT NULL,block_index INTEGER NOT NULL,source_signature TEXT NOT NULL,started_at TEXT NOT NULL,ended_at TEXT NOT NULL,participants TEXT NOT NULL DEFAULT '[]',summary TEXT NOT NULL,keywords TEXT NOT NULL DEFAULT '[]',key_dialogues TEXT NOT NULL DEFAULT '[]',details TEXT NOT NULL DEFAULT '[]',message_ids TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL,PRIMARY KEY(profile_id,character_id,meeting_id,block_index));
+        CREATE TABLE IF NOT EXISTS meeting_scene_summaries (profile_id TEXT NOT NULL,character_id TEXT NOT NULL,meeting_id TEXT NOT NULL,transition_message_id TEXT NOT NULL,source_signature TEXT NOT NULL,from_location TEXT NOT NULL,to_location TEXT NOT NULL,started_at TEXT NOT NULL,ended_at TEXT NOT NULL,summary TEXT NOT NULL,summary_source TEXT NOT NULL DEFAULT 'fallback',message_ids TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL,PRIMARY KEY(profile_id,character_id,meeting_id,transition_message_id));
         CREATE TABLE IF NOT EXISTS message_translations (message_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, character_id TEXT NOT NULL, content_version TEXT NOT NULL, target_lang TEXT NOT NULL DEFAULT 'zh-CN', translated_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'ready', error_code TEXT NOT NULL DEFAULT '', error_message TEXT NOT NULL DEFAULT '', provider_model TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS msg_translations_thread ON message_translations(profile_id, character_id);
         ''')
@@ -1252,7 +1253,7 @@ def sync_surveillance_on_meeting_start(db,p,c,loc,meeting_id=''):
     rec['updated_at']=utc()
 
 
-def observed_meeting_segments(p,c,meeting_rec,date_str,live=False):
+def observed_meeting_segments(p,c,meeting_rec,date_str,live=False,db=None):
     """Day-scoped observed scene path; never render a speculative schedule as
     an actual move. A cross-midnight encounter creates segments on both days."""
     mid=str(meeting_rec.get('id') or '')
@@ -1274,16 +1275,19 @@ def observed_meeting_segments(p,c,meeting_rec,date_str,live=False):
         except (ValueError,TypeError):continue
         if at<begin:at=begin
         if at>finish:continue
-        validated.append((at,str(event['location'])))
+        validated.append((at,str(event['location']),str(event.get('message_id') or '')))
     if not validated:return []
     validated.sort(key=lambda x:x[0])
     condensed=[]
-    for at,loc in validated:
+    for at,loc,message_id in validated:
         if condensed and condensed[-1][1]==loc:continue
-        condensed.append((at,loc))
+        condensed.append((at,loc,message_id))
     segments=[]
-    for i,(at,loc) in enumerate(condensed):
+    stage_recaps={x['transition_message_id']:x for x in valid_meeting_scene_summaries(db,p,c,mid)} if db is not None else {}
+    for i,(at,loc,_) in enumerate(condensed):
         until=condensed[i+1][0] if i+1<len(condensed) else finish
+        transition_id=condensed[i+1][2] if i+1<len(condensed) else ''
+        recap=stage_recaps.get(transition_id)
         lo=max(begin,at,start_day)
         hi=min(finish,until,end_day-timedelta(seconds=1))
         if hi<lo:continue
@@ -1294,7 +1298,7 @@ def observed_meeting_segments(p,c,meeting_rec,date_str,live=False):
             'id':'slot_real_meeting_'+mid+'_'+str(i)+'_'+date_str,
             'start':start_s,'end':end_s,'location':loc,'status':'线下见面足迹',
             'activity':'与 '+p['name']+' 在「'+loc+'」实际见面',
-            'scene':str(meeting_rec.get('summary') or c['name']+'在此处的已确认现场行动')[:150],
+            'scene':str(recap['summary'] if recap else c['name']+'在「'+loc+'」的现场原文已保存，场景小结尚未生成。')[:550],
             'source':'meeting','meeting_id':mid
         })
     if live and segments:segments[-1]['id']='live_meeting_'+mid
@@ -1317,7 +1321,7 @@ def sync_surveillance_on_meeting_end(db,p,c,meeting_rec):
         date_str=date.isoformat()
         rec=get_or_init_surveillance(db,p,c,date_str)
         current_day=date==finish_dt.date()
-        actual=observed_meeting_segments(p,c,meeting_rec,date_str)
+        actual=observed_meeting_segments(p,c,meeting_rec,date_str,db=db)
         if actual:
             rec['slots']=overlay_actual_slots([x for x in rec['slots'] if not (x.get('meeting_id')==meeting_rec.get('id') and x.get('source')=='meeting')],actual)
         rec['live_override']=None
@@ -1621,7 +1625,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
             'id':mid,'started_at':m_state.get('meeting_started_at') or utc(),
             'ended_at':utc(),'location':current['location'],
             'location_history':history
-        },sel_date,live=True)
+        },sel_date,live=True,db=db)
         if not observed:observed=[dict(current,id='live_meeting_'+str(mid),meeting_id=mid)]
         cut=hhmm_to_min(observed[0]['start'])
         prev=[]
@@ -1942,6 +1946,40 @@ def classify_meeting_scene_location(p,c,text,current):
         return dict(location=location,evidence=evidence,kind='model')
     except Exception:return None
 
+def parse_meeting_scene_turn(raw,current=''):
+    value=str(raw or '').strip()
+    structured=value.startswith('{')
+    data=None
+    if structured:
+        try:data=json.loads(value)
+        except (ValueError,TypeError):raise ValueError('见面回复 JSON 不完整，原场景已保留')
+        if not isinstance(data,dict) or not isinstance(data.get('text'),str) or not isinstance(data.get('location'),str):
+            raise ValueError('见面回复缺少正文或当前地点字段')
+    body=clean_meeting_novel_text(data['text'] if structured else value).strip()
+    if not body:raise ValueError('见面回复缺少有效正文')
+    location=clean_scene_place(data['location'] if structured else current)
+    if structured and not location:raise ValueError('见面回复提供的当前地点无效')
+    return dict(text=body,location=location or str(current or '')[:40],
+                evidence=str(data.get('location_evidence') or '').strip()[:250] if structured else '',
+                structured=structured)
+
+def resolve_meeting_scene_turn_location(p,c,turn,current,user_msg=None):
+    base=clean_scene_place(current) or '见面地点待确认'
+    claimed=clean_scene_place((turn or {}).get('location'))
+    if not claimed or claimed==base:return dict(location=base,evidence='',kind='stable')
+    body=str(turn.get('text') or '')
+    evidence=str(turn.get('evidence') or '').strip()
+    observed=scene_location_from_character(body,base,p['name'],c['name'])
+    completed=bool(len(evidence)>=4 and evidence in body and SCENE_POTENTIAL_MOVE_RE.search(evidence) and not SCENE_NOT_ARRIVED_RE.search(evidence))
+    player=str((user_msg or {}).get('text') or '')
+    user_place=meeting_place_in_player_turn(player,p['name']) if user_msg else ''
+    from_player=bool(user_place==claimed and len(evidence)>=4 and evidence in player)
+    if observed and observed['location']!=base:
+        if claimed==observed['location'] or completed:return dict(location=claimed,evidence=evidence or observed['evidence'],kind='structured')
+        return observed
+    if completed or from_player:return dict(location=claimed,evidence=evidence,kind='structured')
+    return dict(location=base,evidence='',kind='unconfirmed')
+
 def refresh_meeting_scene_history(db,p,c,exclude_message_id=''):
     state=MEETING_STATE.get((p['id'],c['id']),{})
     mid=state.get('active_meeting_id') or ''
@@ -2061,9 +2099,15 @@ def summarize_complete_meeting(p,c,m_msgs,location,db=None):
     mid=m_msgs[0].get('meeting_id') or ''
     groups=completed_meeting_groups(db,p['id'],c['id'],mid) if db is not None and mid else []
     expected=len(groups)//MEETING_CHECKPOINT_INTERVAL
-    checkpoints=valid_meeting_checkpoints(db,p['id'],c['id'],mid,groups) if expected else []
-    reuse=bool(expected and len(checkpoints)==expected)
-    trailing=[m for g in groups[expected*MEETING_CHECKPOINT_INTERVAL:] for m in g] if reuse else m_msgs
+    legacy=valid_meeting_checkpoints(db,p['id'],c['id'],mid,groups) if expected else []
+    stage_recs=valid_meeting_scene_summaries(db,p,c,mid) if db is not None and mid else []
+    ai_stages=[x for x in stage_recs if x.get('summary_source')=='ai']
+    reused=ai_stages if ai_stages else (legacy if expected and len(legacy)==expected else [])
+    if ai_stages:
+        cut=next((i for i,m in enumerate(m_msgs) if m.get('id')==ai_stages[-1]['transition_message_id']),0)
+        trailing=m_msgs[cut:]
+    elif reused:trailing=[m for g in groups[expected*MEETING_CHECKPOINT_INTERVAL:] for m in g]
+    else:trailing=m_msgs
     chunks=meeting_summary_chunks(trailing,p,c)
     instruction=(
         '你是小说见面剧情的事实归档员。生成下次能准确接续故事的纪实梗概，不是首尾对话摘抄。'
@@ -2072,7 +2116,10 @@ def summarize_complete_meeting(p,c,m_msgs,location,db=None):
         '亲密场景概括互动即可，不要反复记录露骨身体细节。跨午夜保留睡前和次日醒来后的变化。'
         '只输出 JSON 对象，唯一字段 summary。'
     )
-    notes=([f"第{cp['block_index']*50-49}–{cp['block_index']*50}组（{cp['started_at']}至{cp['ended_at']}）：{cp['summary']}；具体事件：{'；'.join(cp['details'])}；关键对话：{'；'.join(q['speaker']+'「'+q['quote']+'」' for q in cp['key_dialogues'])}" for cp in checkpoints] if reuse else [])
+    notes=[("场景「"+cp['from_location']+"」在"+cp['started_at']+"至"+cp['ended_at']+"的实际记录："+cp['summary'])
+           if 'from_location' in cp else
+           ("历史第"+str(cp['block_index']*50-49)+"–"+str(cp['block_index']*50)+"组："+cp['summary'])
+           for cp in reused]
     for idx,chunk in enumerate(chunks):
         part=reliable_meeting_summary_json([
             {'role':'system','content':instruction+f'这是第 {idx+1}/{len(chunks)} 段连续记录。建议用160–260字记录本段的关键事实和转折；禁止只拼贴起止两句。'},
@@ -2547,10 +2594,138 @@ def ensure_meeting_checkpoints(db,p,c,mid):
         result.append(cp)
     return result
 
+def meeting_scene_stages(db,p,c,mid):
+    """Observed scene transitions from original turns, never speculative monitor."""
+    rows=[dict(x) for x in db.execute(
+        "SELECT id,sender,text,created_at,engine,meeting_id FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' AND meeting_id=? ORDER BY julianday(created_at),rowid",
+        (p['id'],c['id'],mid)).fetchall() if x['engine']!='recalled']
+    state=MEETING_STATE.get((p['id'],c['id']),{})
+    if state.get('active_meeting_id')==mid:
+        history=refresh_meeting_scene_history(db,p,c)
+    else:
+        rec=db.execute('SELECT location_history FROM meetings WHERE id=? AND profile_id=? AND character_id=?',
+                       (mid,p['id'],c['id'])).fetchone()
+        history=parse_json(rec['location_history'],[]) if rec else []
+    if not history:return []
+    start=0
+    current=history[0].get('location') or '见面地点待确认'
+    stages=[]
+    for event in history[1:]:
+        tid=event.get('message_id') or ''
+        if event.get('source') not in ('scene','ai_scene') or not tid:continue
+        idx=next((i for i,row in enumerate(rows) if row['id']==tid),-1)
+        destination=str(event.get('location') or '')
+        if idx<start or not destination or destination==current:continue
+        body=rows[start:idx]
+        transition=rows[idx]
+        evidence=''.join(str(x['id'])+'|'+str(x['text'])+';' for x in [*body,transition])
+        signature=hashlib.sha256((evidence+'|'+current+'|'+destination).encode('utf8')).hexdigest()
+        stages.append(dict(transition_message_id=tid,from_location=current,to_location=destination,
+                           messages=body,transition=transition,message_ids=[x['id'] for x in body],
+                           source_signature=signature))
+        start=idx
+        current=destination
+    return stages
+
+
+def valid_meeting_scene_summaries(db,p,c,mid):
+    # Minimal legacy 50-block test fixtures lack the new additive schema.
+    # Fail closed (no scene recap), never infer a missing location as truth.
+    try:
+        rows=db.execute('SELECT * FROM meeting_scene_summaries WHERE profile_id=? AND character_id=? AND meeting_id=? ORDER BY ended_at,transition_message_id',
+                        (p['id'],c['id'],mid)).fetchall()
+        if not rows:return []
+        stages={x['transition_message_id']:x for x in meeting_scene_stages(db,p,c,mid)}
+    except sqlite3.OperationalError as err:
+        if 'no such table' not in str(err):raise
+        return []
+    valid=[]
+    for row in rows:
+        cp=dict(row)
+        stage=stages.get(cp['transition_message_id'])
+        if not stage or cp['source_signature']!=stage['source_signature'] or cp['from_location']!=stage['from_location'] or cp['to_location']!=stage['to_location']:
+            db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',
+                       (c['id'],p['id'],'meeting-scene:'+mid+':'+cp['transition_message_id']))
+            continue
+        cp['message_ids']=parse_json(cp['message_ids'],[])
+        valid.append(cp)
+    return valid
+
+
+def generate_meeting_scene_digest(p,c,stage):
+    if public_connection()['mode']!='live':
+        return dict(summary='在「'+stage['from_location']+'」的原始现场记录已保存；离线时不生成推测事实。',summary_source='fallback')
+    chunks=meeting_summary_chunks(stage['messages'],p,c)
+    parts=[]
+    for i,chunk in enumerate(chunks):
+        raw=completion([
+            {'role':'system','content':'你是见面现场的事实档案员，仅依据原文归档这个地点已经发生的互动。保持原话、行动、物品、未完成事项，不得编造玩家动作、地点、虚构共同回忆或把计划当成事实。只输出 JSON 对象，字段 summary。'},
+            {'role':'user','content':'已结束的实际地点「'+stage['from_location']+'」，后来进入「'+stage['to_location']+'」。只总结此前原文，第'+str(i+1)+'/'+str(len(chunks))+'段：\n'+chunk}
+        ],json_mode=True,max_tokens=1300,temperature=0.2,
+          log_meta={'mode':'archive','entryPoint':'meeting_scene_checkpoint','profile':p,'character':c})
+        val=strip_protocol_tags(str(parse_json(raw,{}).get('summary') or ''),preserve_paragraphs=False).strip()
+        if len(val)<12:raise ValueError('场景小结没有提供有效纪实')
+        parts.append(val)
+    if len(parts)==1:return dict(summary=parts[0][:850],summary_source='ai')
+    if not parts:return dict(summary='本场景缺少足够真实文本，无法生成小结。',summary_source='fallback')
+    raw=completion([
+        {'role':'system','content':'按事件顺序合并同一个地点的真实小结，禁止杜撰额外行动。只输出 JSON 对象，字段 summary。'},
+        {'role':'user','content':'地点「'+stage['from_location']+'」：\n'+'\n'.join(parts)}
+    ],json_mode=True,max_tokens=1300,temperature=0.2,
+      log_meta={'mode':'archive','entryPoint':'meeting_scene_checkpoint_merge','profile':p,'character':c})
+    summary=strip_protocol_tags(str(parse_json(raw,{}).get('summary') or ''),preserve_paragraphs=False).strip()
+    if len(summary)<12:raise ValueError('合并场景小结没有提供有效纪实')
+    return dict(summary=summary[:850],summary_source='ai')
+
+
+def ensure_meeting_scene_summaries(db,p,c,mid):
+    if not mid:return []
+    result=[]
+    for stage in meeting_scene_stages(db,p,c,mid):
+        if not stage['messages'] or not any(x['sender']=='user' for x in stage['messages']):continue
+        key=(p['id'],c['id'],mid,stage['transition_message_id'])
+        prior=db.execute('SELECT * FROM meeting_scene_summaries WHERE profile_id=? AND character_id=? AND meeting_id=? AND transition_message_id=?',key).fetchone()
+        if prior and prior['source_signature']==stage['source_signature']:
+            result.append(dict(prior));continue
+        try:generated=generate_meeting_scene_digest(p,c,stage)
+        except Exception:
+            generated=dict(summary='在「'+stage['from_location']+'」的现场原文已保存，小结生成失败，请以原文为准。',summary_source='fallback')
+        fresh=next((x for x in meeting_scene_stages(db,p,c,mid)
+                    if x['transition_message_id']==stage['transition_message_id']),None)
+        state=MEETING_STATE.get((p['id'],c['id']),{})
+        if not fresh or fresh['source_signature']!=stage['source_signature'] or state.get('active_meeting_id')!=mid:continue
+        info=dict(profile_id=p['id'],character_id=c['id'],meeting_id=mid,
+            transition_message_id=stage['transition_message_id'],source_signature=stage['source_signature'],
+            from_location=stage['from_location'],to_location=stage['to_location'],
+            started_at=stage['messages'][0]['created_at'],ended_at=stage['messages'][-1]['created_at'],
+            summary=generated['summary'],summary_source=generated['summary_source'],
+            message_ids=js(stage['message_ids']),created_at=utc())
+        keys=list(info)
+        db.execute('INSERT OR REPLACE INTO meeting_scene_summaries ('+','.join(keys)+') VALUES ('+','.join('?' for _ in keys)+')',[info[k] for k in keys])
+        if generated['summary_source']=='ai':
+            append_episodic_memory(db,owner_id=c['id'],profile_id=p['id'],source_type='meeting_checkpoint',
+                source_key='meeting-scene:'+mid+':'+stage['transition_message_id'],
+                knowledge_mode='experienced',summary='和 '+p['name']+' 在「'+stage['from_location']+'」的现场片段：'+info['summary'],
+                tags=['见面',stage['from_location']],importance=4,emotional_weight=3,
+                raw_msg_ids=stage['message_ids'],event_at=info['ended_at'])
+        monitor=get_or_init_surveillance(db,p,c)
+        live=monitor.get('live_override')
+        if live and live.get('meeting_id')==mid:
+            live['location']=stage['to_location']
+            live['last_scene_summary']=info['summary']
+            monitor['updated_at']=utc()
+        result.append(info)
+    return result
+
+
 def meeting_checkpoint_prompt_context(db,p,c,mid,query=''):
+    scene_recs=valid_meeting_scene_summaries(db,p,c,mid)
+    scene_text=("\n\n【本次见面按实际地点切换归档的小结】\n"+
+        "\n".join("场景「"+cp['from_location']+"」→「"+cp['to_location']+"」，原文时间"+cp['started_at']+"至"+cp['ended_at']+
+                  "： "+cp['summary']+"（原始场景原文优先）" for cp in scene_recs)) if scene_recs else ''
     groups=completed_meeting_groups(db,p['id'],c['id'],mid)
     checkpoints=valid_meeting_checkpoints(db,p['id'],c['id'],mid,groups)
-    if not checkpoints:return ''
+    if not checkpoints:return scene_text
     summaries=[]
     for cp in checkpoints:
         dialogues='；'.join(x['speaker']+'「'+x['quote']+'」' for x in cp['key_dialogues'])
@@ -2569,8 +2744,8 @@ def meeting_checkpoint_prompt_context(db,p,c,mid,query=''):
         for _,i in sorted(sorted(candidates,reverse=True)[:2],key=lambda x:x[1]):
             nearby=segment[max(0,i-1):min(50,i+2)]
             excerpts.append(f"第{offset+i+1}组附近原文（{'、'.join(hits)}）：\n"+meeting_checkpoint_source(nearby,p,c)[:2600])
-    return ("\n\n【本次见面 · 已归档的全部50组阶段小结】\n"+"\n\n".join(summaries)+
-            "\n以上为过去亲历事实，最新5组对话决定当下位置和动作，不得让旧场景覆盖当前现场。"+
+    return (scene_text+"\n\n【本次见面 · 已归档的全部50组阶段小结（历史兼容）】\n"+"\n\n".join(summaries)+
+            "\n以上为过去的档案；最新真实对话决定当前地点，不得让旧地点或监控推演覆盖现场。"+
             ("\n\n【关键词命中的历史现场原文 · 带来源消息ID】\n"+"\n\n".join(excerpts) if excerpts else ''))
 
 def select_turn_window(rows,mode,protected_ids=None,meeting_max_groups=10):
@@ -2599,14 +2774,16 @@ def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids
         if cutoff:
             # A recovered reply can have a later insertion rowid but an earlier conversation timestamp.
             where+=' AND (julianday(created_at)<julianday(?) OR (julianday(created_at)=julianday(?) AND rowid<=?))';args.extend([cutoff['created_at'],cutoff['created_at'],through_rowid])
-    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at,meeting_id,quote_json FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
+    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at,meeting_id,quote_json,scene_location,scene_location_signature FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
     excl=set(exclude_ids or [])
     chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m) and m['id'] not in excl]
     if mode=='meeting':
         m_state=MEETING_STATE.get((pid,cid),{})
         active_mid=m_state.get('active_meeting_id','')
         if active_mid:
-            checkpointed=bool(valid_meeting_checkpoints(db,pid,cid,active_mid))
+            p=profile_get(db,pid)
+            c=BY_ID.get(cid)
+            checkpointed=bool(valid_meeting_checkpoints(db,pid,cid,active_mid)) or (bool(c) and bool(valid_meeting_scene_summaries(db,p,c,active_mid)))
             return select_turn_window([m for m in chron if m['mode']=='meeting' and m.get('meeting_id')==active_mid],mode,protected_ids,5 if checkpointed else 10)
         started_after=m_state.get('started_after_rowid')
         if started_after is not None:
@@ -2634,7 +2811,7 @@ def chat_quote_snapshot(db,pid,cid,quote_id):
     if not source or source['engine']=='recalled':raise ValueError('引用的原消息已失效，请重新选择')
     return {'id':source['id'],'sender':source['sender'],'text':str(source['text'] or '').replace('\n',' ').strip()[:220]}
 
-def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0,quote_id=''):
+def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0,quote_id='',scene_turn=None):
     clean_txt = (clean_meeting_novel_text(txt) if mode=='meeting' else (clean_chat_bubble_text(txt) or '…')) if (sender=='ai' and engine not in ('error','recalled')) else str(txt or '')
     meeting_id=MEETING_STATE.get((pid,cid),{}).get('active_meeting_id','') if mode=='meeting' else ''
     quote=chat_quote_snapshot(db,pid,cid,quote_id) if sender=='user' and mode=='chat' and quote_id else None
@@ -2653,20 +2830,24 @@ def write_message(db,pid,cid,sender,mode,txt,engine='human',at=0,quote_id=''):
             # confirmed character position; do not let the answer prove itself.
             earlier=refresh_meeting_scene_history(db,p,c,exclude_message_id=item['id'])
             previous=earlier[-1]['location'] if earlier else MEETING_STATE.get((pid,cid),{}).get('meeting_location','')
-            found=classify_meeting_scene_location(p,c,clean_txt,previous)
-            if found:
-                item['scene_location']=found['location']
-                item['scene_location_evidence']=found['evidence']
-                item['scene_location_signature']=meeting_scene_signature(clean_txt)
-                db.execute('UPDATE messages SET scene_location=?,scene_location_evidence=?,scene_location_signature=? WHERE id=?',
-                    (item['scene_location'],item['scene_location_evidence'],item['scene_location_signature'],item['id']))
+            turn=scene_turn if isinstance(scene_turn,dict) else parse_meeting_scene_turn(clean_txt,previous)
+            found=resolve_meeting_scene_turn_location(p,c,turn,previous)
+            if not turn.get('structured') and found.get('location')==previous:
+                legacy=classify_meeting_scene_location(p,c,clean_txt,previous)
+                if legacy:found=legacy
+            # All AI turns carry an independent physical-location field.
+            item['scene_location']=found.get('location') or previous
+            item['scene_location_evidence']=found.get('evidence') or ''
+            item['scene_location_signature']=meeting_scene_signature(clean_txt)
+            db.execute('UPDATE messages SET scene_location=?,scene_location_evidence=?,scene_location_signature=? WHERE id=?',
+                (item['scene_location'],item['scene_location_evidence'],item['scene_location_signature'],item['id']))
         if c:
             # Both user moves and written AI movement must immediately update
             # the monitor before the next prompt. Neither is a new day plan.
             sync_live_meeting_scene_location(db,p,c)
             if sender=='ai' and engine in ('live','demo'):
                 try:
-                    ensure_meeting_checkpoints(db,p,c,meeting_id)
+                    ensure_meeting_scene_summaries(db,p,c,meeting_id)
                 except Exception as error:
                     log_event(db,pid,cid,'meeting_checkpoint_failed','阶段归档待重试：'+str(error)[:140])
                 # Persist the full witnessed scene itinerary for resume/restart.
@@ -3171,7 +3352,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     recalled=retrieve_relevant_memories(db,p['id'],c['id'],query_text=query_seed,exclude_msg_ids=working_ids,limit=4,max_chars=1200,as_of=simulated_at)
     if mode=='meeting':recalled=[x for x in recalled if x['source_type']!='meeting_checkpoint']
     rel_summary=relationship_baseline_summary(db,p['id'],c['id'],p['name'])
-    cur_surv=get_current_surveillance_slot(db,p,c,simulated_at)
+    cur_surv=get_current_surveillance_slot(db,p,c,simulated_at) if mode=='chat' else None
     interests_str='、'.join(p.get('interests') or []) or '未填写'
     intent_str=p.get('intent') or '未填写'
     system='''你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n'''
@@ -3201,8 +3382,9 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             system+="\n关系阶段提示：你们曾解除匹配后重新匹配，你清楚记得过往相处经历，不必装作初次认识。"
         elif total_msgs<=8:
             system+="\n关系阶段提示：你们刚通过交友软件匹配不久，请保持角色自然的社交边界、幽默感或分寸，不要过度自来熟，也不要像客服一样生硬盘问或长篇解释个人设定。"
-    if mode=='meeting' and cur_surv:
-        system+=f"\n\n【现场互动确认的位置（不是监控推演）】\n当前时段：{cur_surv['start']}–{cur_surv['end']}｜你所在地点：{cur_surv['location']}｜状态：{cur_surv['status']}｜正在做的事：{cur_surv['activity']}。进入见面模式不表示玩家已出现、双方已接触或共同移动；不能按监控推演决定现场。"
+    if mode=='meeting':
+        known_place=MEETING_STATE.get((p['id'],c['id']),{}).get('meeting_location') or infer_meeting_location(db,p['id'],c['id'])
+        system+='\n\n【现场实际地点，严禁参考监控推演】角色最近现场已确认地点：「'+str(known_place)+'」。只根据已发生的互动行动更新位置。'
     if mode=='chat':system+=recent_actual_meeting_context(db,p,c,query_seed,simulated_at)
     system+="\n【共同经历事实优先级】实际现场与消息原文 > 带时间戳的角色位置陈述 > 已确认而未发生的预约 > 监控日程推演。共同吃饭、接送和回家须有现场原文证实；禁止编造用户过去说过的台词。AI 摘要仅供检索，不能被当成亲历事实。"
     if recalled:
@@ -3236,6 +3418,8 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             if isinstance(quote,dict) and msg['mode']=='chat':
                 who='自己' if quote.get('sender')=='user' else '对方'
                 clean_body='[引用'+who+'的消息：「'+str(quote.get('text') or '')[:220]+'」]\n'+clean_body
+            if mode=='meeting' and msg['sender']=='ai' and msg.get('scene_location') and msg.get('scene_location_signature')==meeting_scene_signature(msg.get('text')):
+                clean_body+='\n【此条角色正文结束时的现场地点】'+str(msg['scene_location'])
             history_turns.append({'role':role,'content':clean_body})
     if timeline_lines:
         system+="\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n"+" ｜ ".join(timeline_lines)
@@ -3251,10 +3435,8 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         post_sys_parts=[macros(x['content']) for x in post_presets if x['role']=='system']
         non_sys_post_presets=[x for x in post_presets if x['role']!='system']
         meeting_state_line=f"【第四层 · 当前状态 (Current State)】角色最近经现场实际行动确认的地点为「{meet_loc}」，这是此前的事实锚点而非固定舞台。若本轮实际移至新地点，按物理过程继续，后续监控将以新地点为准；绝不能因为提议、路过提及或计划前往就当作已经到达。任何旧行程或旧地名都不可覆盖更新的现场行动。请严格遵循上方导入的面对面小说预设中的文风、叙事视角、人物边界、篇幅区间与创作铁律，不要替 {p['name']} 说话、行动或决定内心感受，不要在正文开头添加任何时间或模式标签，直接输出小说正文。"
-        if post_sys_parts:
-            messages.append({'role':'system','content':'\n\n'.join(post_sys_parts)+'\n\n'+meeting_state_line})
-        else:
-            messages.append({'role':'system','content':meeting_state_line})
+        scene_schema='【每轮见面回复结构化契约】只输出一个 JSON 对象：{"text":"完整的第三人称小说正文","location":"本轮角色真实所在地","location_evidence":"如果已实际换地点，从本条角色正文或玩家最新原文逐字引用已经到达的短句，否则填空字符串"}。必须每轮填 location，即使没有移动也要填写原地点。只描述角色实际完成的移动；计划、约定、猜测和监控日程不能改地点。text 要遵守全部已有预设的小说篇幅、文风及不得替玩家行动的限制，JSON 外不能输出解释。'
+        messages.append({'role':'system','content':'\n\n'.join([*post_sys_parts,meeting_state_line,scene_schema])})
         for x in non_sys_post_presets:
             messages.append({'role':x['role'],'content':macros(x['content'])})
         if final_user_turn:
@@ -3841,13 +4023,15 @@ class Handler(BaseHTTPRequestHandler):
                                 engine='demo';settings=load_connection();reply_txt=''
                                 if all(settings.get(k) for k in ('base_url','api_key','model')):
                                     try:
-                                        reply_txt=clean_meeting_novel_text(completion(compile_messages(db,p,c,'meeting',trigger_opening=True),log_meta={'mode':'meeting','task_type':'meeting','entryPoint':'meeting-opening','profile':p,'character':c,'parseFn':clean_meeting_novel_text}))
+                                        reply_txt=completion(compile_messages(db,p,c,'meeting',trigger_opening=True),json_mode=True,log_meta={'mode':'meeting','task_type':'meeting','entryPoint':'meeting-opening','profile':p,'character':c})
                                         engine='live'
                                     except Exception as e:
                                         warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
                                 else:reply_txt=clean_meeting_novel_text(demo_text(db,p,c,'meeting'))
                                 if engine!='error' and reply_txt:
-                                    opening_reply=write_message(db,p['id'],cid,'ai','meeting',reply_txt,engine)
+                                    scene_turn=parse_meeting_scene_turn(reply_txt,m_state.get('meeting_location',''))
+                                    reply_txt=scene_turn['text']
+                                    opening_reply=write_message(db,p['id'],cid,'ai','meeting',reply_txt,engine,scene_turn=scene_turn)
                                     log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply_txt[:180])
                                     meeting_record=upsert_meeting_record(db,p,c,m_state['active_meeting_id'],[opening_reply],m_state['meeting_location'])
                         else:
@@ -4161,7 +4345,7 @@ class Handler(BaseHTTPRequestHandler):
                     engine='demo';warning='';settings=load_connection();api_error=None;reply=''
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
                         try:
-                            reply=completion(compile_messages(db,p,c,mode,is_continue=(mode=='meeting')),log_meta={'mode':mode,'task_type':mode,'entryPoint':'meeting-continue' if mode=='meeting' else 'chat-reply','profile':p,'character':c,'parseFn':clean_meeting_novel_text if mode=='meeting' else (lambda raw:' / '.join(split_chat_bubbles(raw)))})
+                            reply=completion(compile_messages(db,p,c,mode,is_continue=(mode=='meeting')),json_mode=(mode=='meeting'),log_meta={'mode':mode,'task_type':mode,'entryPoint':'meeting-continue' if mode=='meeting' else 'chat-reply','profile':p,'character':c,'parseFn':(lambda raw:' / '.join(split_chat_bubbles(raw))) if mode=='chat' else None})
                             engine='live'
                         except Exception as e:
                             warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
@@ -4170,8 +4354,9 @@ class Handler(BaseHTTPRequestHandler):
                         t_state['status']='error';t_state['last_error']=api_error;t_state['updated_at']=utc()
                         return self.respond({'reply':None,'replies':[],'mode':mode,'warning':warning,'apiError':api_error,'taskState':t_state})
                     clear_task_state(p['id'],cid,mode)
-                    bubble_texts=split_chat_bubbles(reply) if mode=='chat' else [clean_meeting_novel_text(reply)]
-                    replies=[write_message(db,p['id'],cid,'ai',mode,b_txt,engine) for b_txt in bubble_texts]
+                    scene_turn=parse_meeting_scene_turn(reply,MEETING_STATE.get((p['id'],cid),{}).get('meeting_location','')) if mode=='meeting' else None
+                    bubble_texts=split_chat_bubbles(reply) if mode=='chat' else [scene_turn['text']]
+                    replies=[write_message(db,p['id'],cid,'ai',mode,b_txt,engine,scene_turn=scene_turn) for b_txt in bubble_texts]
                     ai_msg=replies[-1] if replies else None
                     if ai_msg:
                         combined_txt=' / '.join(bubble_texts)
@@ -4207,7 +4392,7 @@ class Handler(BaseHTTPRequestHandler):
                     engine='demo';warning='';settings=load_connection();api_error=None;reply=''
                     if all(settings.get(k) for k in ('base_url','api_key','model')):
                         try:
-                            reply=clean_meeting_novel_text(completion(compile_messages(db,p,c,mode,latest=txt),log_meta={'mode':mode,'task_type':'meeting','entryPoint':'meeting-message','profile':p,'character':c,'parseFn':clean_meeting_novel_text}))
+                            reply=completion(compile_messages(db,p,c,mode,latest=txt),json_mode=True,log_meta={'mode':mode,'task_type':'meeting','entryPoint':'meeting-message','profile':p,'character':c})
                             engine='live'
                         except Exception as e:
                             warning=str(e);engine='error';api_error=getattr(e,'api_error',None)
@@ -4215,8 +4400,10 @@ class Handler(BaseHTTPRequestHandler):
                     if engine=='error':
                         t_state['status']='error';t_state['last_error']=api_error;t_state['updated_at']=utc()
                         db.commit();return self.respond({'user':user_msg,'reply':None,'replies':[],'auto_meeting':auto,'mode':mode,'warning':warning,'apiError':api_error,'taskState':t_state})
+                    scene_turn=parse_meeting_scene_turn(reply,MEETING_STATE.get((p['id'],cid),{}).get('meeting_location',''))
+                    reply=scene_turn['text']
                     clear_task_state(p['id'],cid,'meeting')
-                    ai_msg=write_message(db,p['id'],cid,'ai',mode,reply,engine)
+                    ai_msg=write_message(db,p['id'],cid,'ai',mode,reply,engine,scene_turn=scene_turn)
                     log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply[:180])
                     record_dialogue_episode(db,p,c,[user_msg],ai_msg,mode)
                     db.execute('UPDATE relations SET updated_at=? WHERE profile_id=? AND character_id=?',(utc(),p['id'],cid))

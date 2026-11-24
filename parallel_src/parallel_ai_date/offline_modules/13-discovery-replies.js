@@ -216,7 +216,7 @@
       updated_at:stamp()
     };
     save();
-    let engine='demo',warning='',txt='',apiError=null;
+    let engine='demo',warning='',txt='',apiError=null,sceneTurn=null,sceneLocation=null;
     if(curMode==='live'){
       try{
         const compiled=prompt(p,c,mode,[],{entry_point:ep,latestText:userMsg?.text||(existingTs?.latest_text||'')});
@@ -228,12 +228,26 @@
           task_id:taskId,
           retry_of_task_id:retryOfTaskId,
           attempt,
-          signal:abortCtrl?.signal
+          signal:abortCtrl?.signal,
+          ...(mode==='meeting'?{json_mode:true,omit_response_format:true,skip_json_gateway:true}: {})
         });
         if(mode==='chat')txt=await verifyGeneratedMeetingDetail(p,c,compiled,txt,{
           profile:p,character:c,task_id:taskId,
           retry_of_task_id:retryOfTaskId,attempt,signal:abortCtrl?.signal
         });
+        if(mode==='meeting'){
+          const known=activeMeetingLocationHistory(p,c).at(-1)?.location||
+            r?.meeting_location||'约定的见面地点';
+          sceneTurn=parseMeetingSceneTurn(txt,known);
+          txt=sceneTurn.text;
+          sceneLocation=resolveMeetingSceneTurnLocation(p,c,sceneTurn,known,userMsg);
+          // Compatibility for older providers that ignore structured hints.
+          // Never let their raw text / a guessed schedule set the scene.
+          if(!sceneTurn.structured&&sceneLocation.location===known){
+            const actual=await classifyMeetingMovement(p,c,txt,known,{signal:abortCtrl?.signal});
+            if(actual?.location)sceneLocation=actual;
+          }
+        }
         engine='live';
       }catch(e){
         warning=String(e.message||e);
@@ -241,13 +255,11 @@
         engine='error';
       }
     }else txt=demo(p,c,mode);
-    // Evaluate every successful meeting reply for physical location changes.
-    // The inexpensive local check runs every turn; a second model is queried
-    // only when text indicates an ambiguous completed spatial transition.
-    let sceneLocation=null;
-    if(mode==='meeting'&&engine!=='error'&&txt){
+    if(mode==='meeting'&&engine==='demo'&&txt){
       const known=activeMeetingLocationHistory(p,c).at(-1)?.location||r?.meeting_location||'约定的见面地点';
-      sceneLocation=await classifyMeetingMovement(p,c,cleanMeetingNovelText(txt),known,{signal:abortCtrl?.signal});
+      sceneTurn=parseMeetingSceneTurn(txt,known);
+      txt=sceneTurn.text;
+      sceneLocation=resolveMeetingSceneTurnLocation(p,c,sceneTurn,known,userMsg);
     }
     inflightControllers.delete(tKey);
     const curRel=relation(p.id,c.id);
@@ -286,12 +298,14 @@
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai',mode,bTxt,engine));
     const reply=replies[replies.length-1]||null;
     if(reply&&mode==='meeting'){
-      if(sceneLocation?.location){
-        reply.scene_location=sceneLocation.location;
-        reply.scene_location_evidence=sceneLocation.evidence;
-        reply.scene_location_kind=sceneLocation.kind;
-        reply.scene_location_signature=meetingSceneSignature(reply.text);
-      }
+      // Every successful turn carries an explicit scene position, even if the
+      // character stayed put. The prose and label are stored separately.
+      reply.scene_location=sceneLocation?.location||
+        activeMeetingLocationHistory(p,c).at(-1)?.location||r.meeting_location;
+      reply.scene_location_evidence=sceneLocation?.evidence||'';
+      reply.scene_location_kind=sceneLocation?.kind||'stable';
+      reply.scene_location_signature=meetingSceneSignature(reply.text);
+      reply.scene_location_structured=Boolean(sceneTurn?.structured);
       const history=activeMeetingLocationHistory(p,c);
       const rec=getOrInitSurveillance(p,c,localDateStr(reply.created_at));
       if(rec.live_override&&rec.live_override.meeting_id===activeMid){
@@ -309,8 +323,8 @@
     }
     save();
     if(mode==='meeting'&&reply&&activeMid){
-      try{await ensureMeetingCheckpoints(p,c,activeMid);}
-      catch(err){recordBgError(p.id,c.id,'meeting_checkpoint',err.apiError||{message:String(err.message||err)});}
+      try{await ensureMeetingSceneSummaries(p,c,activeMid);}
+      catch(err){recordBgError(p.id,c.id,'meeting_scene_checkpoint',err.apiError||{message:String(err.message||err)});}
     }
     return {reply,replies,warning:'',apiError:null};
   }
@@ -467,14 +481,19 @@
       if(pub().mode==='live'){
         const ms=prompt(p,c,'meeting',[],{entry_point:'meeting_reroll',excludeMessageIds:[old.id],rerollAt:anchor});
         // Leave the user's original final turn and all preset roles in their original positions.
-        raw=await llm(ms,{profile:p,character:c,mode:'meeting',entry_point:'meeting_reroll',task_id:'task_'+roll.token,signal:controller?.signal,reject_truncated:true});
+        raw=await llm(ms,{profile:p,character:c,mode:'meeting',entry_point:'meeting_reroll',
+          task_id:'task_'+roll.token,signal:controller?.signal,reject_truncated:true,
+          json_mode:true,omit_response_format:true,skip_json_gateway:true});
         engine='live';
       }else raw=demo(p,c,'meeting');
-      const body=cleanMeetingNovelText(raw);
-      if(!body||/^[\s.…。]+$/.test(body))throw Error('未返回有效正文');
       const prev=activeMeetingLocationHistory(p,c).filter(e=>e.message_id!==old.id&&Date.parse(e.at)<=anchor).at(-1)?.location||
         r.meeting_location||'约定的见面地点';
-      const sceneLoc=await classifyMeetingMovement(p,c,body,prev,{signal:controller?.signal});
+      const turn=parseMeetingSceneTurn(raw,prev),body=turn.text;
+      let sceneLoc=resolveMeetingSceneTurnLocation(p,c,turn,prev);
+      if(!turn.structured&&sceneLoc.location===prev){
+        const actual=await classifyMeetingMovement(p,c,body,prev,{signal:controller?.signal});
+        if(actual?.location)sceneLoc=actual;
+      }
       const live=relation(p.id,c.id),current=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid&&!m.recalled&&m.engine!=='recalled');
       if(meetingRerolls.get(key)!==roll||live?.status!=='matched'||live.mode!=='meeting'||live.active_meeting_id!==mid||episodeSignature(current)!==before||!archiveStoredCurrent()){
         return {ok:false,removedIds:[],replies:[],reply:null,warning:'见面状态或原文已变化，已丢弃迟到的重 Roll 结果。'};
@@ -484,8 +503,9 @@
       const snapshot=JSON.stringify(db),id=uid();
       try{
         const replacement={...old,id,text:body,engine,created_at:old.created_at,rerolled_at:stamp(),reroll_count:(Number(old.reroll_count)||0)+1,
-          scene_location:sceneLoc?.location||'',scene_location_evidence:sceneLoc?.evidence||'',
-          scene_location_kind:sceneLoc?.kind||'',scene_location_signature:sceneLoc?meetingSceneSignature(body):''};
+          scene_location:sceneLoc?.location||prev,scene_location_evidence:sceneLoc?.evidence||'',
+          scene_location_kind:sceneLoc?.kind||'stable',scene_location_signature:meetingSceneSignature(body),
+          scene_location_structured:Boolean(turn.structured)};
         const index=db.messages.findIndex(m=>m.id===old.id&&m.profile_id===p.id&&m.character_id===c.id);
         if(index<0)throw Error('原文不存在');
         db.messages[index]=replacement;invalidateTranslation(old.id);
@@ -506,8 +526,8 @@
         activeMeetingLocationHistory(p,c);
         const updated=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.meeting_id===mid);
         upsertMeetingRecord(p,c,mid,updated,live.meeting_location||'');
-        try{await ensureMeetingCheckpoints(p,c,mid);}
-        catch(err){recordBgError(p.id,c.id,'meeting_checkpoint',err.apiError||{message:String(err.message||err)});}
+        try{await ensureMeetingSceneSummaries(p,c,mid);}
+        catch(err){recordBgError(p.id,c.id,'meeting_scene_checkpoint',err.apiError||{message:String(err.message||err)});}
         episodeList(p,c);live.updated_at=stamp();save();
         return {ok:true,removedIds:[old.id],replies:[replacement],reply:replacement,warning:'',apiError:null};
       }catch(error){db=JSON.parse(snapshot);throw error;}

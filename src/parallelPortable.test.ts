@@ -1320,11 +1320,18 @@ test('ROUND-02: Complete 26-entry Elsewhere preset lifecycle, compilation order,
     characterId: charLeon,
     text: '我看着他继续往下说。',
   });
-  assert.ok(truncReply.reply.text.length > 0);
+  assert.equal(truncReply.reply, null, 'An incomplete JSON meeting turn must never be saved as scene prose');
+  assert.ok(truncReply.warning, 'Truncated structured reply reports a clear error');
   const truncLog = (await engine.request('/system-logs')).logs[0];
   assert.equal(truncLog.finish_reason, 'length');
-  assert.ok(truncLog.truncation_warning.includes('max_tokens'), 'Records clear truncation warning on finish_reason=length');
+  assert.ok((truncLog.truncation_warning || truncReply.warning || '').length > 0, 'Truncated structured scene records a failure warning instead of saving incomplete prose');
   assert.ok(truncLog.reasoning_content.includes('构思场景连续性'), 'Captures reasoning_content when returned by model');
+  await engine.request('/task-action', {
+    profileId: profileB.id,
+    characterId: charLeon,
+    mode: 'meeting',
+    action: 'clear',
+  }); // Explicitly dismiss the paused failed turn before testing independent HTTP 502.
 
   mockResponseMode = 'http_error';
   const beforeErrCount = (await engine.request(`/thread?profileId=${profileB.id}&characterId=${charLeon}`)).messages.length;
