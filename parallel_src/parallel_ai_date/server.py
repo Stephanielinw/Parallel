@@ -1625,7 +1625,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
             'id':mid,'started_at':m_state.get('meeting_started_at') or utc(),
             'ended_at':utc(),'location':current['location'],
             'location_history':history
-        },sel_date,live=True)
+        },sel_date,live=True,db=db)
         if not observed:observed=[dict(current,id='live_meeting_'+str(mid),meeting_id=mid)]
         cut=hhmm_to_min(observed[0]['start'])
         prev=[]
