@@ -4,7 +4,7 @@ import pathlib
 import re
 import unittest
 server=pathlib.Path(__file__).resolve().parents[1]/'server.py'
-names={'is_sleeping_slot','wake_slot_from_message','chat_clock_label','chat_clock_context','chat_temporal_topic_hint','active_slot_index','hhmm_to_min'}
+names={'is_sleeping_slot','wake_slot_from_message','chat_clock_label','chat_clock_context','chat_temporal_topic_hint','active_slot_index','hhmm_to_min','meeting_clock_context','meeting_current_clock_conflict'}
 nodes=[n for n in ast.parse(server.read_text(encoding='utf-8')).body if isinstance(n,ast.FunctionDef) and n.name in names]
 ns={'re':re,'datetime':dt.datetime}
 exec(compile(ast.Module(body=nodes,type_ignores=[]),str(server),'exec'),ns)
@@ -24,6 +24,21 @@ class PhoneClockSleep(unittest.TestCase):
         self.assertIn('上午',text)
         self.assertIn('540 分钟',text)
 
+    def test_meeting_cross_midnight_and_present_clock(self):
+        now=dt.datetime(2026,11,24,13,10).astimezone()
+        previous=dt.datetime(2026,11,24,0,20).astimezone()
+        started=dt.datetime(2026,11,23,19,16).astimezone()
+        rows=[{'id':'prev','sender':'ai','created_at':previous.isoformat()},
+              {'id':'input','sender':'user','created_at':now.isoformat()}]
+        context=ns['meeting_clock_context']({'meeting_started_at':started.isoformat()},rows,now,'input')
+        self.assertIn('上一条已发生现场记录：2026-11-24 00:20',context)
+        self.assertIn('距上一条现场记录 46200 秒',context)
+        self.assertIn('本幕时间：2026-11-24 13:10',context)
+        self.assertEqual(ns['meeting_current_clock_conflict']('他扫了一眼手表。“十二点半。”',now),'十二点半')
+        self.assertEqual(ns['meeting_current_clock_conflict']('他看了眼手表。“下午一点十分。”',now),'')
+        self.assertEqual(ns['meeting_current_clock_conflict']('他说明天十二点半见。',now),'')
+        self.assertEqual(ns['meeting_current_clock_conflict']('现在快到两点了。',now),'')
+        self.assertEqual(ns['meeting_current_clock_conflict']('现在是下午十二点半。',now.replace(hour=12,minute=30)),'')
     def test_future_night_topic_not_current_bedtime(self):
         now=dt.datetime(2026,11,21,13,16).astimezone()
         rows=[

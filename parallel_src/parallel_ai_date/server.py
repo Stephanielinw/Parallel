@@ -3371,7 +3371,7 @@ def meeting_current_clock_conflict(text,anchor):
     for m in re.finditer(expr,source):
         before=source[max(0,m.start()-140):m.start()]
         after=source[m.end():m.end()+24]
-        direct=re.search(r'(?:现在|此刻|这会儿)(?:已经|刚过|才|都|是|已到|正好|快到)?\s*$',before) and not re.match(r'(?:见面|出发|回来|开门|结束|睡觉|起床|吃饭|开始)',after)
+        direct=re.search(r'(?:现在|此刻|这会儿)(?:已经|刚过|才|都|是|已到|正好)?\s*$',before) and not re.match(r'(?:见面|出发|回来|开门|结束|睡觉|起床|吃饭|开始)',after)
         watch=re.search(r'(?:手表|腕表|钟表|挂钟|时钟|表盘|手机时间)',before) and re.search(r'[“「]\s*$',before) and re.match(r'[。！!，,？?]?[”」]',after)
         if not (direct or watch):continue
         period,h,colon,minute,fraction=m.groups()
@@ -3380,7 +3380,7 @@ def meeting_current_clock_conflict(text,anchor):
         if not 0<=h<=23 or (minute is not None and not 0<=minute<=59):continue
         hours=[h]
         if 1<=h<=12:
-            if period in ('下午','傍晚','晚上','夜里'):hours=[0 if h==12 else h+12]
+            if period in ('下午','傍晚','晚上','夜里'):hours=[(12 if period=='下午' else 0) if h==12 else h+12]
             elif period in ('凌晨','早上','上午'):hours=[0 if h==12 else h]
             elif not period:hours=[h%12,h%12+12]
         if d.hour not in hours or (minute is not None and d.minute!=minute):return m.group()

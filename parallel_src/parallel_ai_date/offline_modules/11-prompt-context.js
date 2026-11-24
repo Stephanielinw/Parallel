@@ -198,14 +198,14 @@
     for(const m of source.matchAll(expr)){
       const before=source.slice(Math.max(0,m.index-140),m.index);
       const after=source.slice(m.index+m[0].length,m.index+m[0].length+24);
-      const direct=/(?:现在|此刻|这会儿)(?:已经|刚过|才|都|是|已到|正好|快到)?\s*$/.test(before)&&!/^(?:见面|出发|回来|开门|结束|睡觉|起床|吃饭|开始)/.test(after);
+      const direct=/(?:现在|此刻|这会儿)(?:已经|刚过|才|都|是|已到|正好)?\s*$/.test(before)&&!/^(?:见面|出发|回来|开门|结束|睡觉|起床|吃饭|开始)/.test(after);
       const watch=/(?:手表|腕表|钟表|挂钟|时钟|表盘|手机时间)/.test(before)&&/[“「]\s*$/.test(before)&&/^[。！!，,？?]?[”」]/.test(after);
       if(!direct&&!watch)continue;
       const h=number(m[2]),min=m[3]!==undefined?Number(m[3]):m[4]!==undefined?number(m[4]):m[5]==='半'?30:m[5]==='一刻'?15:m[5]==='三刻'?45:null;
       if(!Number.isInteger(h)||h<0||h>23||(min!==null&&(!Number.isInteger(min)||min<0||min>59)))continue;
       let hours=[h];
       if(h>=1&&h<=12){
-        if(/下午|傍晚|晚上|夜里/.test(m[1]||''))hours=[h===12?0:h+12];
+        if(/下午|傍晚|晚上|夜里/.test(m[1]||''))hours=[h===12?(m[1]==='下午'?12:0):h+12];
         else if(/凌晨|早上|上午/.test(m[1]||''))hours=[h===12?0:h];
         else if(!m[1])hours=[h%12,h%12+12];
       }

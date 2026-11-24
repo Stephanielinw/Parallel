@@ -26,6 +26,8 @@ assert.equal(clockHelpers.meetingCurrentClockConflict('他扫了一眼床头柜�
 assert.equal(clockHelpers.meetingCurrentClockConflict('他看了眼手表。“下午一点十分。”',noon),'');
 assert.equal(clockHelpers.meetingCurrentClockConflict('他说：“明天十二点半见。”',noon),'');
 assert.equal(clockHelpers.meetingCurrentClockConflict('他昨晚十二点半才回来。',noon),'');
+assert.equal(clockHelpers.meetingCurrentClockConflict('现在快到两点了。',noon),'');
+assert.equal(clockHelpers.meetingCurrentClockConflict('现在是下午十二点半。',Date.parse('2026-11-24T20:30:00Z')),'');
 
 (async()=>{
  let e=start();const p=(await e.request('/profile',{name:'Fixture',age:25,gender:'female',interested_in:['all'],min_age:18,max_age:65,sources:['生化危机']})).profile;
@@ -56,6 +58,7 @@ assert.equal(clockHelpers.meetingCurrentClockConflict('他昨晚十二点半才�
  answers=[JSON.stringify({text:invalid,location:'屋顶',location_evidence:''}),JSON.stringify({text:'他看向窗外，没有报时。',location:'屋顶',location_evidence:''})];
  const timeFixed=await e.request('/message',{...pair,text:'几点了？',location:'屋顶'});
  assert(timeFixed.reply&&timeFixed.reply.text.includes('没有报时'));
+ assert.equal(timeFixed.reply.scene_clock_at,new Date(now).toISOString());
  assert(!JSON.stringify((await e.request(uri)).messages).includes('十二点半'));
  let guard=false;try{await e.request('/message-regenerate',{...pair,messageId:again.reply.id})}catch{guard=true}assert(guard);
  now+=30000;

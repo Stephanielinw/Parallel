@@ -3597,14 +3597,14 @@
     for(const m of source.matchAll(expr)){
       const before=source.slice(Math.max(0,m.index-140),m.index);
       const after=source.slice(m.index+m[0].length,m.index+m[0].length+24);
-      const direct=/(?:现在|此刻|这会儿)(?:已经|刚过|才|都|是|已到|正好|快到)?\s*$/.test(before)&&!/^(?:见面|出发|回来|开门|结束|睡觉|起床|吃饭|开始)/.test(after);
+      const direct=/(?:现在|此刻|这会儿)(?:已经|刚过|才|都|是|已到|正好)?\s*$/.test(before)&&!/^(?:见面|出发|回来|开门|结束|睡觉|起床|吃饭|开始)/.test(after);
       const watch=/(?:手表|腕表|钟表|挂钟|时钟|表盘|手机时间)/.test(before)&&/[“「]\s*$/.test(before)&&/^[。！!，,？?]?[”」]/.test(after);
       if(!direct&&!watch)continue;
       const h=number(m[2]),min=m[3]!==undefined?Number(m[3]):m[4]!==undefined?number(m[4]):m[5]==='半'?30:m[5]==='一刻'?15:m[5]==='三刻'?45:null;
       if(!Number.isInteger(h)||h<0||h>23||(min!==null&&(!Number.isInteger(min)||min<0||min>59)))continue;
       let hours=[h];
       if(h>=1&&h<=12){
-        if(/下午|傍晚|晚上|夜里/.test(m[1]||''))hours=[h===12?0:h+12];
+        if(/下午|傍晚|晚上|夜里/.test(m[1]||''))hours=[h===12?(m[1]==='下午'?12:0):h+12];
         else if(/凌晨|早上|上午/.test(m[1]||''))hours=[h===12?0:h];
         else if(!m[1])hours=[h%12,h%12+12];
       }
@@ -4647,10 +4647,10 @@
       updated_at:stamp()
     };
     save();
+    const clockNow=Date.now();
     let engine='demo',warning='',txt='',apiError=null,sceneTurn=null,sceneLocation=null;
     if(curMode==='live'){
       try{
-        const clockNow=Date.now();
         const compiled=prompt(p,c,mode,[],{entry_point:ep,clockNow,latestText:userMsg?.text||(existingTs?.latest_text||'')});
         const replyOptions={
           profile:p,
@@ -4748,6 +4748,8 @@
       reply.scene_location_kind=sceneLocation?.kind||'stable';
       reply.scene_location_signature=meetingSceneSignature(reply.text);
       reply.scene_location_structured=Boolean(sceneTurn?.structured);
+      // Keep the time described by prose separate from network completion time.
+      reply.scene_clock_at=new Date(clockNow).toISOString();
       const history=activeMeetingLocationHistory(p,c);
       const rec=getOrInitSurveillance(p,c,localDateStr(reply.created_at));
       if(rec.live_override&&rec.live_override.meeting_id===activeMid){
@@ -4914,7 +4916,8 @@
     const old=rows.at(-1);
     if(!old||old.sender!=='ai'||(messageId&&old.id!==messageId))bodyErr('只可重 Roll 当前见面的最后一段角色正文');
     if(pub().mode==='normal')bodyErr('未连接可用模型，原正文已保留');
-    const before=episodeSignature(rows),oldAt=Date.parse(old.created_at),anchor=Number.isFinite(oldAt)?oldAt:Date.now();
+    const before=episodeSignature(rows),oldAt=Date.parse(old.created_at),sceneAt=Date.parse(old.scene_clock_at||'');
+    const anchor=Number.isFinite(sceneAt)?sceneAt:Number.isFinite(oldAt)?oldAt:Date.now();
     const controller=typeof AbortController==='function'?new AbortController():null;
     const roll={controller,token:uid()};meetingRerolls.set(key,roll);
     let timer,raw='',engine='demo';
@@ -4928,7 +4931,7 @@
           json_mode:true,omit_response_format:true,skip_json_gateway:true});
         engine='live';
       }else raw=demo(p,c,'meeting');
-      const prev=activeMeetingLocationHistory(p,c).filter(e=>e.message_id!==old.id&&Date.parse(e.at)<=anchor).at(-1)?.location||
+      const prev=activeMeetingLocationHistory(p,c).filter(e=>e.message_id!==old.id&&Date.parse(e.at)<=(Number.isFinite(oldAt)?oldAt:anchor)).at(-1)?.location||
         r.meeting_location||'约定的见面地点';
       const turn=parseMeetingSceneTurn(raw,prev),body=turn.text;
       if(engine==='live'&&meetingCurrentClockConflict(body,anchor))throw Error('重 Roll 报时与原幕时间冲突，原回复保持不变。');

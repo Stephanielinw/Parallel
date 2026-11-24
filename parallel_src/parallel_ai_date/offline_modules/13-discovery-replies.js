@@ -216,10 +216,10 @@
       updated_at:stamp()
     };
     save();
+    const clockNow=Date.now();
     let engine='demo',warning='',txt='',apiError=null,sceneTurn=null,sceneLocation=null;
     if(curMode==='live'){
       try{
-        const clockNow=Date.now();
         const compiled=prompt(p,c,mode,[],{entry_point:ep,clockNow,latestText:userMsg?.text||(existingTs?.latest_text||'')});
         const replyOptions={
           profile:p,
@@ -317,6 +317,8 @@
       reply.scene_location_kind=sceneLocation?.kind||'stable';
       reply.scene_location_signature=meetingSceneSignature(reply.text);
       reply.scene_location_structured=Boolean(sceneTurn?.structured);
+      // Keep the time described by prose separate from network completion time.
+      reply.scene_clock_at=new Date(clockNow).toISOString();
       const history=activeMeetingLocationHistory(p,c);
       const rec=getOrInitSurveillance(p,c,localDateStr(reply.created_at));
       if(rec.live_override&&rec.live_override.meeting_id===activeMid){
@@ -483,7 +485,8 @@
     const old=rows.at(-1);
     if(!old||old.sender!=='ai'||(messageId&&old.id!==messageId))bodyErr('只可重 Roll 当前见面的最后一段角色正文');
     if(pub().mode==='normal')bodyErr('未连接可用模型，原正文已保留');
-    const before=episodeSignature(rows),oldAt=Date.parse(old.created_at),anchor=Number.isFinite(oldAt)?oldAt:Date.now();
+    const before=episodeSignature(rows),oldAt=Date.parse(old.created_at),sceneAt=Date.parse(old.scene_clock_at||'');
+    const anchor=Number.isFinite(sceneAt)?sceneAt:Number.isFinite(oldAt)?oldAt:Date.now();
     const controller=typeof AbortController==='function'?new AbortController():null;
     const roll={controller,token:uid()};meetingRerolls.set(key,roll);
     let timer,raw='',engine='demo';
@@ -497,7 +500,7 @@
           json_mode:true,omit_response_format:true,skip_json_gateway:true});
         engine='live';
       }else raw=demo(p,c,'meeting');
-      const prev=activeMeetingLocationHistory(p,c).filter(e=>e.message_id!==old.id&&Date.parse(e.at)<=anchor).at(-1)?.location||
+      const prev=activeMeetingLocationHistory(p,c).filter(e=>e.message_id!==old.id&&Date.parse(e.at)<=(Number.isFinite(oldAt)?oldAt:anchor)).at(-1)?.location||
         r.meeting_location||'约定的见面地点';
       const turn=parseMeetingSceneTurn(raw,prev),body=turn.text;
       if(engine==='live'&&meetingCurrentClockConflict(body,anchor))throw Error('重 Roll 报时与原幕时间冲突，原回复保持不变。');
