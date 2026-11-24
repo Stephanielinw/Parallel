@@ -216,11 +216,12 @@
       updated_at:stamp()
     };
     save();
+    const clockNow=Date.now();
     let engine='demo',warning='',txt='',apiError=null,sceneTurn=null,sceneLocation=null;
     if(curMode==='live'){
       try{
-        const compiled=prompt(p,c,mode,[],{entry_point:ep,latestText:userMsg?.text||(existingTs?.latest_text||'')});
-        txt=await llm(compiled,{
+        const compiled=prompt(p,c,mode,[],{entry_point:ep,clockNow,latestText:userMsg?.text||(existingTs?.latest_text||'')});
+        const replyOptions={
           profile:p,
           character:c,
           mode,
@@ -230,7 +231,8 @@
           attempt,
           signal:abortCtrl?.signal,
           ...(mode==='meeting'?{json_mode:true,omit_response_format:true,skip_json_gateway:true}: {})
-        });
+        };
+        txt=await llm(compiled,replyOptions);
         if(mode==='chat')txt=await verifyGeneratedMeetingDetail(p,c,compiled,txt,{
           profile:p,character:c,task_id:taskId,
           retry_of_task_id:retryOfTaskId,attempt,signal:abortCtrl?.signal
@@ -239,6 +241,15 @@
           const known=activeMeetingLocationHistory(p,c).at(-1)?.location||
             r?.meeting_location||'约定的见面地点';
           sceneTurn=parseMeetingSceneTurn(txt,known);
+          let conflict=meetingCurrentClockConflict(sceneTurn.text,clockNow);
+          if(conflict){
+            const correction={role:'system',content:'【报时纠错】上一候选未保存，且与系统本幕时间冲突。当前本幕唯一时间为 '+chatClockLabel(clockNow)+'。重新完整生成同一幕 JSON，不得引用未保存候选或编造空白时间内的事件；如果不需要报时就省略报时。'};
+            const corrected=[...compiled.slice(0,-1),correction,compiled.at(-1)];
+            txt=await llm(corrected,replyOptions);
+            sceneTurn=parseMeetingSceneTurn(txt,known);
+            conflict=meetingCurrentClockConflict(sceneTurn.text,clockNow);
+            if(conflict)throw Error('当前场景报时仍与系统时间冲突，未保存回复，请重试。');
+          }
           txt=sceneTurn.text;
           sceneLocation=resolveMeetingSceneTurnLocation(p,c,sceneTurn,known,userMsg);
           // Compatibility for older providers that ignore structured hints.
@@ -306,6 +317,8 @@
       reply.scene_location_kind=sceneLocation?.kind||'stable';
       reply.scene_location_signature=meetingSceneSignature(reply.text);
       reply.scene_location_structured=Boolean(sceneTurn?.structured);
+      // Keep the time described by prose separate from network completion time.
+      reply.scene_clock_at=new Date(clockNow).toISOString();
       const history=activeMeetingLocationHistory(p,c);
       const rec=getOrInitSurveillance(p,c,localDateStr(reply.created_at));
       if(rec.live_override&&rec.live_override.meeting_id===activeMid){
@@ -472,7 +485,8 @@
     const old=rows.at(-1);
     if(!old||old.sender!=='ai'||(messageId&&old.id!==messageId))bodyErr('只可重 Roll 当前见面的最后一段角色正文');
     if(pub().mode==='normal')bodyErr('未连接可用模型，原正文已保留');
-    const before=episodeSignature(rows),oldAt=Date.parse(old.created_at),anchor=Number.isFinite(oldAt)?oldAt:Date.now();
+    const before=episodeSignature(rows),oldAt=Date.parse(old.created_at),sceneAt=Date.parse(old.scene_clock_at||'');
+    const anchor=Number.isFinite(sceneAt)?sceneAt:Number.isFinite(oldAt)?oldAt:Date.now();
     const controller=typeof AbortController==='function'?new AbortController():null;
     const roll={controller,token:uid()};meetingRerolls.set(key,roll);
     let timer,raw='',engine='demo';
@@ -486,9 +500,10 @@
           json_mode:true,omit_response_format:true,skip_json_gateway:true});
         engine='live';
       }else raw=demo(p,c,'meeting');
-      const prev=activeMeetingLocationHistory(p,c).filter(e=>e.message_id!==old.id&&Date.parse(e.at)<=anchor).at(-1)?.location||
+      const prev=activeMeetingLocationHistory(p,c).filter(e=>e.message_id!==old.id&&Date.parse(e.at)<=(Number.isFinite(oldAt)?oldAt:anchor)).at(-1)?.location||
         r.meeting_location||'约定的见面地点';
       const turn=parseMeetingSceneTurn(raw,prev),body=turn.text;
+      if(engine==='live'&&meetingCurrentClockConflict(body,anchor))throw Error('重 Roll 报时与原幕时间冲突，原回复保持不变。');
       let sceneLoc=resolveMeetingSceneTurnLocation(p,c,turn,prev);
       if(!turn.structured&&sceneLoc.location===prev){
         const actual=await classifyMeetingMovement(p,c,body,prev,{signal:controller?.signal});
