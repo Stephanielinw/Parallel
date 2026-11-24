@@ -107,16 +107,22 @@ jobs:
           test ! -f public/assets/aistudio/_____685745cf.json
           test ! -f dist/assets/aistudio/_____685745cf.json
           grep -q '/Parallel/' dist/index.html
-      # Real WebKit engine (not a claim of testing physical iOS Safari).
-      # Pin the runner-only dependency; do not mutate package.json or the lockfile.
-      - name: Install WebKit smoke-test tooling
-        timeout-minutes: 12
-        run: |
-          npm install --no-save --no-package-lock --no-audit --no-fund @playwright/test@1.57.0
-          npx playwright install --with-deps webkit
+      # Real WebKit engine, preinstalled with system libraries in the official image.
+      # GitHub-hosted apt mirror fetches can take >12min; never skip browser tests.
+      # Pin the runner-only npm package to the matching prebuilt browser version.
+      - name: Install WebKit test harness (without host apt)
+        run: npm install --no-save --no-package-lock --no-audit --no-fund @playwright/test@1.57.0
       - name: Run mobile-size WebKit regression suite
-        timeout-minutes: 8
-        run: npx playwright test -c playwright.m02.config.ts
+        timeout-minutes: 20
+        run: |
+          docker run --rm --ipc=host \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp \
+            --env CI=true \
+            mcr.microsoft.com/playwright:v1.57.0-noble \
+            npx playwright test -c playwright.m02.config.ts
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
