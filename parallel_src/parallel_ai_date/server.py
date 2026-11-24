@@ -182,6 +182,10 @@ def init_db():
         meeting_cols={r['name'] for r in db.execute('PRAGMA table_info(meetings)')}
         if 'location_history' not in meeting_cols:
             db.execute("ALTER TABLE meetings ADD COLUMN location_history TEXT NOT NULL DEFAULT '[]'")
+        # M08: additive compatibility metadata. Never rebuild or delete existing SQLite meetings.
+        for name in ('summary_source','summary_edited_at'):
+            if name not in meeting_cols:
+                db.execute("ALTER TABLE meetings ADD COLUMN "+name+" TEXT NOT NULL DEFAULT ''")
         # A server restart cannot leave a real request in flight.
         for row in db.execute("SELECT * FROM chat_queue WHERE status='inflight'").fetchall():
             sources=parse_json(row['inflight_sources'],[]);pending=parse_json(row['pending'],[])
@@ -500,10 +504,12 @@ def sanitize_stored_db(db):
         ce = strip_protocol_tags(r['summary'], preserve_paragraphs=False)
         if ce and ce != r['summary']:
             db.execute('UPDATE events SET summary=? WHERE id=?', (ce, r['id']))
-    meet_rows = db.execute('SELECT id,summary,ai_summary,entries FROM meetings').fetchall()
+    meet_rows = db.execute('SELECT id,summary,ai_summary,summary_source,entries FROM meetings').fetchall()
     for r in meet_rows:
-        cs = strip_protocol_tags(r['summary'], preserve_paragraphs=False) or r['summary']
-        cas = strip_protocol_tags(r['ai_summary'], preserve_paragraphs=False) if r['ai_summary'] else r['ai_summary']
+        # A human-edited recap is not model protocol output; retain exact pasted paragraphs.
+        manual = r['summary_source']=='manual'
+        cs = r['summary'] if manual else (strip_protocol_tags(r['summary'], preserve_paragraphs=False) or r['summary'])
+        cas = r['ai_summary'] if manual else (strip_protocol_tags(r['ai_summary'], preserve_paragraphs=False) if r['ai_summary'] else r['ai_summary'])
         entries = parse_json(r['entries'], [])
         ent_changed = False
         for e in entries:
@@ -2043,15 +2049,15 @@ def summarize_complete_meeting(p,c,m_msgs,location,db=None):
     ],p,c)
     return {'summary':final}
 
-def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary=''):
+def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary='',manual=False):
     if ai_summary and len(str(ai_summary).strip())>=6:
-        return strip_protocol_tags(str(ai_summary),preserve_paragraphs=False)[:850]
+        return str(ai_summary).strip() if manual else strip_protocol_tags(str(ai_summary),preserve_paragraphs=False)[:850]
     # Never advertise a concatenation of first and last messages as real memory.
     return '本次见面原文已完整保存，剧情小结尚未生成成功；可点击「重新整理整场梗概」补全。'
 
-def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
+def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary='',summary_source=''):
     if not m_msgs:return None
-    existed=db.execute('SELECT * FROM meetings WHERE id=?',(meeting_id,)).fetchone()
+    existed=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(meeting_id,p['id'],c['id'])).fetchone()
     state=MEETING_STATE.get((p['id'],c['id']),{})
     is_active=state.get('active_meeting_id')==meeting_id
     stored_history=parse_json(existed['location_history'],[]) if existed else []
@@ -2061,12 +2067,20 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
     started_at=(existed['started_at'] if existed else '') or m_msgs[0]['created_at'] or utc()
     ended_at=m_msgs[-1]['created_at'] or utc()
     time_str=str(started_at)[:16].replace('T',' ')
-    ai_sum=ai_summary or (existed['ai_summary'] if existed and len(parse_json(existed['message_ids'],[]))==len(m_msgs) else '')
-    summary=build_meeting_summary_text(p,c,loc,m_msgs,ai_sum)
     entries=[{'id':m['id'],'sender':m['sender'],'speaker':p['name'] if m['sender']=='user' else c['name'],'text':str(m.get('text','')) if m['sender']=='user' else clean_meeting_novel_text(m['text']),'created_at':m['created_at']} for m in m_msgs]
     msg_ids=[m['id'] for m in m_msgs]
-    db.execute('''INSERT OR REPLACE INTO meetings (id,profile_id,character_id,location,time,started_at,ended_at,summary,ai_summary,message_ids,entries,location_history)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',(meeting_id,p['id'],c['id'],loc,time_str,started_at,ended_at,summary,ai_sum,js(msg_ids),js(entries),js(history)))
+    previous_entries=parse_json(existed['entries'],[]) if existed else []
+    unchanged=bool(existed and parse_json(existed['message_ids'],[])==msg_ids and len(previous_entries)==len(entries) and all(
+        x.get('id')==y['id'] and x.get('text')==y['text'] for x,y in zip(previous_entries,entries)
+    ))
+    explicit_summary=str(ai_summary or '').strip()
+    ai_sum=explicit_summary or (str(existed['ai_summary'] or '') if unchanged else '')
+    manual=bool(ai_sum) and (summary_source=='manual' or (not explicit_summary and unchanged and existed['summary_source']=='manual'))
+    summary=build_meeting_summary_text(p,c,loc,m_msgs,ai_sum,manual)
+    source='manual' if manual else ('ai' if ai_sum else 'fallback')
+    edited_at=(utc() if summary_source=='manual' else str(existed['summary_edited_at'] or '')) if manual else ''
+    db.execute('''INSERT OR REPLACE INTO meetings (id,profile_id,character_id,location,time,started_at,ended_at,summary,ai_summary,message_ids,entries,location_history,summary_source,summary_edited_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(meeting_id,p['id'],c['id'],loc,time_str,started_at,ended_at,summary,ai_sum,js(msg_ids),js(entries),js(history),source,edited_at))
     rec={
         'id':meeting_id,
         'profile_id':p['id'],
@@ -2078,6 +2092,8 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
         'ended_at':ended_at,
         'summary':summary,
         'ai_summary':ai_sum,
+        'summary_source':source,
+        'summary_edited_at':edited_at,
         'message_ids':msg_ids,
         'entries':entries
     }
@@ -3305,6 +3321,56 @@ def generate_bios(db,characters,force_refresh=False):
         print('Optional bio generation unavailable:',str(err)[:160],file=sys.stderr)
         return 'catalog-demo'
 
+# M08: same recap write contract for the Python/SQLite compatibility backend.
+# Browser-hosted Parallel remains a separate localStorage save, never auto-migrated.
+def meeting_source_messages(db,p,c,rec):
+    wanted=set(parse_json(rec['message_ids'],[]))
+    all_rows=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' ORDER BY rowid",(p['id'],c['id'])).fetchall()
+    return [dict(row) for row in all_rows if row['id'] in wanted]
+
+def meeting_record_for_request(db,data):
+    p=profile_get(db,data.get('profileId'))
+    cid=str(data.get('characterId') or '')
+    c=BY_ID.get(cid)
+    if not c:raise ValueError('角色不存在')
+    meeting_id=str(data.get('meetingId') or '').strip()
+    rec=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(meeting_id,p['id'],cid)).fetchone()
+    if not rec:raise ValueError('未找到当前角色的见面记录')
+    return p,c,meeting_id,rec
+
+def save_meeting_summary_request(db,data):
+    p,c,mid,rec=meeting_record_for_request(db,data)
+    relation=db.execute('SELECT mode FROM relations WHERE profile_id=? AND character_id=?',(p['id'],c['id'])).fetchone()
+    if relation and relation['mode']=='meeting' and MEETING_STATE.get((p['id'],c['id']),{}).get('active_meeting_id')==mid:
+        raise ValueError('这场见面仍在进行，请结束后编辑最终总结')
+    summary=str(data.get('summary') or '').strip()
+    if not 6<=len(summary)<=4000:raise ValueError('见面总结须为 6–4000 字，请检查粘贴的内容')
+    m_msgs=meeting_source_messages(db,p,c,rec)
+    if not m_msgs:raise ValueError('原始见面记录不可用，无法保存总结')
+    record=upsert_meeting_record(db,p,c,mid,m_msgs,rec['location'] or '',summary,'manual')
+    db.commit()
+    return {'ok':True,'meetingRecord':record}
+
+def refresh_meeting_summary_request(db,data):
+    p,c,mid,rec=meeting_record_for_request(db,data)
+    overwrite=data.get('overwriteManual') is True or str(data.get('overwriteManual') or '').lower() in ('true','1')
+    if rec['summary_source']=='manual' and not overwrite:
+        raise ValueError('已存在手动总结，需要确认后才能让 AI 覆盖')
+    original_edit=str(rec['summary_edited_at'] or '')
+    m_msgs=meeting_source_messages(db,p,c,rec)
+    if not m_msgs:raise ValueError('原始见面记录不可用，无法重新整理')
+    original=[(m['id'],m['text']) for m in m_msgs]
+    result=summarize_complete_meeting(p,c,m_msgs,rec['location'] or '',db=db)
+    latest=meeting_source_messages(db,p,c,rec)
+    if [(m['id'],m['text']) for m in latest]!=original:
+        raise ValueError('整理期间原始见面记录变化，未覆盖旧梗概')
+    current=db.execute('SELECT summary_edited_at FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(mid,p['id'],c['id'])).fetchone()
+    if not current or str(current['summary_edited_at'] or '')!=original_edit:
+        raise ValueError('整理期间手动总结已更新，已取消本次覆盖')
+    record=upsert_meeting_record(db,p,c,mid,latest,rec['location'] or '',result['summary'])
+    db.commit()
+    return {'ok':True,'meetingRecord':record}
+
 class Handler(BaseHTTPRequestHandler):
     server_version='Parallel/0.5'
     def log_message(self,fmt,*args):
@@ -3450,26 +3516,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond({'models':models})
                     except urllib.error.HTTPError as e:raise ValueError('图片模型列表请求失败：HTTP '+str(e.code))
                 if route=='/api/meeting-summary-refresh':
-                    p=profile_get(db,data.get('profileId'))
-                    cid=str(data.get('characterId') or '')
-                    c=BY_ID.get(cid)
-                    if not c:raise ValueError('角色不存在')
-                    meeting_id=str(data.get('meetingId') or '')
-                    rec=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(meeting_id,p['id'],cid)).fetchone()
-                    if not rec:raise ValueError('未找到当前角色的见面记录')
-                    wanted=set(parse_json(rec['message_ids'],[]))
-                    all_rows=db.execute("SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode='meeting' ORDER BY rowid",(p['id'],cid)).fetchall()
-                    m_msgs=[dict(row) for row in all_rows if row['id'] in wanted]
-                    if not m_msgs:raise ValueError('原始见面记录不可用，无法重新整理')
-                    original=[(m['id'],m['text']) for m in m_msgs]
-                    summary=summarize_complete_meeting(p,c,m_msgs,rec['location'] or '',db=db)
-                    after=db.execute('SELECT * FROM messages WHERE profile_id=? AND character_id=? AND mode=? ORDER BY rowid',(p['id'],cid,'meeting')).fetchall()
-                    latest=[dict(row) for row in after if row['id'] in wanted]
-                    if [(m['id'],m['text']) for m in latest]!=original:
-                        raise ValueError('整理期间原始见面记录变化，未覆盖旧梗概')
-                    updated=upsert_meeting_record(db,p,c,meeting_id,latest,rec['location'] or '',summary['summary'])
-                    db.commit()
-                    return self.respond({'ok':True,'meetingRecord':updated})
+                    payload={k:arg(k) for k in ('profileId','characterId','meetingId','overwriteManual')}
+                    return self.respond(refresh_meeting_summary_request(db,payload))
                 if route=='/api/task-state':
                     pid=arg('profileId').strip();cid=arg('characterId').strip();mode=arg('mode').strip() or 'chat'
                     return self.respond({'taskState':get_task_state(pid,cid,mode),'queue':queue_view(db,pid,cid) if (pid and cid) else None})
@@ -3492,6 +3540,10 @@ class Handler(BaseHTTPRequestHandler):
                     if not c:raise ValueError('角色不存在')
                     ensure_live_surveillance(db,p,c,force=bool(data.get('refresh')),target_date=req_date)
                     return self.respond(build_surveillance_payload(db,p,c,req_date))
+                if route=='/api/meeting-summary-save':
+                    return self.respond(save_meeting_summary_request(db,data))
+                if route=='/api/meeting-summary-refresh':
+                    return self.respond(refresh_meeting_summary_request(db,data))
                 if route=='/api/diary':
                     p=profile_get(db,data.get('profileId'));cid=str(data.get('characterId',''));c=BY_ID.get(cid);req_date=str(data.get('date','')).strip()
                     if not c:raise ValueError('角色不存在')
@@ -3708,7 +3760,7 @@ class Handler(BaseHTTPRequestHandler):
                             if resume_mid:
                                 m_state['meeting_location_history'].append({'at':utc(),'location':m_state['meeting_location'],'source':'resume'})
                             if prior:
-                                db.execute('UPDATE meetings SET ai_summary=? WHERE id=?',('',resume_mid))
+                                db.execute("UPDATE meetings SET ai_summary='',summary_source='',summary_edited_at='' WHERE id=? AND profile_id=? AND character_id=?",(resume_mid,p['id'],cid))
                                 db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(cid,p['id'],'meeting:'+resume_mid))
                             if resume_mid:
                                 rec=get_or_init_surveillance(db,p,c)

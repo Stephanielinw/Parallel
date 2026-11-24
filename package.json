@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "build:downloads": "node scripts/assemble-offline.cjs --check && node parallel_src/parallel_ai_date/build_portable.cjs && node scripts/build-release.cjs"
+    "build:downloads": "node scripts/assemble-offline.cjs --check && node scripts/assemble-frontend.cjs --check && node parallel_src/parallel_ai_date/build_portable.cjs && node scripts/build-release.cjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
