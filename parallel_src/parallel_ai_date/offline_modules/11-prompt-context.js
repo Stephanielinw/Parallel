@@ -374,7 +374,7 @@
       const useVision=mode==='chat'&&m.sender==='user'&&m.photo_kind==='gallery'&&m.photo_ref&&(protectedIds.includes(m.id)||(!protectedIds.length&&workingHistory.slice(idx+1).every(x=>x.sender==='user')));
       const sceneMark=mode==='meeting'&&m.sender==='ai'&&m.scene_location&&
         m.scene_location_signature===meetingSceneSignature(m.text)
-        ?'\\n【此条角色正文结束时的现场地点】'+m.scene_location:'';
+        ?'\u005cn【此条角色正文结束时的现场地点】'+m.scene_location:'';
       historyTurns.push({role,content:cleanBody+sceneMark,...(useVision?{photo_ref:m.photo_ref}:{})});
     });
     if(timelineLines.length){
@@ -413,7 +413,7 @@
       // visible prose. Each response must explicitly state where the character
       // really is, using actions in this scene rather than surveillance plans.
       postSystemParts.push('【每轮见面回复的结构化契约 · 必须遵守】只返回一个 JSON 对象，字段恰好是 {"text":"完整的第三人称小说正文","location":"角色在本条正文结束时真实所在的具体地点","location_evidence":"如果地点变化，请从本条正文或玩家最新一条原文逐字复制证明确实已经到达的连续短句；没换地点则填空字符串"}。text 必须是完整自然的小说叙事，不要把地点标签写进 text。location 每轮必填，即使没有移动也必须重复上一轮已确认的地点。单纯讨论、邀约、计划、将来时、想象、监控推演或 NPC 在别处不构成移动；未实际到达则沿用上一轮地点。若真实走出或进入新地点，在正文里交代完成移动的动作，再填新的 location。不得替玩家行动或发言。JSON 外不要有解释、代码围栏或其他内容。');
-      chat.push({role:'system',content:postSystemParts.join('\\n\\n')});
+      chat.push({role:'system',content:postSystemParts.join('\u005cn\u005cn')});
       for(const x of postPresets){
         if(x.role!=='system')chat.push({role:x.role,content:macros(x.content)});
       }
