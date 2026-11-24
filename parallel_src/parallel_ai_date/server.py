@@ -3413,7 +3413,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
                 clean_body='[引用'+who+'的消息：「'+str(quote.get('text') or '')[:220]+'」]\n'+clean_body
             if mode=='meeting' and msg['sender']=='ai' and msg.get('scene_location') and msg.get('scene_location_signature')==meeting_scene_signature(msg.get('text')):
                 clean_body+='\n【此条角色正文结束时的现场地点】'+str(msg['scene_location'])
-            history_turns.append({'role':role,'content':clean_body}
+            history_turns.append({'role':role,'content':clean_body})
     if timeline_lines:
         system+="\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n"+" ｜ ".join(timeline_lines)
     if core_sys_parts:system+='\n\n'+'\n\n'.join(core_sys_parts)
