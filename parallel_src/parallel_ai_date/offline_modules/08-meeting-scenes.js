@@ -282,12 +282,19 @@
       if(!Number.isFinite(begin)||!Number.isFinite(end)||end<begin)continue;
       const startLabel=fmtHHMM(begin),endLabel=fmtHHMM(end);
       if(startLabel===endLabel&&i<history.length-1)continue;
+      // The previous place gets the recap for its completed scene; do not
+      // put a later global digest into every historical monitor slot.
+      const sceneRecap=next?.message_id
+        ?(db.meetingCheckpoints||[]).find(cp=>cp.kind==='scene_transition'&&
+          cp.profile_id===p.id&&cp.character_id===c.id&&
+          cp.meeting_id===r.active_meeting_id&&cp.transition_message_id===next.message_id&&
+          isValidMeetingSceneCheckpoint(cp,p.id,c.id,r.active_meeting_id))?.summary:'';
       parts.push({
         id:'slot_meeting_'+i+'_'+date,
         start:startLabel,end:endLabel,
         location:e.location,status:'线下见面足迹',
         activity:'与 '+p.name+' 在「'+e.location+'」当面见面',
-        scene:summary||c.name+'此刻与 '+p.name+' 当面相处，暂无其他已确认行踪。',
+        scene:sceneRecap||c.name+'在「'+e.location+'」的现场原文已保存；阶段总结尚未生成。',
         source:'meeting',meeting_id:r.active_meeting_id||'',actual_started_at:r.meeting_started_at||'',
         isCurrent:i===history.length-1
       });
