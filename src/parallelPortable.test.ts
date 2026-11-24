@@ -493,6 +493,64 @@ test('Parallel v0.5 dedicated meeting novel flow, meeting summary card, and clea
   assert.ok(meetingMems[0].summary.includes('和 奈恩 在「'), 'Meeting memory card uses "和 奈恩 在「xx」见面" format');
   assert.equal(meetingMems[0].meeting_id, endMeeting.meetingRecord.id);
 
+  // An AI merge can be blocked after the partial summaries already exist.
+  // The user must be able to paste an externally prepared recap without changing primary evidence.
+  const transcriptBeforeEdit = JSON.stringify(endMeeting.meetingRecord.entries);
+  const manualRecap = '在咖啡馆见面后，两人坐下来聊天。Lin明确表示这次见面发生在学校附近，并讲了自己最近的经历。'.repeat(20)
+    + '\n离开前，他们向彼此道别；不把尚未发生的计划写成已经兑现。';
+  assert.ok(manualRecap.length > 850 && manualRecap.length < 4000);
+  const savedRecap = await engine.request('/meeting-summary-save', {
+    profileId: p.id,
+    characterId: cid,
+    meetingId: endMeeting.meetingRecord.id,
+    summary: manualRecap,
+  });
+  assert.equal(savedRecap.ok, true);
+  assert.equal(savedRecap.meetingRecord.summary, manualRecap, 'Manual paste must not be silently truncated to AI recap limit');
+  assert.equal(savedRecap.meetingRecord.ai_summary, manualRecap);
+  assert.equal(savedRecap.meetingRecord.summary_source, 'manual');
+  assert.ok(savedRecap.meetingRecord.summary_edited_at);
+  assert.equal(JSON.stringify(savedRecap.meetingRecord.entries), transcriptBeforeEdit, 'Editing recap never changes original scene text');
+  assert.equal(savedRecap.meetingRecord.started_at, endMeeting.meetingRecord.started_at, 'Editing does not change the meeting timestamp');
+
+  const afterEditArchive = await engine.request(`/memories?profileId=${p.id}&characterId=${encodeURIComponent(cid)}`);
+  const afterEditCard = afterEditArchive.episodic.find((m: any) =>
+    m.memory_type === 'meeting_summary' && m.meeting_id === endMeeting.meetingRecord.id
+  );
+  assert.ok(afterEditCard?.summary.includes(manualRecap.slice(0, 40)), 'Role memory index follows the pasted recap');
+  assert.equal(
+    afterEditArchive.meetings.find((m: any) => m.id === endMeeting.meetingRecord.id)?.summary,
+    manualRecap,
+    'Rebuilding meeting records must preserve the manual recap'
+  );
+
+  await assert.rejects(
+    engine.request('/meeting-summary-refresh', {
+      profileId: p.id, characterId: cid, meetingId: endMeeting.meetingRecord.id,
+    }),
+    /手动总结|确认/,
+    'Auto refresh may not overwrite manual text without explicit confirmation'
+  );
+  await assert.rejects(
+    engine.request('/meeting-summary-save', {
+      profileId: p.id, characterId: cid, meetingId: endMeeting.meetingRecord.id, summary: '  ',
+    }),
+    /6–4000/,
+    'Blank summaries must not replace an existing record'
+  );
+  await assert.rejects(
+    engine.request('/meeting-summary-save', {
+      profileId: p.id, characterId: 're-game:leon:re2', meetingId: endMeeting.meetingRecord.id, summary: manualRecap,
+    }),
+    /未找到当前角色/,
+    'A different character cannot edit this meeting'
+  );
+  const manualBackup = engine.exportData();
+  engine.importData(manualBackup);
+  const persistedManual = JSON.parse(engine.exportData()).data.meetings.find((m: any) => m.id === endMeeting.meetingRecord.id);
+  assert.equal(persistedManual.summary, manualRecap, 'Export/import preserves exact manual recap including newlines');
+  assert.equal(persistedManual.summary_source, 'manual');
+
   // The current archive policy groups completed episodes after 3 hours of inactivity,
   // not arbitrary calendar-day summaries. Keep the source IDs and transcript discoverable.
   assert.equal(memData.episodic.filter((m: any) => m.source_type === 'episode-pending').length, 0, 'Active episode is not prematurely archived');

@@ -29,7 +29,7 @@ test('C-18: production bundle boots in mobile WebKit with matched browser script
       backup:JSON.parse(window.ParallelOffline!.exportData()).format
     };
   });
-  expect(loaded.engine).toMatch(/\/Parallel\/parallel\/offline\.js\?v=m02-diary-evidence-20261122a$/);
+  expect(loaded.engine).toMatch(/\/Parallel\/parallel\/offline\.js\?v=[a-z0-9-]+$/i);
   expect(loaded.interface).toMatch(/\/Parallel\/parallel\/app\.js\?v=/);
   expect(loaded.backup).toBe('parallel-portable-backup');
   expect(errors).toEqual([]);

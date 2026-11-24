@@ -541,6 +541,8 @@
               // An archived recap is no longer final; refresh a factual recap after the new ending.
               prior.finished_at='';
               prior.ai_summary='';
+              prior.summary_source='';
+              prior.summary_edited_at='';
               const memory=db.episodicMemories.find(x=>x.owner_id===c.id&&x.profile_id===p.id&&x.source_key==='meeting:'+resumeMid);
               if(memory)memory.archive_stale=true;
               upsertMeetingRecord(p,c,resumeMid,oldTurns,r.meeting_location);
@@ -613,10 +615,30 @@
         save();
         return {mode:m,meetingId:r.active_meeting_id||'',active_meeting_id:r.active_meeting_id||'',location:r.meeting_location||'',meeting_location:r.meeting_location||'',meetingRecord,openingReply,warning,apiError,taskState,surveillance:buildSurveillancePayload(p,c)};
       }
+      // Manually pasted recaps remain a user-controlled index; source scene text stays canonical.
+      case '/meeting-summary-save':{
+        const p=getP(data.profileId),c=getC(data.characterId),mid=String(data.meetingId||'').trim();
+        const existing=(db.meetings||[]).find(x=>x.id===mid&&x.profile_id===p.id&&x.character_id===c.id);
+        if(!existing)bodyErr('未找到当前角色的见面记录');
+        if(relation(p.id,c.id)?.active_meeting_id===mid)bodyErr('这场见面仍在进行，请结束后编辑最终总结');
+        const summary=String(data.summary??'').trim();
+        if(summary.length<6||summary.length>4000)bodyErr('见面总结须为 6–4000 字，请检查粘贴的内容');
+        const mMsgs=(db.messages||[]).filter(x=>x.mode==='meeting'&&x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid);
+        if(!mMsgs.length)bodyErr('原始见面记录不可用，无法保存总结');
+        if(!archiveStoredCurrent())bodyErr('存档已在另一页面更新，请先刷新页面');
+        const snapshot=JSON.stringify(db);
+        try{
+          const rec=upsertMeetingRecord(p,c,mid,mMsgs,existing.location||'',summary,existing.finished_at||'','manual');
+          save();
+          return {ok:true,meetingRecord:rec};
+        }catch(e){db=JSON.parse(snapshot);throw e;}
+      }
       case '/meeting-summary-refresh':{
         const p=getP(data.profileId),c=getC(data.characterId),mid=String(data.meetingId||'');
         const existing=(db.meetings||[]).find(x=>x.id===mid&&x.profile_id===p.id&&x.character_id===c.id);
         if(!existing)bodyErr('未找到当前角色的见面记录');
+        if(existing.summary_source==='manual'&&data.overwriteManual!==true)bodyErr('已存在手动总结，需要确认后才能让 AI 覆盖');
+        const editVersion=String(existing.summary_edited_at||'');
         const mMsgs=(db.messages||[]).filter(x=>x.mode==='meeting'&&x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid);
         if(!mMsgs.length)bodyErr('原始见面记录不可用，无法重新整理');
         if(!archiveStoredCurrent())bodyErr('存档已在另一页面更新，请先刷新页面');
@@ -625,6 +647,7 @@
         if(!archiveStoredCurrent())bodyErr('整理期间存档被其他页面修改，请刷新后再试');
         const latest=(db.messages||[]).filter(x=>x.mode==='meeting'&&x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid);
         if(latest.map(x=>x.id+'='+x.text).join('\n')!==signature)bodyErr('见面原文已更新，请重新整理');
+        if(String(existing.summary_edited_at||'')!==editVersion)bodyErr('整理期间手动总结已更新，已取消本次覆盖');
         const rec=upsertMeetingRecord(p,c,mid,latest,existing.location||'',parsed.summary,existing.finished_at||'');
         save();
         return {ok:true,meetingRecord:rec};

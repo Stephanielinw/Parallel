@@ -347,12 +347,12 @@
     ],opts);
     return {summary};
   }
-  const buildMeetingSummaryText=(p,c,loc,mMsgs,aiSummary='')=>{
-    if(aiSummary&&String(aiSummary).trim().length>=6)return stripProtocolTags(String(aiSummary),{preserveParagraphs:false}).slice(0,850);
+  const buildMeetingSummaryText=(p,c,loc,mMsgs,aiSummary='',isManual=false)=>{
+    if(aiSummary&&String(aiSummary).trim().length>=6)return isManual?String(aiSummary).trim():stripProtocolTags(String(aiSummary),{preserveParagraphs:false}).slice(0,850);
     // No faux narrative: preserve the transcript and make the missing digest explicit.
     return '本次见面原文已完整保存，剧情小结尚未生成成功；可点击「重新整理整场梗概」补全。';
   };
-  const upsertMeetingRecord=(p,c,meetingId,mMsgs,customLoc='',aiSummary='',finishedAt='')=>{
+  const upsertMeetingRecord=(p,c,meetingId,mMsgs,customLoc='',aiSummary='',finishedAt='',summarySource='')=>{
     if(!mMsgs||!mMsgs.length)return null;
     const existing=(db.meetings||[]).find(x=>x.id===meetingId);
     const rel=relation(p.id,c.id),isActive=rel?.mode==='meeting'&&rel.active_meeting_id===meetingId;
@@ -368,8 +368,10 @@
     const endedAt=actualFinish||mMsgs[mMsgs.length-1].created_at||startedAt;
     const timeStr=chatClockLabel(startedAt);
     const unchanged=existing?.entries?.length===mMsgs.length&&existing.entries.every((x,i)=>x.id===mMsgs[i].id&&x.text===(mMsgs[i].sender==='user'?String(mMsgs[i].text??''):cleanMeetingNovelText(mMsgs[i].text)));
-    const retainedAi=aiSummary||(unchanged?existing?.ai_summary:'')||'';
-    const summary=buildMeetingSummaryText(p,c,loc,mMsgs,retainedAi);
+    const explicitSummary=String(aiSummary||'').trim();
+    const retainedAi=explicitSummary||(unchanged?existing?.ai_summary:'')||'';
+    const manualSummary=Boolean(retainedAi)&&(summarySource==='manual'||(!explicitSummary&&unchanged&&existing?.summary_source==='manual'));
+    const summary=buildMeetingSummaryText(p,c,loc,mMsgs,retainedAi,manualSummary);
     const entries=mMsgs.map(m=>({id:m.id,sender:m.sender,speaker:m.sender==='user'?p.name:c.name,text:m.sender==='user'?String(m.text??''):cleanMeetingNovelText(m.text),created_at:m.created_at}));
     const rec={
       id:meetingId,
@@ -384,6 +386,8 @@
       duration_ms:Math.max(0,Date.parse(endedAt)-Date.parse(startedAt)),
       summary,
       ai_summary:retainedAi,
+      summary_source:retainedAi?(manualSummary?'manual':'ai'):'fallback',
+      summary_edited_at:manualSummary?(summarySource==='manual'?stamp():String(existing?.summary_edited_at||'')):'',
       message_ids:mMsgs.map(m=>m.id),
       entries
     };

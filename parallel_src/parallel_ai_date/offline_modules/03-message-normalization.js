@@ -143,11 +143,11 @@
     if(Array.isArray(target.meetings)){
       for(const rec of target.meetings){
         if(!rec||typeof rec!=='object')continue;
-        if(typeof rec.summary==='string'){
+        if(typeof rec.summary==='string'&&rec.summary_source!=='manual'){
           const cs=stripProtocolTags(rec.summary,{preserveParagraphs:false});
           if(cs&&cs!==rec.summary){rec.summary=cs;changed=true;}
         }
-        if(typeof rec.ai_summary==='string'&&rec.ai_summary){
+        if(typeof rec.ai_summary==='string'&&rec.ai_summary&&rec.summary_source!=='manual'){
           const cas=stripProtocolTags(rec.ai_summary,{preserveParagraphs:false});
           if(cas!==rec.ai_summary){rec.ai_summary=cas;changed=true;}
         }
