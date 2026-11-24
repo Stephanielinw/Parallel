@@ -200,6 +200,10 @@ class ParallelAPITest(unittest.TestCase):
         self.assertIn('未找到当前角色',self.call('/meeting-summary-save',
                             {'profileId':p['id'],'characterId':'re-game:leon:re2','meetingId':mid,'summary':recap},400)['error'])
 
+        other=self.create('M08 Other Profile')
+        self.assertIn('未找到当前角色',self.call('/meeting-summary-save',{'profileId':other['id'],'characterId':cid,'meetingId':mid,'summary':recap},400)['error'])
+        # Simulate the legacy Python server reopening its old SQLite file.
+        server.init_db()
         loaded=self.call('/thread?profileId='+p['id']+'&characterId='+cid)
         record=next(m for m in loaded['meetings'] if m['id']==mid)
         self.assertEqual(record['summary'],recap)
