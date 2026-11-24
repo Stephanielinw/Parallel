@@ -11,7 +11,9 @@ const fetchMock=async(url,options)=>{
  let content;
  if(sys.includes('纪实档案员')||sys.includes('事实')&&sys.includes('实际场景')) {
    paidSummaries++;
-   content=JSON.stringify({summary:'他们在宿舍外廊露台真实地聊过今天的计划，后来走到屋内。'});
+   const stageText=req.messages.find(x=>x.role==='user')?.content||'';
+   const stageName=stageText.includes('宿舍外廊露台')?'宿舍外廊露台':'宿舍卧室';
+   content=JSON.stringify({summary:'他们在'+stageName+'真实地聊过当天的计划，随后按照现场行动转换了空间。'});
  }else if(sys.includes('地点事实核对员')){
    content=JSON.stringify({changed:false,location:'',evidence:'',actor:'none'});
  }else{
@@ -82,7 +84,7 @@ const turn=(text,location,evidence='')=>JSON.stringify({text,location,location_e
  source.text='此前真实记录已经修改，这一段旧小结不可继续引用';
  app.importData(JSON.stringify(changed));
  const stale=app.buildPromptPreview(p.id,pair.characterId,'meeting',{latestText:'刚才说了什么'});
- assert(!stale[0].content.includes('他们在宿舍外廊露台真实地聊过今天的计划'),
+ assert(!stale[0].content.includes('他们在宿舍外廊露台真实地聊过当天的计划'),
    'source edit prevents prior scene summary from being trusted');
  assert(paidNarratives>=4);
  console.log('M11: per-turn separate place, two observed scene transitions, source-bound recaps, monitor sync and no 50-group generation passed.');
