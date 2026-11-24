@@ -2629,9 +2629,16 @@ def meeting_scene_stages(db,p,c,mid):
 
 
 def valid_meeting_scene_summaries(db,p,c,mid):
-    stages={x['transition_message_id']:x for x in meeting_scene_stages(db,p,c,mid)}
-    rows=db.execute('SELECT * FROM meeting_scene_summaries WHERE profile_id=? AND character_id=? AND meeting_id=? ORDER BY ended_at,transition_message_id',
-                    (p['id'],c['id'],mid)).fetchall()
+    # Minimal legacy 50-block test fixtures lack the new additive schema.
+    # Fail closed (no scene recap), never infer a missing location as truth.
+    try:
+        rows=db.execute('SELECT * FROM meeting_scene_summaries WHERE profile_id=? AND character_id=? AND meeting_id=? ORDER BY ended_at,transition_message_id',
+                        (p['id'],c['id'],mid)).fetchall()
+        if not rows:return []
+        stages={x['transition_message_id']:x for x in meeting_scene_stages(db,p,c,mid)}
+    except sqlite3.OperationalError as err:
+        if 'no such table' not in str(err):raise
+        return []
     valid=[]
     for row in rows:
         cp=dict(row)
