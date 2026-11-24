@@ -149,7 +149,7 @@
   // it must agree with a witnessed movement in the original player/AI text.
   function parseMeetingSceneTurn(raw,current=''){
     const source=String(raw??'').trim();
-    const clean=source.replace(/^\`\`\`(?:json)?\\s*|\\s*\`\`\`$/gi,'').trim();
+    const clean=source.replace(/^\`\`\`(?:json)?\s*|\s*\`\`\`$/gi,'').trim();
     let parsed=null;
     if(clean.startsWith('{')){
       try{parsed=JSON.parse(clean)}catch{
