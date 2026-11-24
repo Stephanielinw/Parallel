@@ -165,16 +165,53 @@
     '不要描写 '+p.name+' 的到达、站位、动作、台词、身体感受、心理、选择；不要让 '+c.name+' 主动认出 '+p.name+'、走上前打招呼、触碰、邀请落座或把他们写成已经交谈。'+
     '角色可以自己看门口、继续手头活动、注意周围人流，但不要确认玩家就在视线中。停在尚未发生首次实际接触的开放状态；由玩家的下一条动作或台词决定怎么接触。'+
     '这里只限定本次开场，既不修改预设的文风、视角和篇幅，也不限制之后角色的自主行动。';
-  function meetingClockContext(rel,history,now=Date.now(),rerollAt=0){
+  function meetingClockContext(rel,history,now=Date.now(),rerollAt=0,currentInputId=''){
     const first=history[0]?.created_at;
     const startRaw=Date.parse(rel?.meeting_started_at||first||''),start=Number.isFinite(startRaw)?Math.min(startRaw,now):now;
     const anchor=rerollAt?Math.max(start,Math.min(now,rerollAt)):now;
     const elapsed=Math.max(0,Math.floor((anchor-start)/1000));
-    const last=history.at(-1),lastAt=Date.parse(last?.created_at||'');
-    const gap=Number.isFinite(lastAt)?Math.max(0,Math.floor((anchor-lastAt)/1000)):0;
-    const zone=-new Date(now).getTimezoneOffset(),abs=Math.abs(zone);
+    // The just-submitted input is already persisted. It is not the previous scene.
+    const prior=history.filter(m=>m.id!==currentInputId&&m.engine!=='recalled'&&!m.recalled)
+      .map(m=>Date.parse(m.created_at||'')).filter(t=>Number.isFinite(t)&&t<=anchor&&t>=start);
+    const lastAt=prior.length?Math.max(...prior):null;
+    const gap=lastAt===null?null:Math.floor((anchor-lastAt)/1000);
+    const zone=-new Date(anchor).getTimezoneOffset(),abs=Math.abs(zone);
     const offset='UTC'+(zone>=0?'+':'-')+String(Math.floor(abs/60)).padStart(2,'0')+':'+String(abs%60).padStart(2,'0');
-    return '【面对面现实时间规则 · 强制 1:1】应用本地现实时间：'+chatClockLabel(now)+'（'+offset+'）；本次见面实际开始：'+chatClockLabel(start)+'；本幕时间：'+chatClockLabel(anchor)+'；本幕距见面开始 '+elapsed+' 秒（约 '+Math.floor(elapsed/60)+' 分钟），距上一条现场记录 '+gap+' 秒。'+(rerollAt?'本次是对同一幕的替代版本，以原先本幕时间为锚点。不得续写、记得或承认已弃用版本。真实见面计时没有暂停或重置，下一轮按当时现实时间继续。':'现实经过几秒，见面就经过几秒；不要因生成一段长正文就推进数分钟或数小时。')+' 现实日期只用于互动计时，原作年份、年龄及科技保持不变。禁止擅自跳时、跳日、突然结束约会或把未发生的事情写成既成事实。间隔较长时只承接已确认现场状态与真实流逝，不擅自替双方补写这段期间的行动。描写应收束在自然回应点；不必机械报时，不在正文中输出时间元数据。';
+    const hour=new Date(anchor).getHours(),period=hour<5?'凌晨':hour<12?'上午':hour<18?'下午':'晚上';
+    return '【面对面现实时间规则 · 强制 1:1 · 系统事实最高优先级】应用本地现实时间：'+chatClockLabel(now)+'；本次见面实际开始：'+chatClockLabel(start)+'；本幕时间：'+chatClockLabel(anchor)+'（'+period+'，'+offset+'）；本幕距见面开始 '+elapsed+' 秒（约 '+Math.floor(elapsed/60)+' 分钟），'+(gap===null?'没有更早的有效现场记录。':'上一条已发生现场记录：'+chatClockLabel(lastAt)+'；距上一条现场记录 '+gap+' 秒（不含本轮刚发送的输入）。')+(rerollAt?'本次是对同一幕的替代版本，以原先本幕时间为锚点。不得续写、记得或承认已弃用版本。真实见面计时没有暂停或重置，下一轮按当时现实时间继续。':'现实经过几秒，见面就经过几秒；不要因生成一段长正文就推进数分钟或数小时。')+' 本幕时间是唯一可用的现在，优先于任何预设的“紧接最后一秒”、历史正文、日程与角色习惯；角色查看钟表或直接报现在几点，必须与本幕本地钟点一致。没有必要时不要报时；不得自行改写分钟或时段。跨日按完整日期区分昨天、今天。长间隔只说明真实时间流逝，不证明角色何时醒来、做过什么或玩家一直维持某个姿势；不得倒填未经确认的精确时间、共同经历或用户状态。允许角色从现在起自主行动，不得替玩家补写空白期间的行动。现实日期不改变原作年份、年龄与科技。禁止擅自跳时、结束见面或在正文输出时间元数据。';
+  }
+  // Only reject unambiguous present-clock readings; historical times and plans
+  // must remain valid prose. A bare clock reading after checking a watch is present.
+  function meetingCurrentClockConflict(text,anchor){
+    const d=new Date(anchor);
+    if(!Number.isFinite(d.getTime()))return '';
+    const hour=d.getHours(),minute=d.getMinutes();
+    const digits='零一二三四五六七八九';
+    const number=s=>{
+      if(/^\d+$/.test(s))return Number(s);
+      if(s==='两')return 2;
+      if(s.includes('十')){const [x,y]=s.split('十');return (x?digits.indexOf(x):1)*10+(y?digits.indexOf(y):0);}
+      return s.length===1?digits.indexOf(s):NaN;
+    };
+    const source=String(text||'');
+    const expr=/(?:(凌晨|早上|上午|中午|下午|傍晚|晚上|夜里)\s*)?([0-9零一二两三四五六七八九十]{1,3})(?:[:：]([0-9]{2})|[点時时](?:([0-9零一二三四五六七八九十]{1,3})分|(半|一刻|三刻))?)/g;
+    for(const m of source.matchAll(expr)){
+      const before=source.slice(Math.max(0,m.index-140),m.index);
+      const after=source.slice(m.index+m[0].length,m.index+m[0].length+24);
+      const direct=/(?:现在|此刻|这会儿)(?:已经|刚过|才|都|是|已到|正好|快到)?\s*$/.test(before)&&!/^(?:见面|出发|回来|开门|结束|睡觉|起床|吃饭|开始)/.test(after);
+      const watch=/(?:手表|腕表|钟表|挂钟|时钟|表盘|手机时间)/.test(before)&&/[“「]\s*$/.test(before)&&/^[。！!，,？?]?[”」]/.test(after);
+      if(!direct&&!watch)continue;
+      const h=number(m[2]),min=m[3]!==undefined?Number(m[3]):m[4]!==undefined?number(m[4]):m[5]==='半'?30:m[5]==='一刻'?15:m[5]==='三刻'?45:null;
+      if(!Number.isInteger(h)||h<0||h>23||(min!==null&&(!Number.isInteger(min)||min<0||min>59)))continue;
+      let hours=[h];
+      if(h>=1&&h<=12){
+        if(/下午|傍晚|晚上|夜里/.test(m[1]||''))hours=[h===12?0:h+12];
+        else if(/凌晨|早上|上午/.test(m[1]||''))hours=[h===12?0:h];
+        else if(!m[1])hours=[h%12,h%12+12];
+      }
+      if(!hours.includes(hour)||(min!==null&&min!==minute))return m[0];
+    }
+    return '';
   }
   // Derived only from this profile/character's archived original meeting turns.
   // A poor fallback summary or unrelated SMS topic must not hide a recent encounter.
@@ -352,7 +389,7 @@
       const smsLines=preChatContext.map(m=>{
         const who=m.sender==='ai'?c.name:p.name;
         const body=m.sender==='user'?String(m.text??'').trim():(cleanChatBubbleText(m.text)||'…');
-        return `- [${fmtHHMM(m.created_at)||'--:--'} 手机消息] ${who}：${body.slice(0,140)}`;
+        return `- [${chatClockLabel(m.created_at)} 手机消息] ${who}：${body.slice(0,140)}`;
       });
       sys+=`\n\n【见面前的近期手机联系脉络（仅供剧情前情参考，严禁模仿手机短信的简短篇幅或气泡格式）】\n`+smsLines.join('\n');
     }
@@ -364,7 +401,7 @@
         historyTurns.push({role,content:'[系统提示：对方刚刚撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'});
         return;
       }
-      const tTag=mode==='chat'?chatClockLabel(m.created_at):(fmtHHMM(m.created_at)||'--:--');
+      const tTag=chatClockLabel(m.created_at);
       const mLabel=m.mode==='meeting'?'线下见面':'线上短信';
       const who=m.sender==='ai'?c.name:p.name;
       timelineLines.push(`#${idx+1} ${tTag}（${mLabel}·${who}）`);
@@ -406,7 +443,7 @@
         };
       chat.push(...priorHistory);
       const postSystemParts=postPresets.filter(x=>x.role==='system').map(x=>macros(x.content));
-      postSystemParts.push(meetingClockContext(relation(p.id,c.id),workingHistory,Date.now(),options.rerollAt||0));
+      postSystemParts.push(meetingClockContext(relation(p.id,c.id),workingHistory,options.clockNow??Date.now(),options.rerollAt||0,hasTrailingUser?workingHistory.at(-1)?.id:''));
       if(isMeetingOpening)postSystemParts.push(meetingOpeningDirection(p,c,meetingLoc));
       postSystemParts.push(`【第四层 · 当前状态 (Current State)】角色最后经现场实际行动确认的地点：「${meetingLoc}」。此定位是过去确认的状态，不是不可更改的固定舞台；如果本轮角色确实移至新地点，应按真实移动过程继续，并使后续监控更新。不能因目的地被提及、打算过去、角色猜测而假定已经到达。必须优先承接最新现场行动，不得让旧日程或旧地名覆盖新的实际位置。请严格按照上方已启用的预设模块规则（含文风、视角、去油腻、连续性及正文篇幅要求）输出面对面小说正文；只决定 ${c.name} 自己与环境中合理的事，不要替 ${p.name} 说话、行动或决定心理，不要在正文开头添加任何时间或模式标签。`);
       // Structured scene metadata travels out-of-band: only text becomes
