@@ -319,7 +319,8 @@
     const relSummary=relationshipBaselineSummary(p.id,c.id,p.name);
     const interestsStr=(p.interests||[]).join('、')||'未填写';
     const intentStr=p.intent||'未填写';
-    const curSurv=getCurrentSurveillanceSlot(p,c,options.simulatedAt||Date.now());
+    // Face-to-face location must never be seeded from projected surveillance.
+    const curSurv=mode==='chat'?getCurrentSurveillanceSlot(p,c,options.simulatedAt||Date.now()):null;
     const meetingLoc=mode==='meeting'?(relation(p.id,c.id)?.meeting_location||'见面地点待确认'):(curSurv?.location||'地点待确认');
     let sys='你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n';
     sys+='现实日历日期仅用于应用调度与记录；原作时期、人物年龄、历史事件与技术水平保持对应版本，不因现实年份改变。\n';
@@ -371,7 +372,10 @@
       const quoted=m.quote&&m.mode==='chat'?('[引用'+(m.quote.sender==='user'?'自己':'对方')+'的消息：「'+String(m.quote.text||'').slice(0,220)+'」]\n'):'';
       const cleanBody=quoted+originalBody;
       const useVision=mode==='chat'&&m.sender==='user'&&m.photo_kind==='gallery'&&m.photo_ref&&(protectedIds.includes(m.id)||(!protectedIds.length&&workingHistory.slice(idx+1).every(x=>x.sender==='user')));
-      historyTurns.push({role,content:cleanBody,...(useVision?{photo_ref:m.photo_ref}:{})});
+      const sceneMark=mode==='meeting'&&m.sender==='ai'&&m.scene_location&&
+        m.scene_location_signature===meetingSceneSignature(m.text)
+        ?'\\n【此条角色正文结束时的现场地点】'+m.scene_location:'';
+      historyTurns.push({role,content:cleanBody+sceneMark,...(useVision?{photo_ref:m.photo_ref}:{})});
     });
     if(timelineLines.length){
       sys+=`\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n`+timelineLines.join(' ｜ ');
@@ -405,7 +409,11 @@
       postSystemParts.push(meetingClockContext(relation(p.id,c.id),workingHistory,Date.now(),options.rerollAt||0));
       if(isMeetingOpening)postSystemParts.push(meetingOpeningDirection(p,c,meetingLoc));
       postSystemParts.push(`【第四层 · 当前状态 (Current State)】角色最后经现场实际行动确认的地点：「${meetingLoc}」。此定位是过去确认的状态，不是不可更改的固定舞台；如果本轮角色确实移至新地点，应按真实移动过程继续，并使后续监控更新。不能因目的地被提及、打算过去、角色猜测而假定已经到达。必须优先承接最新现场行动，不得让旧日程或旧地名覆盖新的实际位置。请严格按照上方已启用的预设模块规则（含文风、视角、去油腻、连续性及正文篇幅要求）输出面对面小说正文；只决定 ${c.name} 自己与环境中合理的事，不要替 ${p.name} 说话、行动或决定心理，不要在正文开头添加任何时间或模式标签。`);
-      chat.push({role:'system',content:postSystemParts.join('\n\n')});
+      // Structured scene metadata travels out-of-band: only text becomes
+      // visible prose. Each response must explicitly state where the character
+      // really is, using actions in this scene rather than surveillance plans.
+      postSystemParts.push('【每轮见面回复的结构化契约 · 必须遵守】只返回一个 JSON 对象，字段恰好是 {"text":"完整的第三人称小说正文","location":"角色在本条正文结束时真实所在的具体地点","location_evidence":"如果地点变化，请从本条正文或玩家最新一条原文逐字复制证明确实已经到达的连续短句；没换地点则填空字符串"}。text 必须是完整自然的小说叙事，不要把地点标签写进 text。location 每轮必填，即使没有移动也必须重复上一轮已确认的地点。单纯讨论、邀约、计划、将来时、想象、监控推演或 NPC 在别处不构成移动；未实际到达则沿用上一轮地点。若真实走出或进入新地点，在正文里交代完成移动的动作，再填新的 location。不得替玩家行动或发言。JSON 外不要有解释、代码围栏或其他内容。');
+      chat.push({role:'system',content:postSystemParts.join('\\n\\n')});
       for(const x of postPresets){
         if(x.role!=='system')chat.push({role:x.role,content:macros(x.content)});
       }
