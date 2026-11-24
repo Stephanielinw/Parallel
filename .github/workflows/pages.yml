@@ -67,6 +67,7 @@ jobs:
           node tests/m06-module-assembly.test.cjs
           node tests/m07-ui-state-isolation.test.cjs
           node tests/m08-version-parity.test.cjs
+          node tests/m09-cloud-readiness.test.cjs
           python3 parallel_src/parallel_ai_date/tests/test_m05_fact_authority.py
           python3 parallel_src/parallel_ai_date/tests/test_meeting_checkpoints.py
           node tests/meeting-edit-refusal.test.cjs
@@ -95,6 +96,10 @@ jobs:
         run: npm run build -- --base=/Parallel/
       - name: M08 actual release variant parity
         run: node tests/m08-release-output.test.cjs
+      - name: M09 release provenance, cloud-readiness and ZIP privacy gate
+        run: |
+          node tests/m09-release-integrity.test.cjs
+          python3 scripts/m09-audit-release.py
       - name: Check required browser assets and privacy guard
         run: |
           test -f dist/index.html
