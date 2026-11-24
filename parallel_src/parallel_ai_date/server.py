@@ -2634,7 +2634,7 @@ def select_working_history(db,pid,cid,mode='chat',through_rowid=None,exclude_ids
         if cutoff:
             # A recovered reply can have a later insertion rowid but an earlier conversation timestamp.
             where+=' AND (julianday(created_at)<julianday(?) OR (julianday(created_at)=julianday(?) AND rowid<=?))';args.extend([cutoff['created_at'],cutoff['created_at'],through_rowid])
-    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at,meeting_id,quote_json FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
+    rows=db.execute('SELECT rowid,id,sender,mode,text,engine,created_at,meeting_id,quote_json,scene_location,scene_location_signature FROM messages WHERE '+where+' ORDER BY julianday(created_at) DESC,rowid DESC',args).fetchall()
     excl=set(exclude_ids or [])
     chron=[m for m in reversed([dict(r) for r in rows]) if not _is_chat_artifact(m) and m['id'] not in excl]
     if mode=='meeting':
@@ -3206,7 +3206,7 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
     recalled=retrieve_relevant_memories(db,p['id'],c['id'],query_text=query_seed,exclude_msg_ids=working_ids,limit=4,max_chars=1200,as_of=simulated_at)
     if mode=='meeting':recalled=[x for x in recalled if x['source_type']!='meeting_checkpoint']
     rel_summary=relationship_baseline_summary(db,p['id'],c['id'],p['name'])
-    cur_surv=get_current_surveillance_slot(db,p,c,simulated_at)
+    cur_surv=get_current_surveillance_slot(db,p,c,simulated_at) if mode=='chat' else None
     interests_str='、'.join(p.get('interests') or []) or '未填写'
     intent_str=p.get('intent') or '未填写'
     system='''你正在扮演一个真实存在于其原作时间线中的虚构角色。不得跳出角色解释自己是语言模型。记忆严格按当前角色 ID 与当前聊天对象隔离，绝不混入其他人物或其他 Profile 的经历。区分“系统已确认事实”与“对方在对话中的主观陈述”，不因对方随口一句话而篡改你的原作设定。\n'''
@@ -3236,8 +3236,9 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             system+="\n关系阶段提示：你们曾解除匹配后重新匹配，你清楚记得过往相处经历，不必装作初次认识。"
         elif total_msgs<=8:
             system+="\n关系阶段提示：你们刚通过交友软件匹配不久，请保持角色自然的社交边界、幽默感或分寸，不要过度自来熟，也不要像客服一样生硬盘问或长篇解释个人设定。"
-    if mode=='meeting' and cur_surv:
-        system+=f"\n\n【现场互动确认的位置（不是监控推演）】\n当前时段：{cur_surv['start']}–{cur_surv['end']}｜你所在地点：{cur_surv['location']}｜状态：{cur_surv['status']}｜正在做的事：{cur_surv['activity']}。进入见面模式不表示玩家已出现、双方已接触或共同移动；不能按监控推演决定现场。"
+    if mode=='meeting':
+        known_place=MEETING_STATE.get((p['id'],c['id']),{}).get('meeting_location') or infer_meeting_location(db,p['id'],c['id'])
+        system+='\n\n【现场实际地点，严禁参考监控推演】角色最近现场已确认地点：「'+str(known_place)+'」。只根据已发生的互动行动更新位置。'
     if mode=='chat':system+=recent_actual_meeting_context(db,p,c,query_seed,simulated_at)
     system+="\n【共同经历事实优先级】实际现场与消息原文 > 带时间戳的角色位置陈述 > 已确认而未发生的预约 > 监控日程推演。共同吃饭、接送和回家须有现场原文证实；禁止编造用户过去说过的台词。AI 摘要仅供检索，不能被当成亲历事实。"
     if recalled:
@@ -3271,7 +3272,9 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
             if isinstance(quote,dict) and msg['mode']=='chat':
                 who='自己' if quote.get('sender')=='user' else '对方'
                 clean_body='[引用'+who+'的消息：「'+str(quote.get('text') or '')[:220]+'」]\n'+clean_body
-            history_turns.append({'role':role,'content':clean_body})
+            if mode=='meeting' and msg['sender']=='ai' and msg.get('scene_location') and msg.get('scene_location_signature')==meeting_scene_signature(msg.get('text')):
+                clean_body+='\n【此条角色正文结束时的现场地点】'+str(msg['scene_location'])
+            history_turns.append({'role':role,'content':clean_body}
     if timeline_lines:
         system+="\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n"+" ｜ ".join(timeline_lines)
     if core_sys_parts:system+='\n\n'+'\n\n'.join(core_sys_parts)
@@ -3286,10 +3289,8 @@ def compile_messages(db,p,c,mode='chat',latest=None,through_rowid=None,pending_i
         post_sys_parts=[macros(x['content']) for x in post_presets if x['role']=='system']
         non_sys_post_presets=[x for x in post_presets if x['role']!='system']
         meeting_state_line=f"【第四层 · 当前状态 (Current State)】角色最近经现场实际行动确认的地点为「{meet_loc}」，这是此前的事实锚点而非固定舞台。若本轮实际移至新地点，按物理过程继续，后续监控将以新地点为准；绝不能因为提议、路过提及或计划前往就当作已经到达。任何旧行程或旧地名都不可覆盖更新的现场行动。请严格遵循上方导入的面对面小说预设中的文风、叙事视角、人物边界、篇幅区间与创作铁律，不要替 {p['name']} 说话、行动或决定内心感受，不要在正文开头添加任何时间或模式标签，直接输出小说正文。"
-        if post_sys_parts:
-            messages.append({'role':'system','content':'\n\n'.join(post_sys_parts)+'\n\n'+meeting_state_line})
-        else:
-            messages.append({'role':'system','content':meeting_state_line})
+        scene_schema='【每轮见面回复结构化契约】只输出一个 JSON 对象：{"text":"完整的第三人称小说正文","location":"本轮角色真实所在地","location_evidence":"如果已实际换地点，从本条角色正文或玩家最新原文逐字引用已经到达的短句，否则填空字符串"}。必须每轮填 location，即使没有移动也要填写原地点。只描述角色实际完成的移动；计划、约定、猜测和监控日程不能改地点。text 要遵守全部已有预设的小说篇幅、文风及不得替玩家行动的限制，JSON 外不能输出解释。'
+        messages.append({'role':'system','content':'\n\n'.join([*post_sys_parts,meeting_state_line,scene_schema])})
         for x in non_sys_post_presets:
             messages.append({'role':x['role'],'content':macros(x['content'])})
         if final_user_turn:
