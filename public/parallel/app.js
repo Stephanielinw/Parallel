@@ -613,6 +613,8 @@ async function loadThread(cid,render=true){
   const existingInput=$('chat-input');
   if(existingInput&&state.renderedThreadId)state.draftInputs[state.renderedThreadId]=existingInput.value;
   const pid=state.activeId,seq=++threadRequestSeq;
+  // Invalidate old character dialogs *before* awaiting a new thread.
+  if(loadedThreadPair!==typingPair(pid,cid))++modalRequestSeq;
   const r=await api('/thread?profileId='+encodeURIComponent(pid)+'&characterId='+encodeURIComponent(cid));
   if(seq!==threadRequestSeq||state.tab!=='messages'||state.activeId!==pid)return;
   const nextPair=typingPair(pid,cid);
@@ -788,9 +790,10 @@ const chatPhotoAsset=sender=>{
   return new URL(sender==='user'?'chat-photo-user.webp':'chat-photo-ai.webp',script?.src||new URL('./parallel/',location.href)).href;
 };
 const chatPhotoCache=new Map();
+const chatPhotoKey=(pid,cid,ref)=>JSON.stringify([pid,cid,ref]);
 function renderChatPhoto(m){
   const gallery=m.photo_kind==='gallery';
-  const src=gallery?chatPhotoCache.get(m.photo_ref):chatPhotoAsset(m.sender);
+  const src=gallery?chatPhotoCache.get(chatPhotoKey(state.activeId,state.threadId,m.photo_ref)):chatPhotoAsset(m.sender);
   return '<button type="button" class="chat-photo-bubble" data-action="open-chat-photo" data-id="'+esc(m.id)+'" aria-label="查看照片" style="display:block;padding:0;border:0;background:transparent;cursor:pointer;">'
     +'<img '+(src?'src="'+esc(src)+'"':'')+' '+(gallery&&!src?'data-chat-photo-load="'+esc(m.id)+'"':'')+' alt="'+(gallery?'真实照片':'点击查看照片描写')+'" loading="lazy" style="display:block;width:min(170px,48vw);aspect-ratio:1;object-fit:cover;border-radius:12px;background:#eae4dd;">'
     +'</button>';
@@ -806,7 +809,7 @@ async function hydrateChatPhotos(){
       const r=await api('/chat-photo-read',{profileId:pid,characterId:cid,messageId:mid});
       if(!isCurrentPair(pid,cid))continue;
       if(chatPhotoCache.size>=24)chatPhotoCache.delete(chatPhotoCache.keys().next().value);
-      chatPhotoCache.set(m.photo_ref,r.data);
+      chatPhotoCache.set(chatPhotoKey(pid,cid,m.photo_ref),r.data);
       if(img.isConnected)img.src=r.data;
     }catch{if(img.isConnected)img.alt='本地照片不可用';}
   }
@@ -877,7 +880,7 @@ async function openChatPhoto(mid){
   }
   const scope=beginPairModalRequest(pid,cid);
   try{
-    const data=chatPhotoCache.get(m.photo_ref)||(await api('/chat-photo-read',{profileId:pid,characterId:cid,messageId:mid})).data;
+    const data=chatPhotoCache.get(chatPhotoKey(pid,cid,m.photo_ref))||(await api('/chat-photo-read',{profileId:pid,characterId:cid,messageId:mid})).data;
     if(!ownsPairModalRequest(scope))return;
     modal('<h2>照片</h2><img src="'+esc(data)+'" alt="真实照片" style="max-width:100%;max-height:70vh;object-fit:contain;border-radius:12px;">','<button class="btn primary" data-action="close-modal">关闭</button>');
   }catch(e){if(ownsPairModalRequest(scope))toast(e.message);}
@@ -3003,7 +3006,7 @@ if(a==='dismiss-bg-error'){
 if(a==='open-match'){const id=el.dataset.id;closeModal();state.threadId=id;return navigate('messages')}
 if(a==='retry-backlog')return recoverOnOpen(0,true);
 if(a==='select-thread')return loadThread(el.dataset.id);
-if(a==='back-threads'){++threadRequestSeq;state.threadId='';state.renderedThreadId='';return renderMessages()}
+if(a==='back-threads'){++threadRequestSeq;++modalRequestSeq;state.threadId='';state.renderedThreadId='';state.lastMemoriesData=null;return renderMessages()}
 if(a==='change-mode')return changeMode();
 if(a==='surv-close-meeting')return modal('<h2>结束这次见面？</h2><p>会把这一场存为回忆卡片并切回手机聊天。若是不小心点到，请选「继续见面」；即使误结束，也能从旧卡片接着这一场继续。</p>','<button class="btn primary" data-action="close-modal">继续见面</button><button class="btn soft" data-action="confirm-surv-close-meeting">确认结束并归档</button>');
 if(a==='confirm-surv-close-meeting'){closeModal();return changeMode();}
