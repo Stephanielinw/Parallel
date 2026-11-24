@@ -144,6 +144,50 @@
     }catch{return null;}
   }
 
+  // Every new meeting response is a structured narrative plus an independent
+  // physical location label. The label is NOT evidence of travel by itself;
+  // it must agree with a witnessed movement in the original player/AI text.
+  function parseMeetingSceneTurn(raw,current=''){
+    const source=String(raw??'').trim();
+    const clean=source.replace(/^\`\`\`(?:json)?\\s*|\\s*\`\`\`$/gi,'').trim();
+    let parsed=null;
+    if(clean.startsWith('{')){
+      try{parsed=JSON.parse(clean)}catch{
+        // Never show malformed JSON or partial protocol as meeting prose.
+        throw Error('见面回复结构化 JSON 不完整；已保留当前原文，等待重试');
+      }
+    }
+    const structured=Boolean(parsed&&typeof parsed==='object'&&!Array.isArray(parsed));
+    if(structured&&(typeof parsed.text!=='string'||typeof parsed.location!=='string'))
+      throw Error('见面回复缺少正文或每轮地点字段');
+    const text=cleanMeetingNovelText(structured?parsed.text:source).trim();
+    if(!text||/^[\\s.…。]+$/.test(text))throw Error('见面回复没有有效正文');
+    const location=structured?cleanScenePlace(parsed.location):cleanScenePlace(current);
+    if(structured&&!location)throw Error('见面回复未提供有效地点名称');
+    const evidence=structured?String(parsed.location_evidence||'').trim().slice(0,250):'';
+    return {text,location:location||String(current||'').slice(0,40),evidence,structured};
+  }
+  function resolveMeetingSceneTurnLocation(p,c,turn,current,userMsg=null){
+    const base=cleanScenePlace(current)||'见面地点待确认';
+    const claimed=cleanScenePlace(turn?.location);
+    if(!claimed||claimed===base)return {location:base,evidence:'',kind:'stable'};
+    const deterministic=sceneLocationFromCharacter(turn.text,base,p.name,c.name);
+    const evidence=String(turn.evidence||'').trim();
+    const fromNarration=evidence.length>=4&&turn.text.includes(evidence)&&
+      isPotentialMeetingMovement(evidence)&&!SCENE_NOT_ARRIVED_RE.test(evidence);
+    const playerPlace=userMsg?meetingPlaceInPlayerTurn(userMsg.text,p.name):'';
+    const fromPlayer=Boolean(playerPlace===claimed&&evidence.length>=4&&
+      String(userMsg.text||'').includes(evidence));
+    // A scene-specific room inferred from real action is authoritative even
+    // if the model picked a vague or wrong structured label.
+    if(deterministic&&deterministic.location!==base){
+      if(claimed===deterministic.location||fromNarration)
+        return {location:claimed,evidence:evidence||deterministic.evidence,kind:'structured'};
+      return deterministic;
+    }
+    if(fromNarration||fromPlayer)return {location:claimed,evidence,kind:'structured'};
+    return {location:base,evidence:'',kind:'unconfirmed'};
+  }
   function recoverPreMeetingPlace(p,c,began){
     // Reconstruct the original stop from the player's pre-meeting plans.
     // A concrete named venue is evidence; an AI-generated schedule is not.
