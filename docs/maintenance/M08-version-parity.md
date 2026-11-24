@@ -36,6 +36,8 @@
 
 **CI 版本新旧隔离**：同一个 PR 提交更新后，旧版构建立即取消，避免把过时的测试结果误当作最新版本验收；正式 main/Pages 发布继续保留串行执行，绝不取消已经开始的主分支部署。
 
+**WebKit 环境稳定性**：2026-11-23 的 PR 检查在 Ubuntu `us-east-2.ec2.archive.ubuntu.com` 系统包下载中触发 12 分钟超时，浏览器测试尚未开始。M08 改为使用 Microsoft 官方 `mcr.microsoft.com/playwright:v1.57.0-noble` 预装 WebKit 容器执行同一套实际 WebKit 测试；NPM 端测试依赖仍固定 `@playwright/test@1.57.0`，不变更用户实际运行环境、不跳过测试。这不是 iPhone 真机测试。
+
 **明示的浏览器独有路由**：`discover-session`、`discover-progress`、`episode-archive-tick`、`chat-photos`、`chat-photo-read`。这些依赖浏览器端状态、照片存储或自动归档队列，本轮不会在 SQLite 伪造兼容行为。路由列表由 `tests/m08-version-parity.test.cjs` 精确检查：除这五项外，任何新增只在一个后端的 API 名称都应导致 CI 失败，直到明确实现或审查例外。
 
 路由名称一致**不代表全部 44 个业务逻辑已经数学等价**。双方独立执行环境在调度、IDB 照片、自动归档和故障恢复上仍有实现差异；应对具体差异用共享回归场景逐步核验，而不能冒险把旧 SQLite 存档改成浏览器存档。
