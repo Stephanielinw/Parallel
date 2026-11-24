@@ -56,6 +56,10 @@ const signature=rows=>{
    console.error('M11 legacy fixture diagnostic:',JSON.stringify({cp:saved.meetingCheckpoints.length,
      sig:saved.meetingCheckpoints[0]?.source_signature,expected:historical.source_signature,
      hasActive:saved.relations[p.id+'|'+pair.characterId]?.active_meeting_id,
+     currentGroups:(()=>{const fns=getFns((pid,cid)=>saved.messages.filter(m=>m.profile_id===pid&&m.character_id===cid),()=>false);
+       const gs=fns.completedMeetingGroups(p.id,pair.characterId,mid);
+       return {count:gs.length,signature:fns.meetingBlockSignature(gs.slice(0,50)),start:gs[0]?.map(m=>m.id),end:gs[49]?.map(m=>m.id)};})(),
+     checkpointMessageCount:saved.meetingCheckpoints[0]?.message_ids?.length,
      promptLast:prompt.slice(-450)}));
  }
  assert(prompt.includes('历史兼容'),'legacy 50-group archive must still load');
