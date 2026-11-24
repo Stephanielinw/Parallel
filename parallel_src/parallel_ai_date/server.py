@@ -14,6 +14,43 @@ DATA = ROOT / 'data'; DATA.mkdir(exist_ok=True)
 DBFILE = DATA / 'parallel.sqlite3'; SECRETFILE = DATA / 'connection.json'
 HOST='127.0.0.1'; PORT=int(os.environ.get('PARALLEL_PORT','8765'))
 CHAT_QUIET_MS=60000
+
+# M10: automatic outreach has a deterministic LOCAL clock and recent-sleep
+# safety gate. This is independent of what an LLM claims the time is.
+def proactive_quiet_reason(user_rows, at_ms=None, manual=False):
+    if manual:
+        return ''
+    now=now_ms() if at_ms is None else at_ms
+    hour=datetime.fromtimestamp(now/1000).hour
+    if hour>=23 or hour<8:
+        return 'overnight-quiet-hours'
+    rows=[dict(x) for x in (user_rows or []) if x.get('sender')=='user' and x.get('mode')=='chat']
+    if not rows:
+        return ''
+    def row_ms(row):
+        try:
+            dt=datetime.fromisoformat(str(row['created_at']).replace('Z','+00:00'))
+            return int(dt.timestamp()*1000)
+        except (ValueError,TypeError,KeyError):
+            return -1
+    rows=[x for x in rows if row_ms(x)>=0]
+    if not rows:
+        return ''
+    latest=max(rows,key=row_ms)
+    last_at=row_ms(latest)
+    if last_at>now+60000 or now-last_at>4*3600000:
+        return ''
+    if re.search(r'(?:醒了|起床了|睡醒了|不睡了|还没睡|我不困|i(?:\x27| a)?m awake|woke up)',str(latest.get('text','')),re.I):
+        return ''
+    grouped=[str(x.get('text','')) for x in rows if 0<=last_at-row_ms(x)<=15*60000]
+    sleep_rx=r'(?:准备.{0,8}(?:睡|躺平)|(?:我|先|要|去|准备|打算).{0,6}(?:睡觉|睡了|睡一觉|大睡|休息|补觉)|晚安|good ?night|going to bed|off to bed|going to sleep|need some sleep|我困了|睡不动了)'
+    return 'recent-explicit-sleep' if any(re.search(sleep_rx,s,re.I) for s in grouped) else ''
+
+def proactive_time_contradiction(text, at_ms=None):
+    now=now_ms() if at_ms is None else at_ms
+    if datetime.fromtimestamp(now/1000).hour>=5:
+        return False
+    return bool(re.search(r'(?:太阳.{0,10}(?:升到头顶|升到正头顶|晒屁股|已经当空|正当空)|(?:都|已经|这都|现在|马上|快).{0,5}(?:大中午|中午了|早上了|上午了|天亮了)|大白天了|早上好|good morning|good afternoon)',str(text or ''),re.I))
 CHAT_LOCK=threading.RLock()
 MAX_BODY=4*1024*1024
 DEFAULT_PRESETS = [
