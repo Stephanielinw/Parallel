@@ -1860,6 +1860,36 @@
     const explicitlyRestingNow=/(?:我现在|现在就|这会儿|我先|我要|我准备|马上|立刻|刚好).{0,10}(?:睡觉|睡了|睡一觉|午睡|睡午觉|睡午觉了|睡午觉啦|休息|眯一会)|(?:我去睡了|我去睡觉|困得不行|要睡了)/.test(lastUsers);
     return '\n【白天讨论夜晚·情境校准】最近的短信涉及晚上、梦境或睡眠话题，但现在仍是'+(hour<12?'上午':'下午')+'。这些是谈论中的时间，不表示对方已经准备立刻睡觉或当前已经入夜。'+(explicitlyRestingNow?'对方最近可能明确提到当前要休息；可以尊重并自然回应，但不要把下午误写成夜晚。':'对方没有明确表示此刻要睡：不要把话题当作睡前告别，不要直接催其现在洗漱、钻被窝或以“晚安”结束当前聊天。可以自然说“今晚再说”“晚上做个好梦”，但必须保持时间指向正确。');
   }
+  // M10: background outreach must respect the phone owner's local night and
+  // an explicit recent request to sleep. This is a send gate, not an AI hint:
+  // the model cannot override it by narrating a different time of day.
+  // Manual "trigger now" is a deliberate user action and bypasses quiet hours.
+  function proactiveQuietReason(history,now=Date.now(),manual=false){
+    if(manual)return '';
+    const hour=new Date(now).getHours();
+    if(hour>=23||hour<8)return 'overnight-quiet-hours';
+    const rows=(Array.isArray(history)?history:[]).filter(m=>
+      m&&m.sender==='user'&&m.mode==='chat'&&!m.recalled&&m.engine!=='recalled'&&
+      Number.isFinite(Date.parse(m.created_at)));
+    const last=rows.at(-1);
+    if(!last)return '';
+    const latest=Date.parse(last.created_at);
+    if(latest>now+60000||now-latest>4*3600000)return '';
+    const grouped=rows.slice(-12).filter(m=>latest-Date.parse(m.created_at)<=15*60000&&
+      Date.parse(m.created_at)<=latest).map(m=>String(m.text||''));
+    const tail=String(last.text||'');
+    if(/(?:醒了|起床了|睡醒了|不睡了|还没睡|我不困|i(?:'| a)?m awake|woke up)/i.test(tail))return '';
+    if(grouped.some(s=>/(?:准备.{0,8}(?:睡|躺平)|(?:我|先|要|去|准备|打算).{0,6}(?:睡觉|睡了|睡一觉|大睡|休息|补觉)|(?:晚安|good ?night|going to bed|off to bed|going to sleep|need some sleep|我困了|睡不动了))/i.test(s)))
+      return 'recent-explicit-sleep';
+    return '';
+  }
+  // A conservative last-resort rejection for obviously impossible
+  // "it's noon / the sun is overhead" assertions during deep night.
+  // Do not rewrite AI text: suppress that proactive turn instead.
+  function proactiveTimeContradiction(text,now=Date.now()){
+    if(new Date(now).getHours()>=5)return false;
+    return /(?:太阳.{0,10}(?:升到头顶|升到正头顶|晒屁股|已经当空|正当空)|(?:都|已经|这都|现在|马上|快)(?:.{0,5})(?:大中午|中午了|早上了|上午了|天亮了)|大白天了|早上好|good morning|good afternoon)/i.test(String(text||''));
+  }
   function chatClockContext(history,now=Date.now()){
     const d=new Date(now),offset=-d.getTimezoneOffset(),sign=offset>=0?'+':'-',abs=Math.abs(offset);
     const zone='UTC'+sign+String(Math.floor(abs/60)).padStart(2,'0')+':'+String(abs%60).padStart(2,'0');
@@ -4570,12 +4600,13 @@
   async function produceProactiveMessage(p,c,reason='idle',unresolvedMem=null,isBackground=true){
     const curMode=pub().mode;
     if(curMode==='normal')return {replies:[],skipped:'no-api'};
+    const previousLast=messagesOf(p.id,c.id).at(-1)?.id||'';
     let engine='demo',txt='';
     if(curMode==='live'){
       try{
         const ms=prompt(p,c,'chat',[],{entry_point:'chat_proactive'});
         const memHint=unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
-        ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
+        ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】当前手机本地时刻是 ${chatClockLabel(Date.now())}。距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}必须遵守当前钟点：凌晨绝不是上午或中午；不要推断对方已经醒来、已起床或睡到了中午。不要把旧约定当成已经发生的共同经历。请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
         txt=await llm(ms,{profile:p,character:c,mode:'chat',entry_point:'chat_proactive',background:isBackground});
         engine='live';
         clearBgError(p.id,c.id,'chat_proactive');
@@ -4596,6 +4627,23 @@
         txt=pool[idx];
       }
       engine='demo';
+    }
+    // M10: the asynchronous model call can outlive a user reply, a switch
+    // to meeting mode, or the start of quiet hours. Revalidate *before* write.
+    const latestRows=messagesOf(p.id,c.id);
+    if((latestRows.at(-1)?.id||'')!==previousLast)
+      return {replies:[],skipped:'conversation-changed'};
+    const currentRel=relation(p.id,c.id);
+    if(!currentRel||currentRel.status!=='matched'||currentRel.mode!=='chat')
+      return {replies:[],skipped:'relation-changed'};
+    if(isBackground&&proactiveQuietReason(latestRows,Date.now()))
+      return {replies:[],skipped:'quiet-hours'};
+    if(proactiveTimeContradiction(txt,Date.now())){
+      // Rate-limit a bad provider completion; do not commit its impossible
+      // clock narrative as a message, memory or event.
+      db.proactiveLog[pairKey(p.id,c.id)]=Date.now();
+      save();
+      return {replies:[],skipped:'temporal-contradiction'};
     }
     const bubbleTexts=splitChatBubbles(txt).slice(0,3);
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine));
@@ -4846,6 +4894,10 @@
         if(curMode==='normal')return {sent:[],skipped:'no-api'};
         if(pMode==='off'&&trigger!=='manual')return {sent:[],skipped:'off'};
         const now=Date.now();
+        // M10: the user's local overnight quiet window is a hard automatic gate,
+        // even if startup/idle or an old unresolved memory wants to message.
+        if(trigger!=='manual'&&proactiveQuietReason([],now))
+          return {delivered:[],sent:[],skipped:'overnight-quiet-hours'};
         if(trigger!=='manual'){
           const recentGlobal=Object.entries(db.proactiveLog||{}).filter(([k])=>k.startsWith(p.id+'|')).map(([,ts])=>Number(ts)||0);
           const lastGlobalTs=recentGlobal.length?Math.max(...recentGlobal):0;
@@ -4860,6 +4912,7 @@
           const q=queueInfo(p.id,cid);
           if(q.status==='inflight'||q.paused||(trigger!=='manual'&&q.count>0))continue;
           const msgs=messagesOf(p.id,cid);
+          if(proactiveQuietReason(msgs,now,trigger==='manual'))continue;
           const lastMsg=msgs[msgs.length-1];
           const lastTs=lastMsg?Date.parse(lastMsg.created_at)||0:Date.parse(r.updated_at)||0;
           const lastProactive=db.proactiveLog[pairKey(p.id,cid)]||0;

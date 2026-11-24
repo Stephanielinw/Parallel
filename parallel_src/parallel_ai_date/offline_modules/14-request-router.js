@@ -163,6 +163,10 @@
         if(curMode==='normal')return {sent:[],skipped:'no-api'};
         if(pMode==='off'&&trigger!=='manual')return {sent:[],skipped:'off'};
         const now=Date.now();
+        // M10: the user's local overnight quiet window is a hard automatic gate,
+        // even if startup/idle or an old unresolved memory wants to message.
+        if(trigger!=='manual'&&proactiveQuietReason([],now))
+          return {delivered:[],sent:[],skipped:'overnight-quiet-hours'};
         if(trigger!=='manual'){
           const recentGlobal=Object.entries(db.proactiveLog||{}).filter(([k])=>k.startsWith(p.id+'|')).map(([,ts])=>Number(ts)||0);
           const lastGlobalTs=recentGlobal.length?Math.max(...recentGlobal):0;
@@ -177,6 +181,7 @@
           const q=queueInfo(p.id,cid);
           if(q.status==='inflight'||q.paused||(trigger!=='manual'&&q.count>0))continue;
           const msgs=messagesOf(p.id,cid);
+          if(proactiveQuietReason(msgs,now,trigger==='manual'))continue;
           const lastMsg=msgs[msgs.length-1];
           const lastTs=lastMsg?Date.parse(lastMsg.created_at)||0:Date.parse(r.updated_at)||0;
           const lastProactive=db.proactiveLog[pairKey(p.id,cid)]||0;

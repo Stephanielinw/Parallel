@@ -385,12 +385,13 @@
   async function produceProactiveMessage(p,c,reason='idle',unresolvedMem=null,isBackground=true){
     const curMode=pub().mode;
     if(curMode==='normal')return {replies:[],skipped:'no-api'};
+    const previousLast=messagesOf(p.id,c.id).at(-1)?.id||'';
     let engine='demo',txt='';
     if(curMode==='live'){
       try{
         const ms=prompt(p,c,'chat',[],{entry_point:'chat_proactive'});
         const memHint=unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
-        ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
+        ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】当前手机本地时刻是 ${chatClockLabel(Date.now())}。距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}必须遵守当前钟点：凌晨绝不是上午或中午；不要推断对方已经醒来、已起床或睡到了中午。不要把旧约定当成已经发生的共同经历。请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
         txt=await llm(ms,{profile:p,character:c,mode:'chat',entry_point:'chat_proactive',background:isBackground});
         engine='live';
         clearBgError(p.id,c.id,'chat_proactive');
@@ -411,6 +412,23 @@
         txt=pool[idx];
       }
       engine='demo';
+    }
+    // M10: the asynchronous model call can outlive a user reply, a switch
+    // to meeting mode, or the start of quiet hours. Revalidate *before* write.
+    const latestRows=messagesOf(p.id,c.id);
+    if((latestRows.at(-1)?.id||'')!==previousLast)
+      return {replies:[],skipped:'conversation-changed'};
+    const currentRel=relation(p.id,c.id);
+    if(!currentRel||currentRel.status!=='matched'||currentRel.mode!=='chat')
+      return {replies:[],skipped:'relation-changed'};
+    if(isBackground&&proactiveQuietReason(latestRows,Date.now()))
+      return {replies:[],skipped:'quiet-hours'};
+    if(proactiveTimeContradiction(txt,Date.now())){
+      // Rate-limit a bad provider completion; do not commit its impossible
+      // clock narrative as a message, memory or event.
+      db.proactiveLog[pairKey(p.id,c.id)]=Date.now();
+      save();
+      return {replies:[],skipped:'temporal-contradiction'};
     }
     const bubbleTexts=splitChatBubbles(txt).slice(0,3);
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine));

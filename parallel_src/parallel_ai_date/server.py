@@ -14,6 +14,43 @@ DATA = ROOT / 'data'; DATA.mkdir(exist_ok=True)
 DBFILE = DATA / 'parallel.sqlite3'; SECRETFILE = DATA / 'connection.json'
 HOST='127.0.0.1'; PORT=int(os.environ.get('PARALLEL_PORT','8765'))
 CHAT_QUIET_MS=60000
+
+# M10: automatic outreach has a deterministic LOCAL clock and recent-sleep
+# safety gate. This is independent of what an LLM claims the time is.
+def proactive_quiet_reason(user_rows, at_ms=None, manual=False):
+    if manual:
+        return ''
+    now=now_ms() if at_ms is None else at_ms
+    hour=datetime.fromtimestamp(now/1000).hour
+    if hour>=23 or hour<8:
+        return 'overnight-quiet-hours'
+    rows=[dict(x) for x in (user_rows or []) if x.get('sender')=='user' and x.get('mode')=='chat']
+    if not rows:
+        return ''
+    def row_ms(row):
+        try:
+            dt=datetime.fromisoformat(str(row['created_at']).replace('Z','+00:00'))
+            return int(dt.timestamp()*1000)
+        except (ValueError,TypeError,KeyError):
+            return -1
+    rows=[x for x in rows if row_ms(x)>=0]
+    if not rows:
+        return ''
+    latest=max(rows,key=row_ms)
+    last_at=row_ms(latest)
+    if last_at>now+60000 or now-last_at>4*3600000:
+        return ''
+    if re.search(r'(?:醒了|起床了|睡醒了|不睡了|还没睡|我不困|i(?:\x27| a)?m awake|woke up)',str(latest.get('text','')),re.I):
+        return ''
+    grouped=[str(x.get('text','')) for x in rows if 0<=last_at-row_ms(x)<=15*60000]
+    sleep_rx=r'(?:准备.{0,8}(?:睡|躺平)|(?:我|先|要|去|准备|打算).{0,6}(?:睡觉|睡了|睡一觉|大睡|休息|补觉)|晚安|good ?night|going to bed|off to bed|going to sleep|need some sleep|我困了|睡不动了)'
+    return 'recent-explicit-sleep' if any(re.search(sleep_rx,s,re.I) for s in grouped) else ''
+
+def proactive_time_contradiction(text, at_ms=None):
+    now=now_ms() if at_ms is None else at_ms
+    if datetime.fromtimestamp(now/1000).hour>=5:
+        return False
+    return bool(re.search(r'(?:太阳.{0,10}(?:升到头顶|升到正头顶|晒屁股|已经当空|正当空)|(?:都|已经|这都|现在|马上|快).{0,5}(?:大中午|中午了|早上了|上午了|天亮了)|大白天了|早上好|good morning|good afternoon)',str(text or ''),re.I))
 CHAT_LOCK=threading.RLock()
 MAX_BODY=4*1024*1024
 DEFAULT_PRESETS = [
@@ -3664,6 +3701,8 @@ class Handler(BaseHTTPRequestHandler):
                     if cur_mode=='normal':return self.respond({'sent':[],'skipped':'no-api'})
                     if p_mode=='off' and trigger!='manual':return self.respond({'sent':[],'skipped':'off'})
                     now=now_ms()
+                    if trigger!='manual' and proactive_quiet_reason([],now):
+                        return self.respond({'delivered':[],'sent':[],'skipped':'overnight-quiet-hours'})
                     if trigger!='manual':
                         recent_ts=[ts for (pid_k,_),ts in PROACTIVE_LOG.items() if pid_k==p['id']]
                         if recent_ts and (now-max(recent_ts))<30*60*1000:
@@ -3674,6 +3713,10 @@ class Handler(BaseHTTPRequestHandler):
                         cid=r['character_id']
                         if target_cid and cid!=target_cid:continue
                         if cid not in BY_ID:continue
+                        recent_users=list(reversed([dict(x) for x in db.execute(
+                            "SELECT sender,mode,text,created_at FROM messages WHERE profile_id=? AND character_id=? AND mode='chat' AND sender='user' ORDER BY created_at DESC LIMIT 12",
+                            (p['id'],cid)).fetchall()]))
+                        if proactive_quiet_reason(recent_users,now,trigger=='manual'):continue
                         qv=queue_view(db,p['id'],cid)
                         if qv['status']=='inflight' or (trigger!='manual' and qv['count']>0):continue
                         unres=db.execute('SELECT * FROM episodic_memories WHERE owner_id=? AND profile_id=? AND unresolved=1 AND disputed=0 ORDER BY event_at DESC LIMIT 1',(cid,p['id'])).fetchone()
@@ -3681,17 +3724,42 @@ class Handler(BaseHTTPRequestHandler):
                             chosen.append((cid,BY_ID[cid],'promise' if unres else 'idle',dict(unres) if unres else None))
                     sent=[]
                     for cid,c,reason,unres in chosen[:1]:
+                        last_row=db.execute(
+                            'SELECT id FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1',
+                            (p['id'],cid)).fetchone()
+                        last_id=last_row['id'] if last_row else ''
                         engine='demo';txt=''
                         if cur_mode=='live':
                             try:
                                 ms=compile_messages(db,p,c,'chat')
                                 mem_hint=f"你翻看手机时，想起你们之前未聊完的话题或约定：「{unres['summary']}」。" if unres else "你在自己的世界里刚忙完手头的事，突然想起了对方。"
-                                ms.append({'role':'user','content':f"【系统事件：角色主动发消息】距离你们上次联系已经过了一段时间，{p['name']} 还没有发来新消息。{mem_hint}请以完全符合 {c['name']} 原作性格与当前关系状态的方式，主动给 {p['name']} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白）。"})
+                                ms.append({'role':'user','content':f"【系统事件：角色主动发消息】本地现在是 {datetime.fromtimestamp(now_ms()/1000).strftime('%Y-%m-%d %H:%M')}。凌晨不是上午或中午，不能把对方推断为已经睡到中午。距离你们上次联系已经过了一段时间，{p['name']} 还没有发来新消息。{mem_hint}请以完全符合 {c['name']} 原作性格与当前关系状态的方式，主动给 {p['name']} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白）。"})
                                 txt=completion(ms,log_meta={'mode':'chat','entryPoint':'chat_proactive','profile':p,'character':c});engine='live'
                             except Exception:continue
                         else:
                             txt=f"对了，{p['name']}。|||之前我们聊到的那件事，我刚才突然想起来了。|||你现在有空吗？" if unres else f"今天怎么这么安静？|||刚忙完手头的事，顺便看看你在不在。"
                             engine='demo'
+                        # A long model request must not send an obsolete proactive
+                        # reply after fresh user activity, a mode change or midnight.
+                        newer=db.execute(
+                            'SELECT id FROM messages WHERE profile_id=? AND character_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1',
+                            (p['id'],cid)).fetchone()
+                        new_id=newer['id'] if newer else ''
+                        active_rel=db.execute(
+                            'SELECT status,mode FROM relations WHERE profile_id=? AND character_id=?',
+                            (p['id'],cid)).fetchone()
+                        if new_id!=last_id or not active_rel or active_rel['status']!='matched' or active_rel['mode']!='chat':
+                            continue
+                        if trigger!='manual':
+                            latest_users=list(reversed([dict(x) for x in db.execute(
+                                "SELECT sender,mode,text,created_at FROM messages WHERE profile_id=? AND character_id=? AND mode='chat' AND sender='user' ORDER BY created_at DESC LIMIT 12",
+                                (p['id'],cid)).fetchall()]))
+                            if proactive_quiet_reason(latest_users,now_ms()):continue
+                            q_now=queue_view(db,p['id'],cid)
+                            if q_now['status']=='inflight' or q_now['count']>0:continue
+                        if proactive_time_contradiction(txt):
+                            PROACTIVE_LOG[(p['id'],cid)]=now_ms()
+                            continue
                         b_list=split_chat_bubbles(txt)[:3]
                         reps=[write_message(db,p['id'],cid,'ai','chat',b,engine) for b in b_list]
                         if reps:

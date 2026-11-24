@@ -45,6 +45,8 @@ jobs:
           python3 parallel_src/parallel_ai_date/tests/test_live_meeting_scene_location.py
           node tests/thread-typing-isolation.test.cjs
           node tests/phone-clock-sleep.test.cjs
+          node tests/m10-proactive-sleep-gate.test.cjs
+          python3 parallel_src/parallel_ai_date/tests/test_m10_proactive.py
           node tests/chat-backlog-recovery.test.cjs
           node tests/chat-photos.test.cjs
           node parallel_src/parallel_ai_date/tests/test_episode_archive.cjs

@@ -454,6 +454,36 @@
     const explicitlyRestingNow=/(?:我现在|现在就|这会儿|我先|我要|我准备|马上|立刻|刚好).{0,10}(?:睡觉|睡了|睡一觉|午睡|睡午觉|睡午觉了|睡午觉啦|休息|眯一会)|(?:我去睡了|我去睡觉|困得不行|要睡了)/.test(lastUsers);
     return '\n【白天讨论夜晚·情境校准】最近的短信涉及晚上、梦境或睡眠话题，但现在仍是'+(hour<12?'上午':'下午')+'。这些是谈论中的时间，不表示对方已经准备立刻睡觉或当前已经入夜。'+(explicitlyRestingNow?'对方最近可能明确提到当前要休息；可以尊重并自然回应，但不要把下午误写成夜晚。':'对方没有明确表示此刻要睡：不要把话题当作睡前告别，不要直接催其现在洗漱、钻被窝或以“晚安”结束当前聊天。可以自然说“今晚再说”“晚上做个好梦”，但必须保持时间指向正确。');
   }
+  // M10: background outreach must respect the phone owner's local night and
+  // an explicit recent request to sleep. This is a send gate, not an AI hint:
+  // the model cannot override it by narrating a different time of day.
+  // Manual "trigger now" is a deliberate user action and bypasses quiet hours.
+  function proactiveQuietReason(history,now=Date.now(),manual=false){
+    if(manual)return '';
+    const hour=new Date(now).getHours();
+    if(hour>=23||hour<8)return 'overnight-quiet-hours';
+    const rows=(Array.isArray(history)?history:[]).filter(m=>
+      m&&m.sender==='user'&&m.mode==='chat'&&!m.recalled&&m.engine!=='recalled'&&
+      Number.isFinite(Date.parse(m.created_at)));
+    const last=rows.at(-1);
+    if(!last)return '';
+    const latest=Date.parse(last.created_at);
+    if(latest>now+60000||now-latest>4*3600000)return '';
+    const grouped=rows.slice(-12).filter(m=>latest-Date.parse(m.created_at)<=15*60000&&
+      Date.parse(m.created_at)<=latest).map(m=>String(m.text||''));
+    const tail=String(last.text||'');
+    if(/(?:醒了|起床了|睡醒了|不睡了|还没睡|我不困|i(?:'| a)?m awake|woke up)/i.test(tail))return '';
+    if(grouped.some(s=>/(?:准备.{0,8}(?:睡|躺平)|(?:我|先|要|去|准备|打算).{0,6}(?:睡觉|睡了|睡一觉|大睡|休息|补觉)|(?:晚安|good ?night|going to bed|off to bed|going to sleep|need some sleep|我困了|睡不动了))/i.test(s)))
+      return 'recent-explicit-sleep';
+    return '';
+  }
+  // A conservative last-resort rejection for obviously impossible
+  // "it's noon / the sun is overhead" assertions during deep night.
+  // Do not rewrite AI text: suppress that proactive turn instead.
+  function proactiveTimeContradiction(text,now=Date.now()){
+    if(new Date(now).getHours()>=5)return false;
+    return /(?:太阳.{0,10}(?:升到头顶|升到正头顶|晒屁股|已经当空|正当空)|(?:都|已经|这都|现在|马上|快)(?:.{0,5})(?:大中午|中午了|早上了|上午了|天亮了)|大白天了|早上好|good morning|good afternoon)/i.test(String(text||''));
+  }
   function chatClockContext(history,now=Date.now()){
     const d=new Date(now),offset=-d.getTimezoneOffset(),sign=offset>=0?'+':'-',abs=Math.abs(offset);
     const zone='UTC'+sign+String(Math.floor(abs/60)).padStart(2,'0')+':'+String(abs%60).padStart(2,'0');
