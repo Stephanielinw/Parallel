@@ -1253,7 +1253,7 @@ def sync_surveillance_on_meeting_start(db,p,c,loc,meeting_id=''):
     rec['updated_at']=utc()
 
 
-def observed_meeting_segments(db,p,c,meeting_rec,date_str,live=False):
+def observed_meeting_segments(p,c,meeting_rec,date_str,live=False,db=None):
     """Day-scoped observed scene path; never render a speculative schedule as
     an actual move. A cross-midnight encounter creates segments on both days."""
     mid=str(meeting_rec.get('id') or '')
@@ -1283,7 +1283,7 @@ def observed_meeting_segments(db,p,c,meeting_rec,date_str,live=False):
         if condensed and condensed[-1][1]==loc:continue
         condensed.append((at,loc,message_id))
     segments=[]
-    stage_recaps={x['transition_message_id']:x for x in valid_meeting_scene_summaries(db,p,c,mid)}
+    stage_recaps={x['transition_message_id']:x for x in valid_meeting_scene_summaries(db,p,c,mid)} if db is not None else {}
     for i,(at,loc,_) in enumerate(condensed):
         until=condensed[i+1][0] if i+1<len(condensed) else finish
         transition_id=condensed[i+1][2] if i+1<len(condensed) else ''
@@ -1321,7 +1321,7 @@ def sync_surveillance_on_meeting_end(db,p,c,meeting_rec):
         date_str=date.isoformat()
         rec=get_or_init_surveillance(db,p,c,date_str)
         current_day=date==finish_dt.date()
-        actual=observed_meeting_segments(db,p,c,meeting_rec,date_str)
+        actual=observed_meeting_segments(p,c,meeting_rec,date_str,db=db)
         if actual:
             rec['slots']=overlay_actual_slots([x for x in rec['slots'] if not (x.get('meeting_id')==meeting_rec.get('id') and x.get('source')=='meeting')],actual)
         rec['live_override']=None
@@ -1621,7 +1621,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
         m_state=MEETING_STATE.get((p['id'],c['id']),{})
         history=refresh_meeting_scene_history(db,p,c)
         mid=m_state.get('active_meeting_id','')
-        observed=observed_meeting_segments(db,p,c,{
+        observed=observed_meeting_segments(p,c,{
             'id':mid,'started_at':m_state.get('meeting_started_at') or utc(),
             'ended_at':utc(),'location':current['location'],
             'location_history':history
