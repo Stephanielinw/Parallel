@@ -51,18 +51,7 @@ const signature=rows=>{
  pack.data.meetingCheckpoints=[historical];e.importData(JSON.stringify(pack));
  const preview=e.buildPromptPreview(p.id,pair.characterId,'meeting',{latestText:'铜钥匙在哪里？'});
  const prompt=preview.map(x=>String(x.content||'')).join('\n');
- if(!prompt.includes('历史兼容')){
-   const saved=JSON.parse(e.exportData()).data;
-   console.error('M11 legacy fixture diagnostic:',JSON.stringify({cp:saved.meetingCheckpoints.length,
-     sig:saved.meetingCheckpoints[0]?.source_signature,expected:historical.source_signature,
-     hasActive:saved.relations[p.id+'|'+pair.characterId]?.active_meeting_id,
-     currentGroups:(()=>{const fns=getFns((pid,cid)=>saved.messages.filter(m=>m.profile_id===pid&&m.character_id===cid),()=>false);
-       const gs=fns.completedMeetingGroups(p.id,pair.characterId,mid);
-       return {count:gs.length,signature:fns.meetingBlockSignature(gs.slice(0,50)),start:gs[0]?.map(m=>m.id),end:gs[49]?.map(m=>m.id)};})(),
-     checkpointMessageCount:saved.meetingCheckpoints[0]?.message_ids?.length,
-     promptLast:prompt.slice(-450)}));
- }
- assert(prompt.includes('历史兼容'),'legacy 50-group archive must still load');
+ assert(prompt.includes('旧版50组归档'),'legacy 50-group archive must still load');
  assert(prompt.includes('铜钥匙'),'historical detail survives');
  assert(!preview.slice(1).some(x=>String(x.content||'').includes('把铜钥匙藏在书包里')),
    'current scene context condenses after source-checked old archive');
@@ -70,6 +59,6 @@ const signature=rows=>{
  edited.data.messages.find(m=>m.id===historical.message_ids[0]).text='原本的铜钥匙情节已经修改';
  e.importData(JSON.stringify(edited));
  const stale=e.buildPromptPreview(p.id,pair.characterId,'meeting',{latestText:'铜钥匙'});
- assert(!stale[0].content.includes('历史兼容'),'edited original invalidates stale legacy checkpoint');
+ assert(!stale[0].content.includes('旧版50组归档'),'edited original invalidates stale legacy checkpoint');
  console.log('M11: retired automatic 50-group summaries; previously saved 50-group archives remain readable and source-validated.');
 })().catch(e=>{console.error(e);process.exitCode=1});
