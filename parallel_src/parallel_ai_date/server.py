@@ -182,6 +182,10 @@ def init_db():
         meeting_cols={r['name'] for r in db.execute('PRAGMA table_info(meetings)')}
         if 'location_history' not in meeting_cols:
             db.execute("ALTER TABLE meetings ADD COLUMN location_history TEXT NOT NULL DEFAULT '[]'")
+        # M08: additive compatibility metadata. Never rebuild or delete existing SQLite meetings.
+        for name in ('summary_source','summary_edited_at'):
+            if name not in meeting_cols:
+                db.execute("ALTER TABLE meetings ADD COLUMN "+name+" TEXT NOT NULL DEFAULT ''")
         # A server restart cannot leave a real request in flight.
         for row in db.execute("SELECT * FROM chat_queue WHERE status='inflight'").fetchall():
             sources=parse_json(row['inflight_sources'],[]);pending=parse_json(row['pending'],[])
@@ -2043,15 +2047,15 @@ def summarize_complete_meeting(p,c,m_msgs,location,db=None):
     ],p,c)
     return {'summary':final}
 
-def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary=''):
+def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary='',manual=False):
     if ai_summary and len(str(ai_summary).strip())>=6:
-        return strip_protocol_tags(str(ai_summary),preserve_paragraphs=False)[:850]
+        return str(ai_summary).strip() if manual else strip_protocol_tags(str(ai_summary),preserve_paragraphs=False)[:850]
     # Never advertise a concatenation of first and last messages as real memory.
     return '本次见面原文已完整保存，剧情小结尚未生成成功；可点击「重新整理整场梗概」补全。'
 
-def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
+def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary='',summary_source=''):
     if not m_msgs:return None
-    existed=db.execute('SELECT * FROM meetings WHERE id=?',(meeting_id,)).fetchone()
+    existed=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(meeting_id,p['id'],c['id'])).fetchone()
     state=MEETING_STATE.get((p['id'],c['id']),{})
     is_active=state.get('active_meeting_id')==meeting_id
     stored_history=parse_json(existed['location_history'],[]) if existed else []
@@ -2061,12 +2065,20 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
     started_at=(existed['started_at'] if existed else '') or m_msgs[0]['created_at'] or utc()
     ended_at=m_msgs[-1]['created_at'] or utc()
     time_str=str(started_at)[:16].replace('T',' ')
-    ai_sum=ai_summary or (existed['ai_summary'] if existed and len(parse_json(existed['message_ids'],[]))==len(m_msgs) else '')
-    summary=build_meeting_summary_text(p,c,loc,m_msgs,ai_sum)
     entries=[{'id':m['id'],'sender':m['sender'],'speaker':p['name'] if m['sender']=='user' else c['name'],'text':str(m.get('text','')) if m['sender']=='user' else clean_meeting_novel_text(m['text']),'created_at':m['created_at']} for m in m_msgs]
     msg_ids=[m['id'] for m in m_msgs]
-    db.execute('''INSERT OR REPLACE INTO meetings (id,profile_id,character_id,location,time,started_at,ended_at,summary,ai_summary,message_ids,entries,location_history)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',(meeting_id,p['id'],c['id'],loc,time_str,started_at,ended_at,summary,ai_sum,js(msg_ids),js(entries),js(history)))
+    previous_entries=parse_json(existed['entries'],[]) if existed else []
+    unchanged=bool(existed and parse_json(existed['message_ids'],[])==msg_ids and len(previous_entries)==len(entries) and all(
+        x.get('id')==y['id'] and x.get('text')==y['text'] for x,y in zip(previous_entries,entries)
+    ))
+    explicit_summary=str(ai_summary or '').strip()
+    ai_sum=explicit_summary or (str(existed['ai_summary'] or '') if unchanged else '')
+    manual=bool(ai_sum) and (summary_source=='manual' or (not explicit_summary and unchanged and existed['summary_source']=='manual'))
+    summary=build_meeting_summary_text(p,c,loc,m_msgs,ai_sum,manual)
+    source='manual' if manual else ('ai' if ai_sum else 'fallback')
+    edited_at=(utc() if summary_source=='manual' else str(existed['summary_edited_at'] or '')) if manual else ''
+    db.execute('''INSERT OR REPLACE INTO meetings (id,profile_id,character_id,location,time,started_at,ended_at,summary,ai_summary,message_ids,entries,location_history,summary_source,summary_edited_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(meeting_id,p['id'],c['id'],loc,time_str,started_at,ended_at,summary,ai_sum,js(msg_ids),js(entries),js(history),source,edited_at))
     rec={
         'id':meeting_id,
         'profile_id':p['id'],
@@ -2078,6 +2090,8 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary=''):
         'ended_at':ended_at,
         'summary':summary,
         'ai_summary':ai_sum,
+        'summary_source':source,
+        'summary_edited_at':edited_at,
         'message_ids':msg_ids,
         'entries':entries
     }
@@ -3708,7 +3722,7 @@ class Handler(BaseHTTPRequestHandler):
                             if resume_mid:
                                 m_state['meeting_location_history'].append({'at':utc(),'location':m_state['meeting_location'],'source':'resume'})
                             if prior:
-                                db.execute('UPDATE meetings SET ai_summary=? WHERE id=?',('',resume_mid))
+                                db.execute("UPDATE meetings SET ai_summary='',summary_source='',summary_edited_at='' WHERE id=? AND profile_id=? AND character_id=?",(resume_mid,p['id'],cid))
                                 db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(cid,p['id'],'meeting:'+resume_mid))
                             if resume_mid:
                                 rec=get_or_init_surveillance(db,p,c)
