@@ -52,8 +52,14 @@ for (const c of index.contracts) {
     assert(fs.existsSync(path.join(root,c.tests[0])),'WebKit regression file missing');
     assert(workflow.includes('npx playwright test -c playwright.m02.config.ts'),
       'WebKit test must be an actual GitHub Actions release gate');
-    assert(workflow.includes('npx playwright install --with-deps webkit'),
-      'WebKit browser binary must actually be installed on CI');
+    // M08 may use either direct browser installation or Microsoft's pinned
+    // browser + OS-dependency image. Both must still run the real WebKit suite.
+    const installsOnHost=workflow.includes('npx playwright install --with-deps webkit');
+    const usesPreinstalledBrowser=workflow.includes('mcr.microsoft.com/playwright:v1.57.0-noble') &&
+      workflow.includes('docker run --rm --ipc=host') &&
+      workflow.includes('@playwright/test@1.57.0');
+    assert(installsOnHost||usesPreinstalledBrowser,
+      'CI must provide a real matching WebKit binary, via Playwright install or pinned image');
     assert(/物理|iPhone/.test(c.note),'must not claim physical-device testing');
     linked++;
   } else {
