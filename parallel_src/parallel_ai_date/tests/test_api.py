@@ -169,6 +169,54 @@ class ParallelAPITest(unittest.TestCase):
         self.assertIn('Leon',photo['description'])
         self.assertNotIn('portrait',photo)
 
+    def test_03c_m08_python_browser_manual_recap_contract(self):
+        """The local SQLite UI must not silently diverge from the portable recap editor."""
+        p=self.create('M08 Recap Test')
+        cid='re-game:carlos:re3'
+        mid='meet_'+server.uid()
+        msg_id=server.uid()
+        initial=server.utc()
+        with server.connect() as db:
+            db.execute('INSERT OR REPLACE INTO relations (profile_id,character_id,status,mode,attempts,updated_at) VALUES (?,?,?,?,?,?)',
+                       (p['id'],cid,'matched','chat',0,initial))
+            db.execute('INSERT INTO messages (id,profile_id,character_id,sender,mode,text,engine,created_at,meeting_id) VALUES (?,?,?,?,?,?,?,?,?)',
+                       (msg_id,p['id'],cid,'user','meeting','今天在学校门口见面，聊了剪辑。','demo',initial,mid))
+            full=server.profile_get(db,p['id'])
+            message=dict(db.execute('SELECT * FROM messages WHERE id=?',(msg_id,)).fetchone())
+            server.upsert_meeting_record(db,full,server.BY_ID[cid],mid,[message],'学校门口')
+            db.commit()
+
+        recap='我们在学校门口见面，确认今晚各自回家。' * 80 + '\\n第二天的见面还没有约定。'
+        self.assertGreater(len(recap),850)
+        saved=self.call('/meeting-summary-save',{'profileId':p['id'],'characterId':cid,'meetingId':mid,'summary':recap})
+        self.assertTrue(saved['ok'])
+        self.assertEqual(saved['meetingRecord']['summary'],recap)
+        self.assertEqual(saved['meetingRecord']['summary_source'],'manual')
+        self.assertTrue(saved['meetingRecord']['summary_edited_at'])
+        self.assertEqual(saved['meetingRecord']['entries'][0]['text'],'今天在学校门口见面，聊了剪辑。')
+        self.assertEqual(self.call('/meeting-summary-refresh',{'profileId':p['id'],'characterId':cid,'meetingId':mid},400)['error'],
+                         '已存在手动总结，需要确认后才能让 AI 覆盖')
+        self.assertIn('6–4000',self.call('/meeting-summary-save',{'profileId':p['id'],'characterId':cid,'meetingId':mid,'summary':'   '},400)['error'])
+        self.assertIn('未找到当前角色',self.call('/meeting-summary-save',
+                            {'profileId':p['id'],'characterId':'re-game:leon:re2','meetingId':mid,'summary':recap},400)['error'])
+
+        loaded=self.call('/thread?profileId='+p['id']+'&characterId='+cid)
+        record=next(m for m in loaded['meetings'] if m['id']==mid)
+        self.assertEqual(record['summary'],recap)
+        self.assertEqual(record['summary_source'],'manual')
+        self.assertEqual(record['ai_summary'],recap)
+        with server.connect() as db:
+            row=db.execute('SELECT text FROM messages WHERE id=?',(msg_id,)).fetchone()
+            self.assertEqual(row['text'],'今天在学校门口见面，聊了剪辑。')
+            cols={x['name'] for x in db.execute('PRAGMA table_info(meetings)')}
+            self.assertTrue({'summary_source','summary_edited_at'}.issubset(cols))
+            db.execute('UPDATE messages SET text=? WHERE id=?',('修正：那天其实没有在学校见面。',msg_id))
+            db.commit()
+        changed=self.call('/thread?profileId='+p['id']+'&characterId='+cid)
+        after=next(m for m in changed['meetings'] if m['id']==mid)
+        self.assertEqual(after['summary_source'],'fallback','A changed primary source must invalidate a manual recap')
+        self.assertNotEqual(after['summary'],recap)
+
     def test_04_terminal_and_presets(self):
         x=self.call('/settings',{'base_url':'https://example.org/v1','api_key':'test-secret-abc','model':'test-model','temperature':1.15,'top_p':.7,'image_base_url':'https://img.example.org/v1','image_api_key':'img-secret-xyz','image_model':'image-test'})['settings']
         self.assertTrue(x['has_key']);self.assertNotIn('api_key',x)
