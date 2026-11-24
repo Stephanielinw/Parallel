@@ -106,6 +106,25 @@ for(const [field,expr] of [
 assert(!src.includes('state.diarySummaryMap[cid]'),'unscoped diary summary is forbidden');
 assert(!src.includes('state.surveillanceMap[cid]'),'unscoped surveillance is forbidden');
 assert(!src.includes('state.draftInputs[state.threadId]'),'unscoped drafts are forbidden');
+// A gallery ref from two different Profiles must not share a preview cache.
+const photoSnippet=src.slice(src.indexOf('const chatPhotoCache=new Map();'),src.indexOf('async function hydrateChatPhotos()'));
+const scopedPhotos=new Function('state','chatPhotoAsset','esc',
+  photoSnippet+'return {chatPhotoCache,chatPhotoKey,renderChatPhoto};')(
+  state,()=>'',String
+);
+const sameRef='possibly-restored-reference';
+const photoA=scopedPhotos.chatPhotoKey('p1','re-game:carlos:re3',sameRef);
+const photoB=scopedPhotos.chatPhotoKey('p2','re-game:carlos:re3',sameRef);
+assert.notEqual(photoA,photoB,'photo preview is Profile-scoped even when ref collides');
+scopedPhotos.chatPhotoCache.set(photoA,'data:image/jpeg;base64,AAA');
+state.activeId='p2';state.threadId='re-game:carlos:re3';
+assert(!scopedPhotos.renderChatPhoto({id:'photo-from-b',photo_kind:'gallery',photo_ref:sameRef,sender:'user'}).includes('base64,AAA'),
+  'the second Profile must not display the first Profile photo');
+scopedPhotos.chatPhotoCache.set(photoB,'data:image/jpeg;base64,BBB');
+assert(scopedPhotos.renderChatPhoto({id:'photo-from-b',photo_kind:'gallery',photo_ref:sameRef,sender:'user'}).includes('base64,BBB'),
+  'each Profile retrieves its own gallery preview');
+assert(src.includes('if(loadedThreadPair!==typingPair(pid,cid))++modalRequestSeq;'),
+  'switching character invalidates old async modal before network response');
 const workflow=read('.github/workflows/pages.yml');
 assert(workflow.includes('node tests/m07-ui-state-isolation.test.cjs'));
 console.log('M07: two-Profile same-character drafts, modal epochs, identity switch cleanup and source guards passed.');
