@@ -216,7 +216,7 @@
       updated_at:stamp()
     };
     save();
-    let engine='demo',warning='',txt='',apiError=null;
+    let engine='demo',warning='',txt='',apiError=null,sceneTurn=null,sceneLocation=null;
     if(curMode==='live'){
       try{
         const compiled=prompt(p,c,mode,[],{entry_point:ep,latestText:userMsg?.text||(existingTs?.latest_text||'')});
@@ -228,12 +228,26 @@
           task_id:taskId,
           retry_of_task_id:retryOfTaskId,
           attempt,
-          signal:abortCtrl?.signal
+          signal:abortCtrl?.signal,
+          ...(mode==='meeting'?{json_mode:true,omit_response_format:true,skip_json_gateway:true}: {})
         });
         if(mode==='chat')txt=await verifyGeneratedMeetingDetail(p,c,compiled,txt,{
           profile:p,character:c,task_id:taskId,
           retry_of_task_id:retryOfTaskId,attempt,signal:abortCtrl?.signal
         });
+        if(mode==='meeting'){
+          const known=activeMeetingLocationHistory(p,c).at(-1)?.location||
+            r?.meeting_location||'约定的见面地点';
+          sceneTurn=parseMeetingSceneTurn(txt,known);
+          txt=sceneTurn.text;
+          sceneLocation=resolveMeetingSceneTurnLocation(p,c,sceneTurn,known,userMsg);
+          // Compatibility for older providers that ignore structured hints.
+          // Never let their raw text / a guessed schedule set the scene.
+          if(!sceneTurn.structured&&sceneLocation.location===known){
+            const actual=await classifyMeetingMovement(p,c,txt,known,{signal:abortCtrl?.signal});
+            if(actual?.location)sceneLocation=actual;
+          }
+        }
         engine='live';
       }catch(e){
         warning=String(e.message||e);
@@ -241,13 +255,11 @@
         engine='error';
       }
     }else txt=demo(p,c,mode);
-    // Evaluate every successful meeting reply for physical location changes.
-    // The inexpensive local check runs every turn; a second model is queried
-    // only when text indicates an ambiguous completed spatial transition.
-    let sceneLocation=null;
-    if(mode==='meeting'&&engine!=='error'&&txt){
+    if(mode==='meeting'&&engine==='demo'&&txt){
       const known=activeMeetingLocationHistory(p,c).at(-1)?.location||r?.meeting_location||'约定的见面地点';
-      sceneLocation=await classifyMeetingMovement(p,c,cleanMeetingNovelText(txt),known,{signal:abortCtrl?.signal});
+      sceneTurn=parseMeetingSceneTurn(txt,known);
+      txt=sceneTurn.text;
+      sceneLocation=resolveMeetingSceneTurnLocation(p,c,sceneTurn,known,userMsg);
     }
     inflightControllers.delete(tKey);
     const curRel=relation(p.id,c.id);
@@ -286,12 +298,14 @@
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai',mode,bTxt,engine));
     const reply=replies[replies.length-1]||null;
     if(reply&&mode==='meeting'){
-      if(sceneLocation?.location){
-        reply.scene_location=sceneLocation.location;
-        reply.scene_location_evidence=sceneLocation.evidence;
-        reply.scene_location_kind=sceneLocation.kind;
-        reply.scene_location_signature=meetingSceneSignature(reply.text);
-      }
+      // Every successful turn carries an explicit scene position, even if the
+      // character stayed put. The prose and label are stored separately.
+      reply.scene_location=sceneLocation?.location||
+        activeMeetingLocationHistory(p,c).at(-1)?.location||r.meeting_location;
+      reply.scene_location_evidence=sceneLocation?.evidence||'';
+      reply.scene_location_kind=sceneLocation?.kind||'stable';
+      reply.scene_location_signature=meetingSceneSignature(reply.text);
+      reply.scene_location_structured=Boolean(sceneTurn?.structured);
       const history=activeMeetingLocationHistory(p,c);
       const rec=getOrInitSurveillance(p,c,localDateStr(reply.created_at));
       if(rec.live_override&&rec.live_override.meeting_id===activeMid){
@@ -309,8 +323,8 @@
     }
     save();
     if(mode==='meeting'&&reply&&activeMid){
-      try{await ensureMeetingCheckpoints(p,c,activeMid);}
-      catch(err){recordBgError(p.id,c.id,'meeting_checkpoint',err.apiError||{message:String(err.message||err)});}
+      try{await ensureMeetingSceneSummaries(p,c,activeMid);}
+      catch(err){recordBgError(p.id,c.id,'meeting_scene_checkpoint',err.apiError||{message:String(err.message||err)});}
     }
     return {reply,replies,warning:'',apiError:null};
   }
