@@ -92,6 +92,8 @@ jobs:
           python3 -m unittest parallel_src/parallel_ai_date/tests/test_api.py
       - name: Build
         run: npm run build -- --base=/Parallel/
+      - name: M08 actual release variant parity
+        run: node tests/m08-release-output.test.cjs
       - name: Check required browser assets and privacy guard
         run: |
           test -f dist/index.html
