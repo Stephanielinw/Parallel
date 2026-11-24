@@ -1253,7 +1253,7 @@ def sync_surveillance_on_meeting_start(db,p,c,loc,meeting_id=''):
     rec['updated_at']=utc()
 
 
-def observed_meeting_segments(p,c,meeting_rec,date_str,live=False):
+def observed_meeting_segments(db,p,c,meeting_rec,date_str,live=False):
     """Day-scoped observed scene path; never render a speculative schedule as
     an actual move. A cross-midnight encounter creates segments on both days."""
     mid=str(meeting_rec.get('id') or '')
@@ -1275,16 +1275,19 @@ def observed_meeting_segments(p,c,meeting_rec,date_str,live=False):
         except (ValueError,TypeError):continue
         if at<begin:at=begin
         if at>finish:continue
-        validated.append((at,str(event['location'])))
+        validated.append((at,str(event['location']),str(event.get('message_id') or '')))
     if not validated:return []
     validated.sort(key=lambda x:x[0])
     condensed=[]
-    for at,loc in validated:
+    for at,loc,message_id in validated:
         if condensed and condensed[-1][1]==loc:continue
-        condensed.append((at,loc))
+        condensed.append((at,loc,message_id))
     segments=[]
-    for i,(at,loc) in enumerate(condensed):
+    stage_recaps={x['transition_message_id']:x for x in valid_meeting_scene_summaries(db,p,c,mid)}
+    for i,(at,loc,_) in enumerate(condensed):
         until=condensed[i+1][0] if i+1<len(condensed) else finish
+        transition_id=condensed[i+1][2] if i+1<len(condensed) else ''
+        recap=stage_recaps.get(transition_id)
         lo=max(begin,at,start_day)
         hi=min(finish,until,end_day-timedelta(seconds=1))
         if hi<lo:continue
@@ -1295,7 +1298,7 @@ def observed_meeting_segments(p,c,meeting_rec,date_str,live=False):
             'id':'slot_real_meeting_'+mid+'_'+str(i)+'_'+date_str,
             'start':start_s,'end':end_s,'location':loc,'status':'线下见面足迹',
             'activity':'与 '+p['name']+' 在「'+loc+'」实际见面',
-            'scene':str(meeting_rec.get('summary') or c['name']+'在此处的已确认现场行动')[:150],
+            'scene':str(recap['summary'] if recap else c['name']+'在「'+loc+'」的现场原文已保存，场景小结尚未生成。')[:550],
             'source':'meeting','meeting_id':mid
         })
     if live and segments:segments[-1]['id']='live_meeting_'+mid
@@ -1318,7 +1321,7 @@ def sync_surveillance_on_meeting_end(db,p,c,meeting_rec):
         date_str=date.isoformat()
         rec=get_or_init_surveillance(db,p,c,date_str)
         current_day=date==finish_dt.date()
-        actual=observed_meeting_segments(p,c,meeting_rec,date_str)
+        actual=observed_meeting_segments(db,p,c,meeting_rec,date_str)
         if actual:
             rec['slots']=overlay_actual_slots([x for x in rec['slots'] if not (x.get('meeting_id')==meeting_rec.get('id') and x.get('source')=='meeting')],actual)
         rec['live_override']=None
@@ -1618,7 +1621,7 @@ def build_surveillance_payload(db,p,c,requested_date=''):
         m_state=MEETING_STATE.get((p['id'],c['id']),{})
         history=refresh_meeting_scene_history(db,p,c)
         mid=m_state.get('active_meeting_id','')
-        observed=observed_meeting_segments(p,c,{
+        observed=observed_meeting_segments(db,p,c,{
             'id':mid,'started_at':m_state.get('meeting_started_at') or utc(),
             'ended_at':utc(),'location':current['location'],
             'location_history':history
