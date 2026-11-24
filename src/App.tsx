@@ -1,5 +1,7 @@
 import { useEffect } from 'react';
 
+declare const __PARALLEL_ASSET_REV__: string;
+
 let booted = false;
 
 export default function App() {
