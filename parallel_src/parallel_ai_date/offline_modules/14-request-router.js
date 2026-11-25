@@ -591,7 +591,7 @@
           if(r.mode==='meeting')confirmActiveMeetingLocation(p,c,locInput);
           else r.meeting_location=locInput;
         }
-        let meetingRecord=null,openingReply=null,warning='',apiError=null,taskState=null;
+        let meetingRecord=null,openingReply=null,warning='',apiError=null,taskState=null,summaryError=null;
         if(r.mode!==m){
           clearQueue(p.id,c.id);
           clearTaskStatesForPair(p.id,c.id);
@@ -666,16 +666,8 @@
             }
             if(mMsgs.length){
               const mid=activeMid||mMsgs[0].meeting_id||('meet_'+mMsgs[0].id);
-              let aiSum='',aiLoc=r.meeting_location||''; // scene authority, never stale finale UI payload
-              if(data.finalizeMeeting===true&&pub().mode==='live'){
-                try{
-                  const parsed=await summarizeCompleteMeeting(p,c,mMsgs,aiLoc);
-                  if(parsed?.summary)aiSum=String(parsed.summary).trim().slice(0,850);
-                }catch(e){
-                  recordBgError(p.id,c.id,'meeting_finalize',e.apiError||{message:String(e.message||e)});
-                }
-              }
-              meetingRecord=upsertMeetingRecord(p,c,mid,mMsgs,aiLoc,aiSum,finishedAt);
+              const aiLoc=r.meeting_location||''; // scene authority, never stale finale UI payload
+              meetingRecord=upsertMeetingRecord(p,c,mid,mMsgs,aiLoc,'',finishedAt);
               if(meetingRecord)syncSurveillanceOnMeetingEnd(p,c,meetingRecord);
             }
             r.mode='chat';
@@ -683,9 +675,25 @@
             r.meeting_started_at='';
             r.updated_at=finishedAt;
             clearTaskState(p.id,c.id,'meeting');
-            if(meetingRecord)await replanRemainingDayAfterMeeting(p,c,meetingRecord);
             event(p.id,c.id,'return','与 '+p.name+' 返回手机聊天',Date.parse(finishedAt));
             db.events.at(-1).meeting_id=activeMid;
+            save(); // persist actual finish and raw transcript before any paid call
+            if(meetingRecord&&data.finalizeMeeting===true&&pub().mode==='live'){
+              try{
+                const parsed=await summarizeCompleteMeeting(p,c,mMsgs,meetingRecord.location,meetingRecord);
+                const current=(db.meetings||[]).find(x=>x.id===meetingRecord.id&&x.profile_id===p.id&&x.character_id===c.id);
+                if(!parsed?.summary)throw Error('未收到有效小结');
+                if(!archiveStoredCurrent()||r.mode!=='chat'||!current||current.finished_at!==finishedAt||current.summary_source==='manual')throw Error('见面记录在整理期间已变化，未覆盖当前记录');
+                const latest=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===current.id);
+                if(latest.map(x=>x.id+'='+x.text).join('\n')!==mMsgs.map(x=>x.id+'='+x.text).join('\n'))throw Error('原文已变化，请重新整理');
+                meetingRecord=upsertMeetingRecord(p,c,current.id,latest,current.location,String(parsed.summary).trim().slice(0,850),finishedAt);
+                clearBgError(p.id,c.id,'meeting_finalize');save();
+              }catch(e){
+                summaryError=e.apiError||{message:String(e.message||e)};
+                recordBgError(p.id,c.id,'meeting_finalize',summaryError);
+              }
+            }
+            if(meetingRecord)await replanRemainingDayAfterMeeting(p,c,meetingRecord);
           }
         }else if(m==='meeting'&&r.active_meeting_id){
           if(locInput)syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
@@ -693,7 +701,7 @@
           if(mMsgs.length)meetingRecord=upsertMeetingRecord(p,c,r.active_meeting_id,mMsgs,r.meeting_location||'');
         }
         save();
-        return {mode:m,meetingId:r.active_meeting_id||'',active_meeting_id:r.active_meeting_id||'',location:r.meeting_location||'',meeting_location:r.meeting_location||'',meetingRecord,openingReply,warning,apiError,taskState,surveillance:buildSurveillancePayload(p,c)};
+        return {mode:m,meetingId:r.active_meeting_id||'',active_meeting_id:r.active_meeting_id||'',location:r.meeting_location||'',meeting_location:r.meeting_location||'',meetingRecord,openingReply,warning,apiError,taskState,summaryError,surveillance:buildSurveillancePayload(p,c)};
       }
       // Manually pasted recaps remain a user-controlled index; source scene text stays canonical.
       case '/meeting-summary-save':{
@@ -723,13 +731,13 @@
         if(!mMsgs.length)bodyErr('原始见面记录不可用，无法重新整理');
         if(!archiveStoredCurrent())bodyErr('存档已在另一页面更新，请先刷新页面');
         const signature=mMsgs.map(x=>x.id+'='+x.text).join('\n');
-        const parsed=await summarizeCompleteMeeting(p,c,mMsgs,existing.location||'');
+        const parsed=await summarizeCompleteMeeting(p,c,mMsgs,existing.location||'',existing);
         if(!archiveStoredCurrent())bodyErr('整理期间存档被其他页面修改，请刷新后再试');
         const latest=(db.messages||[]).filter(x=>x.mode==='meeting'&&x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid);
         if(latest.map(x=>x.id+'='+x.text).join('\n')!==signature)bodyErr('见面原文已更新，请重新整理');
         if(String(existing.summary_edited_at||'')!==editVersion)bodyErr('整理期间手动总结已更新，已取消本次覆盖');
         const rec=upsertMeetingRecord(p,c,mid,latest,existing.location||'',parsed.summary,existing.finished_at||'');
-        save();
+        clearBgError(p.id,c.id,'meeting_finalize');save();
         return {ok:true,meetingRecord:rec};
       }
       case '/chat-flush':{

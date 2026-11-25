@@ -221,7 +221,7 @@ def init_db():
         if 'location_history' not in meeting_cols:
             db.execute("ALTER TABLE meetings ADD COLUMN location_history TEXT NOT NULL DEFAULT '[]'")
         # M08: additive compatibility metadata. Never rebuild or delete existing SQLite meetings.
-        for name in ('summary_source','summary_edited_at'):
+        for name in ('summary_source','summary_edited_at','finished_at'):
             if name not in meeting_cols:
                 db.execute("ALTER TABLE meetings ADD COLUMN "+name+" TEXT NOT NULL DEFAULT ''")
         # A server restart cannot leave a real request in flight.
@@ -2139,7 +2139,7 @@ def build_meeting_summary_text(p,c,loc,m_msgs,ai_summary='',manual=False):
     # Never advertise a concatenation of first and last messages as real memory.
     return '本次见面原文已完整保存，剧情小结尚未生成成功；可点击「重新整理整场梗概」补全。'
 
-def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary='',summary_source=''):
+def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary='',summary_source='',finished_at=''):
     if not m_msgs:return None
     existed=db.execute('SELECT * FROM meetings WHERE id=? AND profile_id=? AND character_id=?',(meeting_id,p['id'],c['id'])).fetchone()
     state=MEETING_STATE.get((p['id'],c['id']),{})
@@ -2148,8 +2148,9 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary='',s
     history=list(state.get('meeting_location_history') or []) if is_active else stored_history
     loc=(history[-1].get('location') if history else '') or str(custom_loc or (existed['location'] if existed else '')).strip()
     if not loc:loc=infer_meeting_location(db,p['id'],c['id'],'')
-    started_at=(existed['started_at'] if existed else '') or m_msgs[0]['created_at'] or utc()
-    ended_at=m_msgs[-1]['created_at'] or utc()
+    started_at=(state.get('meeting_started_at') if is_active else '') or (existed['started_at'] if existed else '') or m_msgs[0]['created_at'] or utc()
+    actual_finish=finished_at or (existed['finished_at'] if existed else '')
+    ended_at=actual_finish or m_msgs[-1]['created_at'] or started_at
     time_str=str(started_at)[:16].replace('T',' ')
     entries=[{'id':m['id'],'sender':m['sender'],'speaker':p['name'] if m['sender']=='user' else c['name'],'text':str(m.get('text','')) if m['sender']=='user' else clean_meeting_novel_text(m['text']),'created_at':m['created_at']} for m in m_msgs]
     msg_ids=[m['id'] for m in m_msgs]
@@ -2163,8 +2164,8 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary='',s
     summary=build_meeting_summary_text(p,c,loc,m_msgs,ai_sum,manual)
     source='manual' if manual else ('ai' if ai_sum else 'fallback')
     edited_at=(utc() if summary_source=='manual' else str(existed['summary_edited_at'] or '')) if manual else ''
-    db.execute('''INSERT OR REPLACE INTO meetings (id,profile_id,character_id,location,time,started_at,ended_at,summary,ai_summary,message_ids,entries,location_history,summary_source,summary_edited_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(meeting_id,p['id'],c['id'],loc,time_str,started_at,ended_at,summary,ai_sum,js(msg_ids),js(entries),js(history),source,edited_at))
+    db.execute('''INSERT OR REPLACE INTO meetings (id,profile_id,character_id,location,time,started_at,ended_at,summary,ai_summary,message_ids,entries,location_history,summary_source,summary_edited_at,finished_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(meeting_id,p['id'],c['id'],loc,time_str,started_at,ended_at,summary,ai_sum,js(msg_ids),js(entries),js(history),source,edited_at,actual_finish))
     rec={
         'id':meeting_id,
         'profile_id':p['id'],
@@ -2174,6 +2175,7 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary='',s
         'time':time_str,
         'started_at':started_at,
         'ended_at':ended_at,
+        'finished_at':actual_finish,
         'summary':summary,
         'ai_summary':ai_sum,
         'summary_source':source,
@@ -2192,7 +2194,7 @@ def upsert_meeting_record(db,p,c,meeting_id,m_msgs,custom_loc='',ai_summary='',s
         source_type='meeting_summary',
         source_key='meeting:'+meeting_id,
         knowledge_mode='experienced',
-        summary=f"和 {p['name']} 在「{loc}」见面：{summary}",
+        summary=f"和 {p['name']} 在「{loc}」见面（开始：{chat_clock_label(started_at)}；确认结束：{chat_clock_label(actual_finish) if actual_finish else '未记录'}；末次互动：{chat_clock_label(m_msgs[-1]['created_at'])}）：{summary}",
         tags=[loc,'见面']+extract_memory_tags(summary,5),
         importance=4,
         emotional_weight=4,
@@ -3242,7 +3244,7 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
     meeting=candidates[0]
     summary=str(meeting.get('ai_summary') or meeting.get('summary') or '').strip()[:500]
     overview=("\n\n【过去真实见面的原始记录索引 · 不是 AI 生成的事实小结】\n"
-              +str(meeting.get('started_at',''))[:16]+" 至 "+str(meeting.get('ended_at',''))[:16]
+              +chat_clock_label(meeting.get('started_at',''))+" 至 "+(chat_clock_label(meeting['finished_at']) if meeting.get('finished_at') else '结束未记录（末次互动 '+chat_clock_label(meeting.get('ended_at',''))+'）')
               +"，与 "+p['name']+" 有一场保存了现场原文的见面。AI 整理摘要可能有推断，已从提示词移除。"
               +"共同到访、吃饭、回家和具体台词，必须由保存的现场原文证实；约定、监控与总结均不是证据。")
     entries=[e for e in parse_json(meeting.get('entries'),[]) if isinstance(e,dict) and e.get('sender') in ('user','ai')
@@ -3309,7 +3311,7 @@ def recent_actual_meeting_context(db,p,c,query='',at=0):
         used+=len(line);parts.append(line)
     if not parts:return overview
     return (overview+"\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下只属于你与 "+p['name']+
-        " 的这一场见面，不属于任何其他角色实例；发生时间 "+str(meeting.get('started_at',''))[:16]+" 至 "+str(meeting.get('ended_at',''))[:16]+"。\n"+
+        " 的这一场见面，不属于任何其他角色实例；发生时间 "+chat_clock_label(meeting.get('started_at',''))+" 至 "+(chat_clock_label(meeting['finished_at']) if meeting.get('finished_at') else '结束未记录（末次互动 '+chat_clock_label(meeting.get('ended_at',''))+'）')+"。\n"+
         "\n".join(parts)+
         "\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。"
         "若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。"
@@ -4074,7 +4076,7 @@ class Handler(BaseHTTPRequestHandler):
                             if resume_mid:
                                 m_state['meeting_location_history'].append({'at':utc(),'location':m_state['meeting_location'],'source':'resume'})
                             if prior:
-                                db.execute("UPDATE meetings SET ai_summary='',summary_source='',summary_edited_at='' WHERE id=? AND profile_id=? AND character_id=?",(resume_mid,p['id'],cid))
+                                db.execute("UPDATE meetings SET ai_summary='',summary_source='',summary_edited_at='',finished_at='' WHERE id=? AND profile_id=? AND character_id=?",(resume_mid,p['id'],cid))
                                 db.execute('DELETE FROM episodic_memories WHERE owner_id=? AND profile_id=? AND source_key=?',(cid,p['id'],'meeting:'+resume_mid))
                             if resume_mid:
                                 rec=get_or_init_surveillance(db,p,c)
@@ -4099,6 +4101,7 @@ class Handler(BaseHTTPRequestHandler):
                                     log_event(db,p['id'],cid,'ai_message',c['name']+' 回应 '+p['name']+'：'+reply_txt[:180])
                                     meeting_record=upsert_meeting_record(db,p,c,m_state['active_meeting_id'],[opening_reply],m_state['meeting_location'])
                         else:
+                            ended_actual=utc()
                             started_after=m_state.get('started_after_rowid')
                             all_rows=db.execute('SELECT rowid,* FROM messages WHERE profile_id=? AND character_id=? ORDER BY rowid',(p['id'],cid)).fetchall()
                             m_msgs=[]
@@ -4118,13 +4121,10 @@ class Handler(BaseHTTPRequestHandler):
                                     try:
                                         parsed=summarize_complete_meeting(p,c,m_msgs,ai_loc,db=db)
                                         if parsed and parsed.get('summary'):ai_sum=str(parsed['summary']).strip()[:850]
-                                    except Exception:pass
-                                meeting_record=upsert_meeting_record(db,p,c,mid,m_msgs,ai_loc,ai_sum)
+                                    except Exception as e:warning='见面小结生成失败：'+str(e)
+                                meeting_record=upsert_meeting_record(db,p,c,mid,m_msgs,ai_loc,ai_sum,finished_at=ended_actual)
                                 if meeting_record:
-                                    # The meeting ends at the actual mode switch, not at the last typed message.
-                                    ended_actual=utc()
-                                    meeting_record['ended_at']=ended_actual
-                                    db.execute('UPDATE meetings SET ended_at=? WHERE id=?',(ended_actual,meeting_record['id']))
+                                    # Capture the actual end before any model latency.
                                     sync_surveillance_on_meeting_end(db,p,c,meeting_record)
                             db.execute('UPDATE relations SET mode=?,updated_at=? WHERE profile_id=? AND character_id=?',(mode,utc(),p['id'],cid))
                             m_state['active_meeting_id']=''

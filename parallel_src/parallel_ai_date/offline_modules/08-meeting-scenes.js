@@ -335,7 +335,7 @@
       const original=String(m.text||'').replace(/\s+/g,' ').trim();
       const max=240;
       const excerpt=original.length<=max?original:original.slice(0,Math.floor(max*.6))+' … '+original.slice(-Math.floor(max*.4));
-      const stampText=String(m.created_at||'').slice(0,19).replace('T',' ');
+      const stampText=meetingArchiveClock(m.created_at);
       const line='['+stampText+'] '+(m.sender==='user'?p.name:c.name)+'：'+excerpt+'\n';
       if(chunk&&chunk.length+line.length>limit){out.push(chunk);chunk='';}
       chunk+=line;
@@ -343,6 +343,7 @@
     if(chunk)out.push(chunk);
     return out;
   }
+  function meetingArchiveClock(value){const d=new Date(value);if(!value||!Number.isFinite(d.getTime()))return '未记录';const pad=n=>String(n).padStart(2,'0');const offset=-d.getTimezoneOffset();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+' (UTC'+(offset>=0?'+':'-')+pad(Math.floor(Math.abs(offset)/60))+':'+pad(Math.abs(offset)%60)+')';}
   // A provider may return malformed JSON with finish_reason=stop.
   // Retry only structured-output errors, never save a guessed completion.
   async function reliableMeetingSummaryJson(messages,opts){
@@ -368,7 +369,7 @@
     }
     throw priorError;
   }
-  async function summarizeCompleteMeeting(p,c,mMsgs,location){
+  async function summarizeCompleteMeeting(p,c,mMsgs,location,times={}){
     if(!mMsgs.length)return null;
     const mid=mMsgs[0]?.meeting_id||'';
     const groups=mid?completedMeetingGroups(p.id,c.id,mid):[];
@@ -384,6 +385,7 @@
       :reuseLegacy?groups.slice(0,legacyExpected*50).flat().length:0;
     const trailing=split>=0?mMsgs.slice(split):mMsgs;
     const chunks=meetingSummaryChunks(trailing,p,c);
+    const timeContext='见面开始：'+meetingArchiveClock(times.started_at||mMsgs[0].created_at)+'；确认结束：'+meetingArchiveClock(times.finished_at)+'；末次原文：'+meetingArchiveClock(mMsgs.at(-1).created_at)+'。以上是现实本地日期和时区，跨日不得合并为同一天，未记录的结束不可推测。';
     const opts={json_mode:true,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true,temperature:0.25};
     const instruction='你是见面剧情的事实归档员。输出可供下次见面准确接续的纪实摘要，不得用第一句和最后一句拼凑。只记录原文实际发生的动作、人物之间的关键对话、感情和态度变化、具体物品去向、场景转换、约定、拒绝与未解决事件。区分玩笑、提议和真正承诺；绝不凭空补写台词、行为或人物心理。亲密场景概括实际互动即可，不要重复露骨身体细节。严格按时间顺序保留关键转折；跨午夜要保留睡前与次日醒来的变化。只输出一个完整 JSON 对象，唯一字段 summary。';
     const partSummaries=reused.map(cp=>cp.kind==='scene_transition'
@@ -394,14 +396,14 @@
     for(let i=0;i<chunks.length;i++){
       const part=await reliableMeetingSummaryJson([
         {role:'system',content:instruction+'这次只整理第 '+(i+1)+'/'+chunks.length+' 段确实发生的事情（建议160–260字），着重保留重要行为及其后果，而不是首尾引言。'},
-        {role:'user',content:'地点线索（不等于所有事都在此发生）：'+location+'；整场消息总数：'+mMsgs.length+'。\n'+chunks[i]}
+        {role:'user',content:timeContext+'\n地点线索（不等于所有事都在此发生）：'+location+'；整场消息总数：'+mMsgs.length+'。\n'+chunks[i]}
       ],opts);
       partSummaries.push(part);
     }
     if(partSummaries.length===1)return {summary:partSummaries[0]};
     const summary=await reliableMeetingSummaryJson([
       {role:'system',content:instruction+'以下是同一场见面按时间顺序整理的 '+partSummaries.length+' 段事实小结。合并为整场见面梗概（建议350–600字），务必保留关键对话、关系转折、角色行动、地点变化与未完成安排，不得遗漏早期重要事件，不要简单说从何开始到何结束。'},
-      {role:'user',content:'见面时间：'+String(mMsgs[0].created_at||'')+' 至 '+String(mMsgs[mMsgs.length-1].created_at||'')+'；最后已知地点：'+location+'。\n'+partSummaries.map((x,i)=>'第'+(i+1)+'/'+partSummaries.length+'段：'+x).join('\n')}
+      {role:'user',content:timeContext+'\n最后已知地点：'+location+'。\n'+partSummaries.map((x,i)=>'第'+(i+1)+'/'+partSummaries.length+'段：'+x).join('\n')}
     ],opts);
     return {summary};
   }
@@ -463,7 +465,7 @@
       source_type:'meeting_summary',
       source_key:'meeting:'+meetingId,
       knowledge_mode:'experienced',
-      summary:`和 ${p.name} 在「${loc}」见面：${summary}`,
+      summary:`和 ${p.name} 在「${loc}」见面（开始：${meetingArchiveClock(startedAt)}；确认结束：${meetingArchiveClock(actualFinish)}；末次互动：${meetingArchiveClock(mMsgs.at(-1)?.created_at)}）：${summary}`,
       tags:[loc,'见面',...extractMemoryTags(summary,5)],
       importance:4,
       emotional_weight:4,
