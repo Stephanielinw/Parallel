@@ -656,3 +656,6 @@ html,body,#root{width:100%;height:100%;min-height:0;margin:0;overflow:hidden;ove
 .chat-quote-compose button svg{width:20px;height:20px}
 .chat-quoted-content{font-size:11px;display:flex;flex-direction:column;gap:3px;margin-bottom:8px;padding:6px 8px;border-left:3px solid currentColor;background:rgba(125,125,125,.09);border-radius:5px;opacity:.86}
 .chat-quoted-content>span{display:block;overflow-wrap:anywhere;white-space:pre-wrap}
+
+/* M15: request-bound, non-dismissible meeting finalize overlay. */
+.meeting-finalize-overlay{z-index:1000}.meeting-finalize-progress{max-width:370px;text-align:center;padding:32px 24px}.meeting-finalize-spinner{display:block;width:38px;height:38px;border:3px solid #EBD9CF;border-top-color:#B97870;border-radius:50%;margin:0 auto 18px;animation:meeting-finalize-spin 1s linear infinite}.meeting-finalize-progress h2{margin:10px 0}.meeting-finalize-progress p{line-height:1.55}@keyframes meeting-finalize-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.meeting-finalize-spinner{animation:none;border-color:#B97870}}

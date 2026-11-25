@@ -770,6 +770,16 @@ function formatNovelParagraphs(text,sender='ai'){
   if(!parts.length)return `<p>${esc(cleaned||'')}</p>`;
   return parts.map(p=>`<p>${esc(p)}</p>`).join('');
 }
+function meetingTimeDetails(rec,active=false){
+  const format=v=>{if(!v||!Number.isFinite(Date.parse(v)))return '';const d=new Date(v),pad=n=>String(n).padStart(2,'0');return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes());};
+  const start=rec.started_at||rec.entries?.[0]?.created_at||'';
+  const finish=active?'':(rec.finished_at||'');
+  const last=rec.entries?.at(-1)?.created_at||rec.ended_at||'';
+  const elapsed=Date.parse(finish)-Date.parse(start);
+  const minutes=Number.isFinite(elapsed)&&elapsed>=0?Math.floor(elapsed/60000):null;
+  const duration=minutes===null?'':(Math.floor(minutes/1440)?Math.floor(minutes/1440)+'天 ':'')+(Math.floor(minutes%1440/60)?Math.floor(minutes%1440/60)+'小时 ':'')+(minutes%60)+'分钟';
+  return {start:format(start)||rec.time||'未记录',finish:active?'进行中':format(finish)||'未记录',last:!active&&!finish?format(last):'',duration};
+}
 function findOrBuildMeetingRecord(block,c){
   const pName=activeProfile()?.name||'你';
   const blockIds=new Set(block.map(m=>m.id));
@@ -792,6 +802,9 @@ function findOrBuildMeetingRecord(block,c){
     id:explicitMid,
     location:loc,
     time:timeStr,
+    started_at:startedAt,
+    finished_at:'',
+    ended_at:block.at(-1)?.created_at||'',
     summary,
     entries:block.map(m=>({id:m.id,sender:m.sender,speaker:m.sender==='user'?pName:c.name,text:cleanBodyText(m.text,m.sender,true),created_at:m.created_at}))
   };
@@ -1011,7 +1024,7 @@ function renderChatMessagesHtml(c){
 
   const htmlParts=blocks.map(b=>{
     if(b.type==='meeting_group'){
-      const rec=findOrBuildMeetingRecord(b.msgs,c);
+      const rec=findOrBuildMeetingRecord(b.msgs,c),times=meetingTimeDetails(rec,rec.id===state.activeMeetingId);
       return `<div class="meeting-card" data-action="open-meeting-record" data-id="${esc(rec.id)}" role="button" tabindex="0" title="点击查看本次完整见面记录">
         <div class="meeting-card-head">
           <span class="meeting-card-badge">${I('book')} 见面回忆卡片</span>
@@ -1019,7 +1032,8 @@ function renderChatMessagesHtml(c){
         </div>
         <div class="meeting-card-rows">
           <div class="meeting-card-row"><b>见面地点</b><span class="inline-ic-text">${I('map','inline-doodle-ic')}<span>${esc(rec.location||'约定的街角咖啡馆')}</span></span></div>
-          <div class="meeting-card-row"><b>见面时间</b><span class="inline-ic-text">${I('clock','inline-doodle-ic')}<span>${esc(rec.time||fmtTime(b.msgs[0]?.created_at))}</span></span></div>
+          <div class="meeting-card-row"><b>开始时间</b><span class="inline-ic-text">${I('clock','inline-doodle-ic')}<span>${esc(times.start)}</span></span></div>
+          <div class="meeting-card-row"><b>结束时间</b><span class="inline-ic-text">${I('clock','inline-doodle-ic')}<span>${esc(times.finish)}${times.duration?' · '+esc(times.duration):''}${times.last?'（末次互动 '+esc(times.last)+'）':''}</span></span></div>
           <div class="meeting-card-row is-summary"><b>见面梗概</b><span class="inline-ic-text">${I('book','inline-doodle-ic')}<span>${esc(rec.summary)}</span></span></div>
         </div>
         <div class="meeting-card-foot">
@@ -1554,12 +1568,15 @@ function openMeetingRecordModal(meetingId){
     }
   }
   if(!rec){toast('未找到该次见面的详细记录');return}
-  const entries=rec.entries||[];
+  const entries=rec.entries||[],times=meetingTimeDetails(rec,rec.id===state.activeMeetingId);
   const html=`<div class="kicker">MEETING RECORD · 线下见面完整记录</div>
     <h2>与 ${esc(c.name)} 的见面记录</h2>
     <div class="meeting-modal-meta">
       <div class="inline-ic-text">${I('map','inline-doodle-ic')}<b>见面地点：</b><span>${esc(rec.location||'约定的街角咖啡馆')}</span></div>
-      <div class="inline-ic-text">${I('clock','inline-doodle-ic')}<b>见面时间：</b><span>${esc(rec.time||'近期')}</span></div>
+      <div class="inline-ic-text">${I('clock','inline-doodle-ic')}<b>开始时间：</b><span>${esc(times.start)}</span></div>
+      <div class="inline-ic-text">${I('clock','inline-doodle-ic')}<b>结束时间：</b><span>${esc(times.finish)}</span></div>
+      ${times.duration?`<div class="inline-ic-text">${I('clock','inline-doodle-ic')}<b>见面时长：</b><span>${esc(times.duration)}</span></div>`:''}
+      ${times.last?`<div class="inline-ic-text"><b>末次互动：</b><span>${esc(times.last)}（非确认结束时间）</span></div>`:''}
       <div class="inline-ic-text">${I('book','inline-doodle-ic')}<b>见面梗概${rec.summary_source==='manual'?'（已手动编辑）':''}：</b><span>${esc(rec.summary||'')}</span></div>
     </div>
     ${state.chatMode==='chat'?`<div class="meeting-resume-location">
@@ -1571,7 +1588,7 @@ function openMeetingRecordModal(meetingId){
       ${entries.length?entries.map((e,idx)=>`<article class="novel-turn ${e.sender==='user'?'novel-user':'novel-ai'}">
         <header class="novel-turn-head">
           <span class="novel-speaker">${esc(e.speaker||(e.sender==='user'?'你':c.name))}</span>
-          <span class="novel-turn-meta">#${idx+1} · ${fmtTime(e.created_at)}</span>
+          <span class="novel-turn-meta">#${idx+1} · ${esc(meetingTimeDetails({started_at:e.created_at}).start)}</span>
         </header>
         <div class="novel-prose">${formatNovelParagraphs(e.text,e.sender)}</div>
         ${e.id?`<button type="button" class="btn ghost tiny-btn" data-action="prompt-forget-message" data-id="${esc(e.id)}">永久删除此段</button>`:''}
@@ -1682,6 +1699,31 @@ async function saveMeetingSummary(meetingId){
     if(ownsPairModalRequest(scope))toast('保存失败：'+String(e.message||e));
     if(btn?.isConnected){btn.disabled=false;btn.textContent='保存总结';}
   }
+}
+let meetingFinalizePending=false;
+function showMeetingFinalizeProgress(retry=false){
+  meetingFinalizePending=true;
+  ++modalRequestSeq;
+  const mode=state.settings?.mode;
+  const subtitle=mode==='live'?(retry?'正在请求 AI 重新整理小结…':'正在保存原文并请求 AI 整理小结…'):(mode==='demo'?'演示模式：仅整理本地记录，不调用 API。':'未连接 API：仅保存原文，不生成 AI 小结。');
+  $('modal-root').innerHTML=`<div class="modal-overlay meeting-finalize-overlay" id="modal-overlay"><div class="modal meeting-finalize-progress" role="dialog" aria-modal="true" aria-busy="true" aria-label="正在整理见面记录"><span class="meeting-finalize-spinner" aria-hidden="true"></span><div class="kicker">MEETING RECORD</div><h2>${mode==='live'?'正在生成见面小结…':'正在整理见面记录…'}</h2><p role="status" aria-live="polite">${esc(subtitle)}</p><p class="caption">请勿重复结束见面；生成耗时不会计入剧情时间。</p></div></div>`;
+}
+function showMeetingFinalizeFailure(meetingId,message){
+  modal(`<div class="kicker">MEETING RECORD</div><h2>见面已结束，小结未生成</h2><p>原始对话和见面时间已保存。你可以稍后重新整理，不需要重复结束见面。</p><p class="caption">${esc(message||'未收到有效的小结。')}</p>`,`<button class="btn soft" data-action="close-modal">稍后处理</button>${meetingId?'<button class="btn primary" data-action="retry-meeting-finalize" data-id="'+esc(meetingId)+'">重试小结</button>':''}`);
+}
+async function retryMeetingFinalize(meetingId){
+  if(meetingFinalizePending||state.chatBusy)return;
+  const pid=state.activeId,cid=state.threadId;
+  if(!pid||!cid||!meetingId)return;
+  state.chatBusy=true;showMeetingFinalizeProgress(true);
+  try{
+    const result=await api('/meeting-summary-refresh',{profileId:pid,characterId:cid,meetingId});
+    if(!result?.meetingRecord||result.meetingRecord.summary_source!=='ai')throw Error('未收到有效 AI 小结');
+    if(isCurrentPair(pid,cid)&&state.tab==='messages')await loadThreads(cid);
+    else refreshInboxQuietly(pid);
+    meetingFinalizePending=false;closeModal();toast('见面小结已生成');
+  }catch(e){meetingFinalizePending=false;if(isCurrentPair(pid,cid))showMeetingFinalizeFailure(meetingId,e.message);else closeModal();}
+  finally{meetingFinalizePending=false;state.chatBusy=false;if(isCurrentPair(pid,cid)&&state.tab==='messages')renderMessages();}
 }
 async function refreshMeetingSummary(meetingId,overwriteManual=false){
   const pid=state.activeId,cid=state.threadId;
@@ -2209,15 +2251,26 @@ async function changeMode(){
   if(state.meetingLocationSyncPromise)await state.meetingLocationSyncPromise.catch(()=>{});
   // The explicit location editor already persisted its correction via /mode.
   state.chatBusy=true;
+  const meetingId=state.activeMeetingId,live=state.settings?.mode==='live';
+  showMeetingFinalizeProgress();
   try{
-    await api('/mode',{profileId,characterId:id,mode:'chat',finalizeMeeting:true});
-    state.chatBusy=false;
+    const result=await api('/mode',{profileId,characterId:id,mode:'chat',finalizeMeeting:true});
     if(state.tab==='messages'&&isCurrentPair(profileId,id))await loadThreads(id);else refreshInboxQuietly(profileId);
-    toast('已结束见面：聊天页已生成本次见面卡片，点击卡片可查看完整记录');
+    meetingFinalizePending=false;closeModal();
+    const rec=result?.meetingRecord;
+    if(rec&&live&&rec.summary_source==='fallback'&&isCurrentPair(profileId,id)){
+      showMeetingFinalizeFailure(rec.id,result.summaryError?.message||'AI 未返回有效小结');
+    }else if(rec&&rec.summary_source==='ai')toast('见面小结已生成，原文与起止时间已保存');
+    else if(rec)toast('已保存见面记录，本次未生成 AI 小结');
+    else toast('已结束见面（没有需要归档的现场原文）');
   }catch(e){
-    state.chatBusy=false;
-    toast(e.message);
-  }
+    // Distinguish an interrupted request from a confirmed saved meeting.
+    if(state.tab==='messages'&&isCurrentPair(profileId,id))await loadThreads(id).catch(()=>{});
+    meetingFinalizePending=false;closeModal();
+    const saved=(state.meetings||[]).find(x=>x.id===meetingId&&x.finished_at);
+    if(saved&&state.chatMode==='chat'&&isCurrentPair(profileId,id))showMeetingFinalizeFailure(meetingId,e.message);
+    else toast('结束请求未确认：'+String(e.message||e));
+  }finally{meetingFinalizePending=false;state.chatBusy=false;if(state.tab==='messages'&&isCurrentPair(profileId,id))renderMessages();}
 }
 function confirmUnmatch(){const t=state.threads.find(x=>x.character.id===state.threadId);if(!t)return;modal(`<h2>要解除与 ${esc(t.character.name)} 的匹配吗？</h2><p>这会把对方从消息列表移除，但不会删除你们的聊天记录或角色的记忆。以后再次匹配时还会认得你。</p>`,`<button class="btn soft" data-action="close-modal">取消</button><button class="btn danger" data-action="confirm-unmatch">解除匹配</button>`)}
 // Terminal
@@ -2765,6 +2818,7 @@ async function togglePreset(id){const p=state.presets.find(x=>x.id===id);if(!p)r
 async function movePreset(id,dir){const list=state.presets.filter(x=>x.mode===state.presetMode).sort((a,b)=>a.sort_order-b.sort_order),idx=list.findIndex(x=>x.id===id);if(idx<0||idx+dir<0||idx+dir>=list.length)return;[list[idx],list[idx+dir]]=[list[idx+dir],list[idx]];await api('/preset',{action:'order',ids:list.map(x=>x.id)});await refreshPresets()}
 function modal(html,buttons){++modalRequestSeq;$('modal-root').innerHTML=`<div class="modal-overlay" id="modal-overlay"><div class="modal" role="dialog" aria-modal="true"><button class="icon-btn modal-close" data-action="close-modal">${I('x')}</button>${html}<div class="modal-actions">${buttons||`<button class="btn soft" data-action="close-modal">好的</button>`}</div></div></div>`}
 function closeModal(){
+  if(meetingFinalizePending)return;
   ++modalRequestSeq;
   if(state.activeErrorContext){
     state.activeErrorContext=null;
@@ -3094,6 +3148,7 @@ if(a==='back-threads'){++threadRequestSeq;++modalRequestSeq;state.threadId='';st
 if(a==='change-mode')return changeMode();
 if(a==='surv-close-meeting')return modal('<h2>结束这次见面？</h2><p>会把这一场存为回忆卡片并切回手机聊天。若是不小心点到，请选「继续见面」；即使误结束，也能从旧卡片接着这一场继续。</p>','<button class="btn primary" data-action="close-modal">继续见面</button><button class="btn soft" data-action="confirm-surv-close-meeting">确认结束并归档</button>');
 if(a==='confirm-surv-close-meeting'){closeModal();return changeMode();}
+if(a==='retry-meeting-finalize')return retryMeetingFinalize(el.dataset.id);
 if(a==='toggle-character-freeze'){
   if(!globalThis.ParallelOffline)return toast('当前仅网页版 / 单 HTML 版支持角色冻结');
   const thread=state.threads.find(t=>t.character.id===state.threadId);if(!thread)return;

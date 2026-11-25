@@ -236,7 +236,7 @@
     });
     const meeting=candidates[0];
     const summary=String(meeting.ai_summary||meeting.summary||'').trim().slice(0,500);
-    const overview='\n\n【过去真实见面的原始记录索引 · 不是 AI 生成的事实小结】\n'+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'，保存有与 '+p.name+' 的线下见面记录。模型生成的小结可能含推断，已从提示词中移除；所有具体对白、到访、共同活动必须以此场保存的原文为证。预约、监控推演、总结文案均不能证明确曾发生。';
+    const overview='\n\n【过去真实见面的原始记录索引 · 不是 AI 生成的事实小结】\n'+chatClockLabel(meeting.started_at)+' 至 '+(meeting.finished_at?chatClockLabel(meeting.finished_at):'结束未记录（末次互动 '+chatClockLabel(meeting.ended_at)+'）')+'，保存有与 '+p.name+' 的线下见面记录。模型生成的小结可能含推断，已从提示词中移除；所有具体对白、到访、共同活动必须以此场保存的原文为证。预约、监控推演、总结文案均不能证明确曾发生。';
     const entries=(Array.isArray(meeting.entries)?meeting.entries:[]).filter(m=>
       ['user','ai'].includes(m?.sender)&&String(m.text||'').trim()&&
       !(m.sender==='user'&&/(?:心想|心里|内心独白|默念|梦见|如果|假如)/.test(String(m.text))));
@@ -309,7 +309,7 @@
       used+=line.length;lines.push(line);
     }
     if(!lines.length)return context;
-    return context+'\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'。\n'+
+    return context+'\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+chatClockLabel(meeting.started_at)+' 至 '+(meeting.finished_at?chatClockLabel(meeting.finished_at):'结束未记录（末次互动 '+chatClockLabel(meeting.ended_at)+'）')+'。\n'+
       lines.join('\n')+'\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。见面发生的这段时间不能被描述成角色一整天都在巡逻、值班、开车或完成其他无记录的事务；未被证实的生活安排保持未知。私人内心不可当作角色亲眼所见；没有展示的情节保持不确定。';
   }
   // A generated slot can mix versions of a character. Do not promote that

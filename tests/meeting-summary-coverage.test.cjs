@@ -26,7 +26,14 @@ const chronological=chunks.join('');
 for(let i=0;i<history.length;i++)assert(chronological.includes('TURN-'+i+' '),'missing chronological message '+i);
 assert(chronological.indexOf('TURN-0 ')<chronological.indexOf('TURN-60 '),'original order must be preserved');
 (async()=>{
- const result=await summarizeCompleteMeeting(profile,character,history,'咖啡馆');
+ const result=await summarizeCompleteMeeting(profile,character,history,'咖啡馆',{started_at:'2026-11-20T22:00:00',finished_at:'2026-11-21T08:30:00'});
+ assert(sent.every(x=>x.messages[1].content.includes('2026-11-20')&&x.messages[1].content.includes('2026-11-21')&&x.messages[1].content.includes('08:30')),'every chunk must receive true full start/end timestamps');
+ const timeSource=ui.slice(ui.indexOf('function meetingTimeDetails('),ui.indexOf('function findOrBuildMeetingRecord('));
+ const timeDetails=new Function(timeSource+';return meetingTimeDetails')();
+ const range=timeDetails({started_at:'2026-11-20T22:00:00',finished_at:'2026-11-21T08:30:00'});
+ assert.equal(range.duration,'10小时 30分钟');assert(range.finish.includes('2026-11-21'));
+ assert.equal(timeDetails({started_at:'2026-11-20T22:00:00',ended_at:'2026-11-21T08:00:00'}).finish,'未记录');
+ assert(ui.includes('meeting-finalize-overlay')&&ui.includes('retry-meeting-finalize'));
  assert(result.summary.includes('昨晚见面'),'final summary should contain earlier phases');
  assert.equal(sent.length,chunks.length+1,'one factual digest per chunk and a merge');
  assert(sent.some(x=>x.messages[0].content.includes('合并为整场见面梗概')),'chronological merge must occur');

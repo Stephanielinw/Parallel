@@ -2613,7 +2613,7 @@
       const original=String(m.text||'').replace(/\s+/g,' ').trim();
       const max=240;
       const excerpt=original.length<=max?original:original.slice(0,Math.floor(max*.6))+' … '+original.slice(-Math.floor(max*.4));
-      const stampText=String(m.created_at||'').slice(0,19).replace('T',' ');
+      const stampText=meetingArchiveClock(m.created_at);
       const line='['+stampText+'] '+(m.sender==='user'?p.name:c.name)+'：'+excerpt+'\n';
       if(chunk&&chunk.length+line.length>limit){out.push(chunk);chunk='';}
       chunk+=line;
@@ -2621,6 +2621,7 @@
     if(chunk)out.push(chunk);
     return out;
   }
+  function meetingArchiveClock(value){const d=new Date(value);if(!value||!Number.isFinite(d.getTime()))return '未记录';const pad=n=>String(n).padStart(2,'0');const offset=-d.getTimezoneOffset();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+' (UTC'+(offset>=0?'+':'-')+pad(Math.floor(Math.abs(offset)/60))+':'+pad(Math.abs(offset)%60)+')';}
   // A provider may return malformed JSON with finish_reason=stop.
   // Retry only structured-output errors, never save a guessed completion.
   async function reliableMeetingSummaryJson(messages,opts){
@@ -2646,7 +2647,7 @@
     }
     throw priorError;
   }
-  async function summarizeCompleteMeeting(p,c,mMsgs,location){
+  async function summarizeCompleteMeeting(p,c,mMsgs,location,times={}){
     if(!mMsgs.length)return null;
     const mid=mMsgs[0]?.meeting_id||'';
     const groups=mid?completedMeetingGroups(p.id,c.id,mid):[];
@@ -2662,6 +2663,7 @@
       :reuseLegacy?groups.slice(0,legacyExpected*50).flat().length:0;
     const trailing=split>=0?mMsgs.slice(split):mMsgs;
     const chunks=meetingSummaryChunks(trailing,p,c);
+    const timeContext='见面开始：'+meetingArchiveClock(times.started_at||mMsgs[0].created_at)+'；确认结束：'+meetingArchiveClock(times.finished_at)+'；末次原文：'+meetingArchiveClock(mMsgs.at(-1).created_at)+'。以上是现实本地日期和时区，跨日不得合并为同一天，未记录的结束不可推测。';
     const opts={json_mode:true,profile:p,character:c,mode:'meeting_summary',entry_point:'meeting_finalize',background:true,temperature:0.25};
     const instruction='你是见面剧情的事实归档员。输出可供下次见面准确接续的纪实摘要，不得用第一句和最后一句拼凑。只记录原文实际发生的动作、人物之间的关键对话、感情和态度变化、具体物品去向、场景转换、约定、拒绝与未解决事件。区分玩笑、提议和真正承诺；绝不凭空补写台词、行为或人物心理。亲密场景概括实际互动即可，不要重复露骨身体细节。严格按时间顺序保留关键转折；跨午夜要保留睡前与次日醒来的变化。只输出一个完整 JSON 对象，唯一字段 summary。';
     const partSummaries=reused.map(cp=>cp.kind==='scene_transition'
@@ -2672,14 +2674,14 @@
     for(let i=0;i<chunks.length;i++){
       const part=await reliableMeetingSummaryJson([
         {role:'system',content:instruction+'这次只整理第 '+(i+1)+'/'+chunks.length+' 段确实发生的事情（建议160–260字），着重保留重要行为及其后果，而不是首尾引言。'},
-        {role:'user',content:'地点线索（不等于所有事都在此发生）：'+location+'；整场消息总数：'+mMsgs.length+'。\n'+chunks[i]}
+        {role:'user',content:timeContext+'\n地点线索（不等于所有事都在此发生）：'+location+'；整场消息总数：'+mMsgs.length+'。\n'+chunks[i]}
       ],opts);
       partSummaries.push(part);
     }
     if(partSummaries.length===1)return {summary:partSummaries[0]};
     const summary=await reliableMeetingSummaryJson([
       {role:'system',content:instruction+'以下是同一场见面按时间顺序整理的 '+partSummaries.length+' 段事实小结。合并为整场见面梗概（建议350–600字），务必保留关键对话、关系转折、角色行动、地点变化与未完成安排，不得遗漏早期重要事件，不要简单说从何开始到何结束。'},
-      {role:'user',content:'见面时间：'+String(mMsgs[0].created_at||'')+' 至 '+String(mMsgs[mMsgs.length-1].created_at||'')+'；最后已知地点：'+location+'。\n'+partSummaries.map((x,i)=>'第'+(i+1)+'/'+partSummaries.length+'段：'+x).join('\n')}
+      {role:'user',content:timeContext+'\n最后已知地点：'+location+'。\n'+partSummaries.map((x,i)=>'第'+(i+1)+'/'+partSummaries.length+'段：'+x).join('\n')}
     ],opts);
     return {summary};
   }
@@ -2741,7 +2743,7 @@
       source_type:'meeting_summary',
       source_key:'meeting:'+meetingId,
       knowledge_mode:'experienced',
-      summary:`和 ${p.name} 在「${loc}」见面：${summary}`,
+      summary:`和 ${p.name} 在「${loc}」见面（开始：${meetingArchiveClock(startedAt)}；确认结束：${meetingArchiveClock(actualFinish)}；末次互动：${meetingArchiveClock(mMsgs.at(-1)?.created_at)}）：${summary}`,
       tags:[loc,'见面',...extractMemoryTags(summary,5)],
       importance:4,
       emotional_weight:4,
@@ -3673,7 +3675,7 @@
     });
     const meeting=candidates[0];
     const summary=String(meeting.ai_summary||meeting.summary||'').trim().slice(0,500);
-    const overview='\n\n【过去真实见面的原始记录索引 · 不是 AI 生成的事实小结】\n'+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'，保存有与 '+p.name+' 的线下见面记录。模型生成的小结可能含推断，已从提示词中移除；所有具体对白、到访、共同活动必须以此场保存的原文为证。预约、监控推演、总结文案均不能证明确曾发生。';
+    const overview='\n\n【过去真实见面的原始记录索引 · 不是 AI 生成的事实小结】\n'+chatClockLabel(meeting.started_at)+' 至 '+(meeting.finished_at?chatClockLabel(meeting.finished_at):'结束未记录（末次互动 '+chatClockLabel(meeting.ended_at)+'）')+'，保存有与 '+p.name+' 的线下见面记录。模型生成的小结可能含推断，已从提示词中移除；所有具体对白、到访、共同活动必须以此场保存的原文为证。预约、监控推演、总结文案均不能证明确曾发生。';
     const entries=(Array.isArray(meeting.entries)?meeting.entries:[]).filter(m=>
       ['user','ai'].includes(m?.sender)&&String(m.text||'').trim()&&
       !(m.sender==='user'&&/(?:心想|心里|内心独白|默念|梦见|如果|假如)/.test(String(m.text))));
@@ -3746,7 +3748,7 @@
       used+=line.length;lines.push(line);
     }
     if(!lines.length)return context;
-    return context+'\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+String(meeting.started_at||'').slice(0,16)+' 至 '+String(meeting.finished_at||meeting.ended_at||'').slice(0,16)+'。\n'+
+    return context+'\n\n【最近一次真实线下见面 · 有来源的原文节选】\n以下仅属于你与 '+p.name+' 的这场见面，不属于任何其他角色实例；发生时间 '+chatClockLabel(meeting.started_at)+' 至 '+(meeting.finished_at?chatClockLabel(meeting.finished_at):'结束未记录（末次互动 '+chatClockLabel(meeting.ended_at)+'）')+'。\n'+
       lines.join('\n')+'\n以上是节选而非完整情节；见面前约定看电影、吃饭、接送等不证明最后真的完成。若原文发生的行动与旧计划或监控草案冲突，以已经发生的现场行为为准；不要虚构电影、餐食、旅程或否定对方共同亲历的事情。见面发生的这段时间不能被描述成角色一整天都在巡逻、值班、开车或完成其他无记录的事务；未被证实的生活安排保持未知。私人内心不可当作角色亲眼所见；没有展示的情节保持不确定。';
   }
   // A generated slot can mix versions of a character. Do not promote that
@@ -5645,7 +5647,7 @@
           if(r.mode==='meeting')confirmActiveMeetingLocation(p,c,locInput);
           else r.meeting_location=locInput;
         }
-        let meetingRecord=null,openingReply=null,warning='',apiError=null,taskState=null;
+        let meetingRecord=null,openingReply=null,warning='',apiError=null,taskState=null,summaryError=null;
         if(r.mode!==m){
           clearQueue(p.id,c.id);
           clearTaskStatesForPair(p.id,c.id);
@@ -5720,16 +5722,8 @@
             }
             if(mMsgs.length){
               const mid=activeMid||mMsgs[0].meeting_id||('meet_'+mMsgs[0].id);
-              let aiSum='',aiLoc=r.meeting_location||''; // scene authority, never stale finale UI payload
-              if(data.finalizeMeeting===true&&pub().mode==='live'){
-                try{
-                  const parsed=await summarizeCompleteMeeting(p,c,mMsgs,aiLoc);
-                  if(parsed?.summary)aiSum=String(parsed.summary).trim().slice(0,850);
-                }catch(e){
-                  recordBgError(p.id,c.id,'meeting_finalize',e.apiError||{message:String(e.message||e)});
-                }
-              }
-              meetingRecord=upsertMeetingRecord(p,c,mid,mMsgs,aiLoc,aiSum,finishedAt);
+              const aiLoc=r.meeting_location||''; // scene authority, never stale finale UI payload
+              meetingRecord=upsertMeetingRecord(p,c,mid,mMsgs,aiLoc,'',finishedAt);
               if(meetingRecord)syncSurveillanceOnMeetingEnd(p,c,meetingRecord);
             }
             r.mode='chat';
@@ -5737,9 +5731,25 @@
             r.meeting_started_at='';
             r.updated_at=finishedAt;
             clearTaskState(p.id,c.id,'meeting');
-            if(meetingRecord)await replanRemainingDayAfterMeeting(p,c,meetingRecord);
             event(p.id,c.id,'return','与 '+p.name+' 返回手机聊天',Date.parse(finishedAt));
             db.events.at(-1).meeting_id=activeMid;
+            save(); // persist actual finish and raw transcript before any paid call
+            if(meetingRecord&&data.finalizeMeeting===true&&pub().mode==='live'){
+              try{
+                const parsed=await summarizeCompleteMeeting(p,c,mMsgs,meetingRecord.location,meetingRecord);
+                const current=(db.meetings||[]).find(x=>x.id===meetingRecord.id&&x.profile_id===p.id&&x.character_id===c.id);
+                if(!parsed?.summary)throw Error('未收到有效小结');
+                if(!archiveStoredCurrent()||r.mode!=='chat'||!current||current.finished_at!==finishedAt||current.summary_source==='manual')throw Error('见面记录在整理期间已变化，未覆盖当前记录');
+                const latest=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===current.id);
+                if(latest.map(x=>x.id+'='+x.text).join('\n')!==mMsgs.map(x=>x.id+'='+x.text).join('\n'))throw Error('原文已变化，请重新整理');
+                meetingRecord=upsertMeetingRecord(p,c,current.id,latest,current.location,String(parsed.summary).trim().slice(0,850),finishedAt);
+                clearBgError(p.id,c.id,'meeting_finalize');save();
+              }catch(e){
+                summaryError=e.apiError||{message:String(e.message||e)};
+                recordBgError(p.id,c.id,'meeting_finalize',summaryError);
+              }
+            }
+            if(meetingRecord)await replanRemainingDayAfterMeeting(p,c,meetingRecord);
           }
         }else if(m==='meeting'&&r.active_meeting_id){
           if(locInput)syncSurveillanceOnMeetingStart(p,c,r.meeting_location,r.active_meeting_id);
@@ -5747,7 +5757,7 @@
           if(mMsgs.length)meetingRecord=upsertMeetingRecord(p,c,r.active_meeting_id,mMsgs,r.meeting_location||'');
         }
         save();
-        return {mode:m,meetingId:r.active_meeting_id||'',active_meeting_id:r.active_meeting_id||'',location:r.meeting_location||'',meeting_location:r.meeting_location||'',meetingRecord,openingReply,warning,apiError,taskState,surveillance:buildSurveillancePayload(p,c)};
+        return {mode:m,meetingId:r.active_meeting_id||'',active_meeting_id:r.active_meeting_id||'',location:r.meeting_location||'',meeting_location:r.meeting_location||'',meetingRecord,openingReply,warning,apiError,taskState,summaryError,surveillance:buildSurveillancePayload(p,c)};
       }
       // Manually pasted recaps remain a user-controlled index; source scene text stays canonical.
       case '/meeting-summary-save':{
@@ -5777,13 +5787,13 @@
         if(!mMsgs.length)bodyErr('原始见面记录不可用，无法重新整理');
         if(!archiveStoredCurrent())bodyErr('存档已在另一页面更新，请先刷新页面');
         const signature=mMsgs.map(x=>x.id+'='+x.text).join('\n');
-        const parsed=await summarizeCompleteMeeting(p,c,mMsgs,existing.location||'');
+        const parsed=await summarizeCompleteMeeting(p,c,mMsgs,existing.location||'',existing);
         if(!archiveStoredCurrent())bodyErr('整理期间存档被其他页面修改，请刷新后再试');
         const latest=(db.messages||[]).filter(x=>x.mode==='meeting'&&x.profile_id===p.id&&x.character_id===c.id&&x.meeting_id===mid);
         if(latest.map(x=>x.id+'='+x.text).join('\n')!==signature)bodyErr('见面原文已更新，请重新整理');
         if(String(existing.summary_edited_at||'')!==editVersion)bodyErr('整理期间手动总结已更新，已取消本次覆盖');
         const rec=upsertMeetingRecord(p,c,mid,latest,existing.location||'',parsed.summary,existing.finished_at||'');
-        save();
+        clearBgError(p.id,c.id,'meeting_finalize');save();
         return {ok:true,meetingRecord:rec};
       }
       case '/chat-flush':{
