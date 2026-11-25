@@ -629,7 +629,14 @@
   const getP=id=>db.profiles.find(p=>p.id===id)||bodyErr('请先选择有效的 Profile');
   const getC=id=>byId.get(id)||bodyErr('原作人物目录中不存在此角色');
   const relation=(pid,cid)=>db.relations[pairKey(pid,cid)];
-  const characterFrozen=(pid,cid)=>Boolean(relation(pid,cid)?.frozen_at);
+  const freezeDue=(rel,now=Date.now())=>Boolean(rel?.freeze_schedule?.at&&Date.parse(rel.freeze_schedule.at)<=now);
+  const characterFrozen=(pid,cid)=>{const rel=relation(pid,cid);return Boolean(rel?.frozen_at||freezeDue(rel));};
+  const freezeFarewellDirective=(pid,cid)=>{
+    const plan=relation(pid,cid)?.freeze_schedule;
+    if(!plan||!plan.farewell||freezeDue(relation(pid,cid)))return '';
+    if(plan.farewell_text)return '\n【近期个人安排】你已经告诉对方：'+plan.farewell_text+'。计划于 '+chatClockLabel(Date.parse(plan.at))+' 起暂时无法联系。不要反复道别，不要把尚未发生的离开写成已经发生。';
+    return '\n【近期个人安排】你因自己的生活或工作安排，预计从 '+chatClockLabel(Date.parse(plan.at))+' 起暂时无法保持联系。现在仍然正常相处；若自然涉及离别，可以提前交代，不要将其写成分手、索取承诺、强迫见面或要求对方等待；不提系统或冻结。';
+  };
   const freezeEpoch=(pid,cid)=>Number(relation(pid,cid)?.freeze_revision||0);
   const pairModelControllers=new Map();
   const cancelPairModelCalls=(pid,cid)=>{
@@ -642,8 +649,9 @@
     const gap=freezeReconnect(pid,cid);
     if(!gap)return '';
     const from=chatClockLabel(Date.parse(gap.from)),to=chatClockLabel(Date.parse(gap.to));
+    const prior=gap.farewell_text?' 此前你已亲口告诉对方：'+gap.farewell_text+'。后续原因必须与此一致，不得另编冲突原因。':'';
     if(gap.explanation)return '\n【角色个人生活间隔】你曾在 '+from+' 至 '+to+' 之间没有联系对方。你后来亲口说过：'+gap.explanation+'。以已发送内容为连续性依据，不要反复解释，不要编造共同经历。';
-    return '\n【角色个人生活间隔 · 重要】从 '+from+' 到 '+to+'，是你因自身事务暂时没能联系对方，不是对方疏远你。根据原作身份、时长及已有事实选择自然原因，首次重新联系时用符合人设的简短口吻交代，随后正常交流。不要责怪、索取补偿、连环邀约或杜撰共同经历；不得提及系统、冻结、休眠。';
+    return '\n【角色个人生活间隔 · 重要】从 '+from+' 到 '+to+'，是你因自身事务暂时没能联系对方，不是对方疏远你。根据原作身份、时长及已有事实选择自然原因，首次重新联系时用符合人设的简短口吻交代，随后正常交流。不要责怪、索取补偿、连环邀约或杜撰共同经历；不得提及系统、冻结、休眠。'+prior;
   };
   const recordReconnect=(pid,cid,text)=>{
     const gap=freezeReconnect(pid,cid);
@@ -1316,7 +1324,7 @@
   const char=(c,pid='')=>{
     const rel=pid?relation(pid,c.id):null;
     const nick=String(rel?.nickname||'').trim();
-    return {...c,frozen:Boolean(rel?.frozen_at),frozen_at:rel?.frozen_at||'',nickname:nick,display_name:nick||c.name,portrait:db.portraits[c.id]||null,bio:db.bios[c.id]||c.bio,tags:(Array.isArray(db.bioTags?.[c.id])&&db.bioTags[c.id].length)?db.bioTags[c.id]:c.tags};
+    return {...c,frozen:characterFrozen(pid,c.id),frozen_at:rel?.frozen_at||'',freeze_schedule:rel?.freeze_schedule||null,nickname:nick,display_name:nick||c.name,portrait:db.portraits[c.id]||null,bio:db.bios[c.id]||c.bio,tags:(Array.isArray(db.bioTags?.[c.id])&&db.bioTags[c.id].length)?db.bioTags[c.id]:c.tags};
   };
   const STOPWORDS=new Set(['今天','昨天','明天','我们','你们','他们','什么','怎么','可以','觉得','知道','没有','就是','一个','还是','因为','所以','如果','已经','现在','这样','那样','哈哈','呵呵','嗯嗯','好的','好吧','不是','不要','不会','不能','自己','这里','那里','时候','地方','东西','事情','问题','真的','其实','或者','而且','然后','不过','但是','只是','虽然','一下','一点','一些','一直','一起','起来','出来','过来','进去','回去','看着','听着','说着','想着','请问','谢谢','你好','再见','晚安','早安','手机','消息','短信','见面','回应','陈述','对话','文字','对方','角色']);
   const extractQueryTerms=text=>{
@@ -3804,6 +3812,7 @@
       sys+=`\n当前见面地点（来自实际互动，不参考监控预排）：「${meetingLoc}」。进入见面模式不代表对方已到、双方已见面或共同活动。`;
     }
     sys+=reconnectDirective(p.id,c.id);
+    sys+=freezeFarewellDirective(p.id,c.id);
     if(mode==='chat')sys+=recentActualMeetingContext(p,c,querySeed,options.simulatedAt||Date.now());
     sys+='\n【共同经历事实优先级】当前真实互动/实际现场原文 > 带时间戳的角色位置陈述 > 已确认但未发生的约定 > 监控/日程推演。任何预定见面、吃饭、回家、接送，未经现场原文证实均不得用过去时说成双方曾一起做过；不得为对方杜撰对白或自称记得没有证据的共同经历。模型摘要是线索而非证言。';
     if(recalled.length){
@@ -4811,7 +4820,7 @@
       if(mode==='meeting')db.events.at(-1).message_id=reply.id;
       const uList=userMsg?[userMsg]:messagesOf(p.id,c.id).filter(m=>m.sender==='user').slice(-1);
       recordDialogueEpisode(p,c,uList,{...reply,text:combinedTxt},mode);
-      if(mode==='chat')syncSurveillanceFromChat(p,c,uList,combinedTxt);
+      if(mode==='chat'){recordReconnect(p.id,c.id,combinedTxt);syncSurveillanceFromChat(p,c,uList,combinedTxt);}
     }
     save();
     if(mode==='meeting'&&reply&&activeMid){
@@ -4890,6 +4899,8 @@
   }
   async function produceProactiveMessage(p,c,reason='idle',unresolvedMem=null,isBackground=true){
     if(characterFrozen(p.id,c.id))return {replies:[],skipped:'character-frozen'};
+    const farewellPlan=reason==='freeze_farewell'?relation(p.id,c.id)?.freeze_schedule:null;
+    if(reason==='freeze_farewell'&&(!farewellPlan||!farewellPlan.farewell||farewellPlan.farewell_text))return {replies:[],skipped:'farewell-unavailable'};
     const epoch=freezeEpoch(p.id,c.id),reconnecting=Boolean(freezeReconnect(p.id,c.id)&&!freezeReconnect(p.id,c.id).explanation);
     const curMode=pub().mode;
     if(curMode==='normal')return {replies:[],skipped:'no-api'};
@@ -4898,7 +4909,7 @@
     if(curMode==='live'){
       try{
         const ms=prompt(p,c,'chat',[],{entry_point:'chat_proactive'});
-        const memHint=reconnecting?'你最近有自己的事务，未能联系对方。先自然交代自身原因，再简单问候。':unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
+        const memHint=farewellPlan?'你即将在 '+chatClockLabel(Date.parse(farewellPlan.at))+' 起因自己符合原作人设的事务暂时无法联系。用自然的1至2条消息提前说明原因、简单道别，仍给对方回应空间。不许编造共同经历、提及系统、分手、索取承诺或要求见面。':reconnecting?'你最近有自己的事务，未能联系对方。先自然交代自身原因，再简单问候。':unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
         ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】当前手机本地时刻是 ${chatClockLabel(Date.now())}。距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}必须遵守当前钟点：凌晨绝不是上午或中午；不要推断对方已经醒来、已起床或睡到了中午。不要把旧约定当成已经发生的共同经历。请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
         txt=await llm(ms,{profile:p,character:c,mode:'chat',entry_point:'chat_proactive',background:isBackground});
         engine='live';
@@ -4928,7 +4939,7 @@
     if((latestRows.at(-1)?.id||'')!==previousLast)
       return {replies:[],skipped:'conversation-changed'};
     const currentRel=relation(p.id,c.id);
-    if(!currentRel||currentRel.frozen_at||epoch!==freezeEpoch(p.id,c.id)||currentRel.status!=='matched'||currentRel.mode!=='chat')
+    if(!currentRel||characterFrozen(p.id,c.id)||epoch!==freezeEpoch(p.id,c.id)||currentRel.status!=='matched'||currentRel.mode!=='chat'||(farewellPlan&&currentRel.freeze_schedule?.id!==farewellPlan.id))
       return {replies:[],skipped:'relation-changed'};
     if(isBackground&&proactiveQuietReason(latestRows,Date.now()))
       return {replies:[],skipped:'quiet-hours'};
@@ -4939,7 +4950,8 @@
       save();
       return {replies:[],skipped:'temporal-contradiction'};
     }
-    if(reconnecting&&engine==='demo')txt='这段时间有些自己的事情要处理，一直没顾上联系你。|||最近怎么样？';
+    if(farewellPlan&&engine==='demo')txt='过一会儿我有点自己的事情要处理，可能会暂时联系不上。|||等忙完再跟你说。';
+    else if(reconnecting&&engine==='demo')txt='这段时间有些自己的事情要处理，一直没顾上联系你。|||最近怎么样？';
     const bubbleTexts=splitChatBubbles(txt).slice(0,3);
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine));
     const lastReply=replies[replies.length-1]||null;
@@ -4947,7 +4959,8 @@
       const combinedTxt=replies.map(m=>m.text).join(' / ');
       event(p.id,c.id,'ai_proactive',c.name+' 主动联系 '+p.name+'：'+combinedTxt.slice(0,180));
       recordDialogueEpisode(p,c,[],{...lastReply,text:combinedTxt},'chat');
-      recordReconnect(p.id,c.id,combinedTxt);
+      if(farewellPlan)currentRel.freeze_schedule.farewell_text=combinedTxt.slice(0,500);
+      else recordReconnect(p.id,c.id,combinedTxt);
       if(!reconnecting&&unresolvedMem&& unresolvedMem.unresolved){
         const found=(db.episodicMemories||[]).find(m=>m.id===unresolvedMem.id);
         if(found)found.unresolved=0;
@@ -5033,36 +5046,84 @@
     }catch(e){return {ok:false,removedIds:[],replies:[],reply:null,warning:'重 Roll 未完成，原正文已保留。'+String(e.message||e),apiError:e.apiError||null};}
     finally{if(timer&&typeof clearTimeout==='function')clearTimeout(timer);if(meetingRerolls.get(key)===roll)meetingRerolls.delete(key);}
   }
+  const beginCharacterFreeze=(p,c,r,at)=>{
+    const plan=r.freeze_schedule;
+    if(r.mode==='meeting'){
+      const mid=r.active_meeting_id||'';
+      const rows=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===mid);
+      if(mid&&rows.length){
+        const rec=upsertMeetingRecord(p,c,mid,rows,r.meeting_location||'','',at);
+        if(rec)syncSurveillanceOnMeetingEnd(p,c,rec);
+      }
+      r.mode='chat';r.active_meeting_id='';r.meeting_started_at='';
+    }
+    r.frozen_at=at;r.freeze_departure=plan?.farewell_text||'';
+    delete r.freeze_schedule;
+    clearQueue(p.id,c.id);clearTaskStatesForPair(p.id,c.id);cancelPairModelCalls(p.id,c.id);
+    const q=db.queue[pairKey(p.id,c.id)];if(q)q.userPaused=false;
+    clearBgError(p.id,c.id);
+    r.freeze_revision=Number(r.freeze_revision||0)+1;r.updated_at=at;
+  };
+  const applyScheduledFreezes=()=>{
+    const changed=[];
+    for(const rel of Object.values(db.relations)){
+      if(rel.status!=='matched'||rel.frozen_at||!freezeDue(rel))continue;
+      const p=db.profiles.find(x=>x.id===rel.profile_id),c=byId.get(rel.character_id);
+      if(!p||!c)continue;
+      beginCharacterFreeze(p,c,rel,rel.freeze_schedule.at);
+      changed.push({profileId:p.id,characterId:c.id});
+    }
+    if(changed.length)save();
+    return changed;
+  };
   async function request(path,data){
     const [route,qs='']=path.split('?'), params=new URLSearchParams(qs);data=data||{};
+    const transitioned=applyScheduledFreezes();
     const scopedPid=String(data.profileId||params.get('profileId')||''),scopedCid=String(data.characterId||params.get('characterId')||'');
     const frozenAllowed=new Set(['/thread','/task-state','/memories','/memory-action','/nickname','/unmatch','/character-freeze','/proactive-check','/chat-flush','/chat-photo-read']);
     if(scopedPid&&scopedCid&&characterFrozen(scopedPid,scopedCid)&&!frozenAllowed.has(route))bodyErr('角色休眠中，请先解除冻结');
     switch(route){
+      case '/character-freeze-tick':{
+        const p=getP(data.profileId);
+        if(data.allowFarewell!==true||pub().mode==='normal'||proactiveQuietReason([],Date.now()))return {transitioned,sent:[]};
+        const now=Date.now();
+        const eligible=Object.values(db.relations).filter(rel=>{
+          const plan=rel.freeze_schedule,due=Date.parse(plan?.at||'');
+          const q=queueInfo(p.id,rel.character_id);
+          return rel.profile_id===p.id&&rel.status==='matched'&&rel.mode==='chat'&&!rel.frozen_at&&plan?.farewell&&!plan.farewell_text&&!plan.attempted_at&&due>now&&due-now<=30*60000&&q.status!=='inflight'&&!q.count&&!q.paused;
+        }).sort((a,b)=>Date.parse(a.freeze_schedule.at)-Date.parse(b.freeze_schedule.at));
+        const rel=eligible[0];if(!rel)return {transitioned,sent:[]};
+        const c=getC(rel.character_id);rel.freeze_schedule.attempted_at=stamp();save();
+        const result=await produceProactiveMessage(p,c,'freeze_farewell',null,true);
+        return {transitioned:[...transitioned,...applyScheduledFreezes()],sent:result.replies?.length?[{characterId:c.id,characterName:c.name,replies:result.replies}]:[]};
+      }
       case '/character-freeze':{
         const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id);
+        const at=stamp(),key=pairKey(p.id,c.id);
+        if(data.cancelSchedule===true){
+          if(r.frozen_at)bodyErr('已到冻结时间，请解除冻结');
+          delete r.freeze_schedule;save();return {ok:true,relation:r,character:char(c,p.id)};
+        }
+        if(data.startAt){
+          if(r.frozen_at)bodyErr('角色已休眠，请先解除冻结');
+          const ms=Date.parse(data.startAt);
+          if(!Number.isFinite(ms)||ms<=Date.now()||ms%60000!==0)bodyErr('请选择未来的整分钟时间');
+          r.freeze_schedule={id:uid(),at:new Date(ms).toISOString(),farewell:data.farewell===true,created_at:at};
+          save();return {ok:true,relation:r,character:char(c,p.id)};
+        }
         if(typeof data.frozen!=='boolean')bodyErr('冻结状态无效');
         if(Boolean(r.frozen_at)===data.frozen)return {ok:true,relation:r,character:char(c,p.id)};
-        const at=stamp(),key=pairKey(p.id,c.id);
-        if(data.frozen){
-          if(r.mode==='meeting'){
-            const mid=r.active_meeting_id||'';
-            const rows=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===mid);
-            if(mid&&rows.length)upsertMeetingRecord(p,c,mid,rows,r.meeting_location||'','',at);
-            r.mode='chat';r.active_meeting_id='';r.meeting_started_at='';
-          }
-          r.frozen_at=at;
-          clearQueue(p.id,c.id);clearTaskStatesForPair(p.id,c.id);cancelPairModelCalls(p.id,c.id);
-          clearBgError(p.id,c.id);
-        }else{
-          const from=r.freeze_reconnect&&!r.freeze_reconnect.explanation?r.freeze_reconnect.from:r.frozen_at;
-          r.freeze_reconnect={from,to:at,explanation:''};
-          r.frozen_at='';
+        if(data.frozen)beginCharacterFreeze(p,c,r,at);
+        else{
+          const old=r.freeze_reconnect&&!r.freeze_reconnect.explanation?r.freeze_reconnect:null;
+          r.freeze_reconnect={from:old?.from||r.frozen_at,to:at,explanation:'',farewell_text:r.freeze_departure||old?.farewell_text||''};
+          r.frozen_at='';delete r.freeze_departure;
           db.proactiveLog[key]=Date.now();
           clearQueue(p.id,c.id);clearTaskStatesForPair(p.id,c.id);
+          const q=db.queue[key];if(q)q.userPaused=false;
+          r.freeze_revision=Number(r.freeze_revision||0)+1;r.updated_at=at;
         }
-        r.freeze_revision=Number(r.freeze_revision||0)+1;
-        r.updated_at=at;save();return {ok:true,relation:r,character:char(c,p.id)};
+        save();return {ok:true,relation:r,character:char(c,p.id)};
       }
       case '/bootstrap':episodeStore();try{save();}catch{}return {profiles:db.profiles.slice(),sources:[...new Set([...SOURCES,...Array.from(byId.values(),c=>c.source)])].sort(),settings:pub(),catalog_size:byId.size};
       case '/health':return {ok:true,name:'Parallel Portable',version:'0.5.1'};
@@ -5237,7 +5298,7 @@
             return {delivered:[],sent:[],skipped:'global-stagger-cooldown'};
           }
         }
-        const matchedRels=Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&!r.frozen_at&&r.mode==='chat'&&byId.has(r.character_id)&&(!targetCid||r.character_id===targetCid));
+        const matchedRels=Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&!characterFrozen(p.id,r.character_id)&&r.mode==='chat'&&byId.has(r.character_id)&&(!targetCid||r.character_id===targetCid));
         const candidatesList=[];
         for(const r of matchedRels){
           const cid=r.character_id;

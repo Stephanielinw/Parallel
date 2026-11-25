@@ -333,7 +333,7 @@
       if(mode==='meeting')db.events.at(-1).message_id=reply.id;
       const uList=userMsg?[userMsg]:messagesOf(p.id,c.id).filter(m=>m.sender==='user').slice(-1);
       recordDialogueEpisode(p,c,uList,{...reply,text:combinedTxt},mode);
-      if(mode==='chat')syncSurveillanceFromChat(p,c,uList,combinedTxt);
+      if(mode==='chat'){recordReconnect(p.id,c.id,combinedTxt);syncSurveillanceFromChat(p,c,uList,combinedTxt);}
     }
     save();
     if(mode==='meeting'&&reply&&activeMid){
@@ -412,6 +412,8 @@
   }
   async function produceProactiveMessage(p,c,reason='idle',unresolvedMem=null,isBackground=true){
     if(characterFrozen(p.id,c.id))return {replies:[],skipped:'character-frozen'};
+    const farewellPlan=reason==='freeze_farewell'?relation(p.id,c.id)?.freeze_schedule:null;
+    if(reason==='freeze_farewell'&&(!farewellPlan||!farewellPlan.farewell||farewellPlan.farewell_text))return {replies:[],skipped:'farewell-unavailable'};
     const epoch=freezeEpoch(p.id,c.id),reconnecting=Boolean(freezeReconnect(p.id,c.id)&&!freezeReconnect(p.id,c.id).explanation);
     const curMode=pub().mode;
     if(curMode==='normal')return {replies:[],skipped:'no-api'};
@@ -420,7 +422,7 @@
     if(curMode==='live'){
       try{
         const ms=prompt(p,c,'chat',[],{entry_point:'chat_proactive'});
-        const memHint=reconnecting?'你最近有自己的事务，未能联系对方。先自然交代自身原因，再简单问候。':unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
+        const memHint=farewellPlan?'你即将在 '+chatClockLabel(Date.parse(farewellPlan.at))+' 起因自己符合原作人设的事务暂时无法联系。用自然的1至2条消息提前说明原因、简单道别，仍给对方回应空间。不许编造共同经历、提及系统、分手、索取承诺或要求见面。':reconnecting?'你最近有自己的事务，未能联系对方。先自然交代自身原因，再简单问候。':unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
         ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】当前手机本地时刻是 ${chatClockLabel(Date.now())}。距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}必须遵守当前钟点：凌晨绝不是上午或中午；不要推断对方已经醒来、已起床或睡到了中午。不要把旧约定当成已经发生的共同经历。请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
         txt=await llm(ms,{profile:p,character:c,mode:'chat',entry_point:'chat_proactive',background:isBackground});
         engine='live';
@@ -450,7 +452,7 @@
     if((latestRows.at(-1)?.id||'')!==previousLast)
       return {replies:[],skipped:'conversation-changed'};
     const currentRel=relation(p.id,c.id);
-    if(!currentRel||currentRel.frozen_at||epoch!==freezeEpoch(p.id,c.id)||currentRel.status!=='matched'||currentRel.mode!=='chat')
+    if(!currentRel||characterFrozen(p.id,c.id)||epoch!==freezeEpoch(p.id,c.id)||currentRel.status!=='matched'||currentRel.mode!=='chat'||(farewellPlan&&currentRel.freeze_schedule?.id!==farewellPlan.id))
       return {replies:[],skipped:'relation-changed'};
     if(isBackground&&proactiveQuietReason(latestRows,Date.now()))
       return {replies:[],skipped:'quiet-hours'};
@@ -461,7 +463,8 @@
       save();
       return {replies:[],skipped:'temporal-contradiction'};
     }
-    if(reconnecting&&engine==='demo')txt='这段时间有些自己的事情要处理，一直没顾上联系你。|||最近怎么样？';
+    if(farewellPlan&&engine==='demo')txt='过一会儿我有点自己的事情要处理，可能会暂时联系不上。|||等忙完再跟你说。';
+    else if(reconnecting&&engine==='demo')txt='这段时间有些自己的事情要处理，一直没顾上联系你。|||最近怎么样？';
     const bubbleTexts=splitChatBubbles(txt).slice(0,3);
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine));
     const lastReply=replies[replies.length-1]||null;
@@ -469,7 +472,8 @@
       const combinedTxt=replies.map(m=>m.text).join(' / ');
       event(p.id,c.id,'ai_proactive',c.name+' 主动联系 '+p.name+'：'+combinedTxt.slice(0,180));
       recordDialogueEpisode(p,c,[],{...lastReply,text:combinedTxt},'chat');
-      recordReconnect(p.id,c.id,combinedTxt);
+      if(farewellPlan)currentRel.freeze_schedule.farewell_text=combinedTxt.slice(0,500);
+      else recordReconnect(p.id,c.id,combinedTxt);
       if(!reconnecting&&unresolvedMem&& unresolvedMem.unresolved){
         const found=(db.episodicMemories||[]).find(m=>m.id===unresolvedMem.id);
         if(found)found.unresolved=0;

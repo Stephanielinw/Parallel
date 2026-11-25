@@ -1,7 +1,14 @@
   const getP=id=>db.profiles.find(p=>p.id===id)||bodyErr('请先选择有效的 Profile');
   const getC=id=>byId.get(id)||bodyErr('原作人物目录中不存在此角色');
   const relation=(pid,cid)=>db.relations[pairKey(pid,cid)];
-  const characterFrozen=(pid,cid)=>Boolean(relation(pid,cid)?.frozen_at);
+  const freezeDue=(rel,now=Date.now())=>Boolean(rel?.freeze_schedule?.at&&Date.parse(rel.freeze_schedule.at)<=now);
+  const characterFrozen=(pid,cid)=>{const rel=relation(pid,cid);return Boolean(rel?.frozen_at||freezeDue(rel));};
+  const freezeFarewellDirective=(pid,cid)=>{
+    const plan=relation(pid,cid)?.freeze_schedule;
+    if(!plan||!plan.farewell||freezeDue(relation(pid,cid)))return '';
+    if(plan.farewell_text)return '\n【近期个人安排】你已经告诉对方：'+plan.farewell_text+'。计划于 '+chatClockLabel(Date.parse(plan.at))+' 起暂时无法联系。不要反复道别，不要把尚未发生的离开写成已经发生。';
+    return '\n【近期个人安排】你因自己的生活或工作安排，预计从 '+chatClockLabel(Date.parse(plan.at))+' 起暂时无法保持联系。现在仍然正常相处；若自然涉及离别，可以提前交代，不要将其写成分手、索取承诺、强迫见面或要求对方等待；不提系统或冻结。';
+  };
   const freezeEpoch=(pid,cid)=>Number(relation(pid,cid)?.freeze_revision||0);
   const pairModelControllers=new Map();
   const cancelPairModelCalls=(pid,cid)=>{
@@ -14,8 +21,9 @@
     const gap=freezeReconnect(pid,cid);
     if(!gap)return '';
     const from=chatClockLabel(Date.parse(gap.from)),to=chatClockLabel(Date.parse(gap.to));
+    const prior=gap.farewell_text?' 此前你已亲口告诉对方：'+gap.farewell_text+'。后续原因必须与此一致，不得另编冲突原因。':'';
     if(gap.explanation)return '\n【角色个人生活间隔】你曾在 '+from+' 至 '+to+' 之间没有联系对方。你后来亲口说过：'+gap.explanation+'。以已发送内容为连续性依据，不要反复解释，不要编造共同经历。';
-    return '\n【角色个人生活间隔 · 重要】从 '+from+' 到 '+to+'，是你因自身事务暂时没能联系对方，不是对方疏远你。根据原作身份、时长及已有事实选择自然原因，首次重新联系时用符合人设的简短口吻交代，随后正常交流。不要责怪、索取补偿、连环邀约或杜撰共同经历；不得提及系统、冻结、休眠。';
+    return '\n【角色个人生活间隔 · 重要】从 '+from+' 到 '+to+'，是你因自身事务暂时没能联系对方，不是对方疏远你。根据原作身份、时长及已有事实选择自然原因，首次重新联系时用符合人设的简短口吻交代，随后正常交流。不要责怪、索取补偿、连环邀约或杜撰共同经历；不得提及系统、冻结、休眠。'+prior;
   };
   const recordReconnect=(pid,cid,text)=>{
     const gap=freezeReconnect(pid,cid);
@@ -688,5 +696,5 @@
   const char=(c,pid='')=>{
     const rel=pid?relation(pid,c.id):null;
     const nick=String(rel?.nickname||'').trim();
-    return {...c,frozen:Boolean(rel?.frozen_at),frozen_at:rel?.frozen_at||'',nickname:nick,display_name:nick||c.name,portrait:db.portraits[c.id]||null,bio:db.bios[c.id]||c.bio,tags:(Array.isArray(db.bioTags?.[c.id])&&db.bioTags[c.id].length)?db.bioTags[c.id]:c.tags};
+    return {...c,frozen:characterFrozen(pid,c.id),frozen_at:rel?.frozen_at||'',freeze_schedule:rel?.freeze_schedule||null,nickname:nick,display_name:nick||c.name,portrait:db.portraits[c.id]||null,bio:db.bios[c.id]||c.bio,tags:(Array.isArray(db.bioTags?.[c.id])&&db.bioTags[c.id].length)?db.bioTags[c.id]:c.tags};
   };
