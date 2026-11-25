@@ -379,7 +379,7 @@
       sys+=`\n当前见面地点（来自实际互动，不参考监控预排）：「${meetingLoc}」。进入见面模式不代表对方已到、双方已见面或共同活动。`;
     }
     sys+=reconnectDirective(p.id,c.id);
-    sys+=freezeFarewellDirective(p.id,c.id);
+    if(!options.rerollAt)sys+=freezeFarewellDirective(p.id,c.id);
     if(mode==='chat')sys+=recentActualMeetingContext(p,c,querySeed,options.simulatedAt||Date.now());
     sys+='\n【共同经历事实优先级】当前真实互动/实际现场原文 > 带时间戳的角色位置陈述 > 已确认但未发生的约定 > 监控/日程推演。任何预定见面、吃饭、回家、接送，未经现场原文证实均不得用过去时说成双方曾一起做过；不得为对方杜撰对白或自称记得没有证据的共同经历。模型摘要是线索而非证言。';
     if(recalled.length){

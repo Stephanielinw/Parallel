@@ -25,6 +25,12 @@ function start(){const window={};vm.runInNewContext(src,{window,localStorage,Dat
  await req('/character-freeze',{characterId:cid,frozen:false});assert(pair().freeze_reconnect);
  assert(JSON.stringify(e.buildPromptPreview(pid,cid,'chat')).includes('不是对方疏远你'));
  let at=new Date(now+60*60000).toISOString();
+ await req('/character-freeze',{characterId:cid,startAt:at,farewell:false});
+ assert(JSON.stringify(e.buildPromptPreview(pid,cid,'chat')).includes('本轮必须发生的角色个人事件'));
+ await req('/message',{characterId:cid,text:'How are you?'});
+ const next=await req('/chat-flush',{characterId:cid,force:true});assert(next.reply);assert(pair().freeze_schedule.farewell_text.includes('刚收到一条通知'));
+ assert(!JSON.stringify(e.buildPromptPreview(pid,cid,'chat')).includes('本轮必须发生的角色个人事件'));
+ await req('/character-freeze',{characterId:cid,cancelSchedule:true});
  await req('/character-freeze',{characterId:cid,startAt:at,farewell:true});assert.equal(pair().freeze_schedule.at,at);
  assert.equal((await req('/character-freeze-tick',{allowFarewell:true})).sent.length,0);
  now+=35*60000;assert.equal((await req('/character-freeze-tick',{allowFarewell:true})).sent.length,1);

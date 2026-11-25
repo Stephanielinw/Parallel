@@ -28,3 +28,13 @@ test('Mobile UI & ROUND-02a regression guards: read cursor, model picker, divide
   assert.ok(offlineJs.includes('LOG_MAX_BYTES=4*1024*1024'), 'Enforces max log byte capacity');
   assert.ok(offlineJs.includes("case '/system-logs-settings':"), 'Supports toggling generation log recording on/off');
 });
+
+// M14: only actual incoming turns may drive unread status; indicators have a dedicated trailing slot.
+test('M14 inbox badge and freeze SVG',()=>{
+  const line=appJs.match(/const isIncoming=m=>Boolean\([^\n]+/)[0];
+  const incoming=new Function(line+';return isIncoming')();
+  const ai={id:'real-ai',sender:'ai',mode:'meeting',engine:'live',text:'Hello'};
+  assert.equal(incoming(ai),true);assert.equal(incoming({...ai,id:'typing',engine:'human'}),false);assert.equal(incoming({...ai,sender:'user'}),false);
+  assert.ok(appJs.includes('thread-status-slot'));assert.ok(styleCss.includes('.thread-status-slot{'));
+  assert.ok(appJs.includes("I('snowflake')"));assert.ok(!appJs.includes('❄'));
+});
