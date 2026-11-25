@@ -165,6 +165,25 @@
     return {rawText,data,parseErr};
   };
   async function llm(messages,options={}){
+    const pid=options.profile?.id,cid=options.character?.id;
+    if(!pid||!cid)return llmUnfrozen(messages,options);
+    if(characterFrozen(pid,cid))bodyErr('角色休眠中，请先解除冻结');
+    const epoch=freezeEpoch(pid,cid),key=pairKey(pid,cid);
+    const ctrl=typeof AbortController==='function'?new AbortController():null;
+    const group=pairModelControllers.get(key)||new Set(),external=options.signal;
+    const forward=()=>ctrl?.abort();
+    if(ctrl){group.add(ctrl);pairModelControllers.set(key,group);if(external?.aborted)forward();else external?.addEventListener('abort',forward,{once:true});}
+    try{
+      const out=await llmUnfrozen(messages,{...options,signal:ctrl?.signal||external});
+      if(characterFrozen(pid,cid)||epoch!==freezeEpoch(pid,cid))bodyErr('角色状态已变化，忽略旧请求');
+      return out;
+    }finally{
+      external?.removeEventListener('abort',forward);
+      if(ctrl)group.delete(ctrl);
+      if(!group.size&&pairModelControllers.get(key)===group)pairModelControllers.delete(key);
+    }
+  }
+  async function llmUnfrozen(messages,options={}){
     const s=options.connection||db.connection;
     const mode=options.mode||(options.json_mode?'json':'chat');
     const pObj=options.profile||null;

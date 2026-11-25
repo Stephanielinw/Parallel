@@ -107,6 +107,7 @@
     finally{try{if(JSON.parse(localStorage.getItem(ARCHIVE_LEASE_KEY)||'null')?.token===token)localStorage.setItem(ARCHIVE_LEASE_KEY,'');}catch{}}
   }
   async function archiveOne(p,c,candidate,manual=false){
+    if(characterFrozen(p.id,c.id))return archiveOutcome('idle','角色休眠中');
     if(archiveBusy)return archiveOutcome('busy','另一个情节正在归档');
     if(!manual&&db.connection.archive_enabled===false)return archiveOutcome('disabled','自动归档已关闭');
     if(archiveChatBusy())return archiveOutcome('busy','正在生成聊天回复，空闲后自动整理');
@@ -185,7 +186,7 @@
     lastArchiveTick=now;
     const candidates=[];
     for(const rel of Object.values(db.relations||{})){
-      if(rel.status!=='matched')continue;
+      if(rel.status!=='matched'||rel.frozen_at)continue;
       const p=db.profiles.find(x=>x.id===rel.profile_id),c=byId.get(rel.character_id);
       if(!p||!c)continue;
       for(const candidate of episodeList(p,c))if(archiveJobReady(candidate.job,now))candidates.push({p,c,candidate});

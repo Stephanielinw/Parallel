@@ -1,6 +1,82 @@
+  const beginCharacterFreeze=(p,c,r,at)=>{
+    const plan=r.freeze_schedule;
+    if(r.mode==='meeting'){
+      const mid=r.active_meeting_id||'';
+      const rows=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===mid);
+      if(mid&&rows.length){
+        const rec=upsertMeetingRecord(p,c,mid,rows,r.meeting_location||'','',at);
+        if(rec)syncSurveillanceOnMeetingEnd(p,c,rec);
+      }
+      r.mode='chat';r.active_meeting_id='';r.meeting_started_at='';
+    }
+    r.frozen_at=at;r.freeze_departure=plan?.farewell_text||'';
+    delete r.freeze_schedule;
+    clearQueue(p.id,c.id);clearTaskStatesForPair(p.id,c.id);cancelPairModelCalls(p.id,c.id);
+    const q=db.queue[pairKey(p.id,c.id)];if(q)q.userPaused=false;
+    clearBgError(p.id,c.id);
+    r.freeze_revision=Number(r.freeze_revision||0)+1;r.updated_at=at;
+  };
+  const applyScheduledFreezes=()=>{
+    const changed=[];
+    for(const rel of Object.values(db.relations)){
+      if(rel.status!=='matched'||rel.frozen_at||!freezeDue(rel))continue;
+      const p=db.profiles.find(x=>x.id===rel.profile_id),c=byId.get(rel.character_id);
+      if(!p||!c)continue;
+      beginCharacterFreeze(p,c,rel,rel.freeze_schedule.at);
+      changed.push({profileId:p.id,characterId:c.id});
+    }
+    if(changed.length)save();
+    return changed;
+  };
   async function request(path,data){
     const [route,qs='']=path.split('?'), params=new URLSearchParams(qs);data=data||{};
+    const transitioned=applyScheduledFreezes();
+    const scopedPid=String(data.profileId||params.get('profileId')||''),scopedCid=String(data.characterId||params.get('characterId')||'');
+    const frozenAllowed=new Set(['/thread','/task-state','/memories','/memory-action','/nickname','/unmatch','/character-freeze','/proactive-check','/chat-flush','/chat-photo-read']);
+    if(scopedPid&&scopedCid&&characterFrozen(scopedPid,scopedCid)&&!frozenAllowed.has(route))bodyErr('角色休眠中，请先解除冻结');
     switch(route){
+      case '/character-freeze-tick':{
+        const p=getP(data.profileId);
+        if(data.allowFarewell!==true||pub().mode==='normal'||proactiveQuietReason([],Date.now()))return {transitioned,sent:[]};
+        const now=Date.now();
+        const eligible=Object.values(db.relations).filter(rel=>{
+          const plan=rel.freeze_schedule,due=Date.parse(plan?.at||'');
+          const q=queueInfo(p.id,rel.character_id);
+          return rel.profile_id===p.id&&rel.status==='matched'&&rel.mode==='chat'&&!rel.frozen_at&&plan?.farewell&&!plan.farewell_text&&!plan.attempted_at&&due>now&&due-now<=30*60000&&q.status!=='inflight'&&!q.count&&!q.paused&&!proactiveQuietReason(messagesOf(p.id,rel.character_id),now);
+        }).sort((a,b)=>Date.parse(a.freeze_schedule.at)-Date.parse(b.freeze_schedule.at));
+        const rel=eligible[0];if(!rel)return {transitioned,sent:[]};
+        const c=getC(rel.character_id);rel.freeze_schedule.attempted_at=stamp();save();
+        const result=await produceProactiveMessage(p,c,'freeze_farewell',null,true);
+        return {transitioned:[...transitioned,...applyScheduledFreezes()],sent:result.replies?.length?[{characterId:c.id,characterName:c.name,replies:result.replies}]:[]};
+      }
+      case '/character-freeze':{
+        const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id);
+        const at=stamp(),key=pairKey(p.id,c.id);
+        if(data.cancelSchedule===true){
+          if(r.frozen_at)bodyErr('已到冻结时间，请解除冻结');
+          delete r.freeze_schedule;save();return {ok:true,relation:r,character:char(c,p.id)};
+        }
+        if(data.startAt){
+          if(r.frozen_at)bodyErr('角色已休眠，请先解除冻结');
+          const ms=Date.parse(data.startAt);
+          if(!Number.isFinite(ms)||ms<=Date.now()||ms%60000!==0)bodyErr('请选择未来的整分钟时间');
+          r.freeze_schedule={id:uid(),at:new Date(ms).toISOString(),farewell:data.farewell===true,created_at:at};
+          save();return {ok:true,relation:r,character:char(c,p.id)};
+        }
+        if(typeof data.frozen!=='boolean')bodyErr('冻结状态无效');
+        if(Boolean(r.frozen_at)===data.frozen)return {ok:true,relation:r,character:char(c,p.id)};
+        if(data.frozen)beginCharacterFreeze(p,c,r,at);
+        else{
+          const old=r.freeze_reconnect&&!r.freeze_reconnect.explanation?r.freeze_reconnect:null;
+          r.freeze_reconnect={from:old?.from||r.frozen_at,to:at,explanation:'',farewell_text:r.freeze_departure||old?.farewell_text||''};
+          r.frozen_at='';delete r.freeze_departure;
+          db.proactiveLog[key]=Date.now();
+          clearQueue(p.id,c.id);clearTaskStatesForPair(p.id,c.id);
+          const q=db.queue[key];if(q)q.userPaused=false;
+          r.freeze_revision=Number(r.freeze_revision||0)+1;r.updated_at=at;
+        }
+        save();return {ok:true,relation:r,character:char(c,p.id)};
+      }
       case '/bootstrap':episodeStore();try{save();}catch{}return {profiles:db.profiles.slice(),sources:[...new Set([...SOURCES,...Array.from(byId.values(),c=>c.source)])].sort(),settings:pub(),catalog_size:byId.size};
       case '/health':return {ok:true,name:'Parallel Portable',version:'0.5.1'};
       case '/identify':return {matches:idMatches(params.get('name')||'',params.get('source')||''),verified:'mixed-catalog'};
@@ -174,7 +250,7 @@
             return {delivered:[],sent:[],skipped:'global-stagger-cooldown'};
           }
         }
-        const matchedRels=Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&r.mode==='chat'&&byId.has(r.character_id)&&(!targetCid||r.character_id===targetCid));
+        const matchedRels=Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&!characterFrozen(p.id,r.character_id)&&r.mode==='chat'&&byId.has(r.character_id)&&(!targetCid||r.character_id===targetCid));
         const candidatesList=[];
         for(const r of matchedRels){
           const cid=r.character_id;
@@ -186,7 +262,7 @@
           const lastTs=lastMsg?Date.parse(lastMsg.created_at)||0:Date.parse(r.updated_at)||0;
           const lastProactive=db.proactiveLog[pairKey(p.id,cid)]||0;
           const elapsedMs=now-Math.max(lastTs,lastProactive);
-          const unresolvedMem=(db.episodicMemories||[]).filter(m=>m.owner_id===cid&&m.profile_id===p.id&&m.unresolved&&!m.disputed&&!m.isolated_error).sort((a,b)=>b.event_at.localeCompare(a.event_at))[0]||null;
+          const unresolvedMem=(r.freeze_reconnect&&!r.freeze_reconnect.explanation)?null:(db.episodicMemories||[]).filter(m=>m.owner_id===cid&&m.profile_id===p.id&&m.unresolved&&!m.disputed&&!m.isolated_error).sort((a,b)=>b.event_at.localeCompare(a.event_at))[0]||null;
           let eligible=false,reason='idle',priority=0;
           if(trigger==='manual'){
             eligible=true;
@@ -233,9 +309,8 @@
       }
       case '/thread':{
         const p=getP(params.get('profileId')),c=getC(params.get('characterId')),r=requireMatch(p.id,c.id);
-        ensureMeetingRecords(p,c);
-        getOrInitSurveillance(p,c);
-        const diaryPayload=buildDiaryPayload(p,c);
+        if(!r.frozen_at){ensureMeetingRecords(p,c);getOrInitSurveillance(p,c);}
+        const diaryPayload=r.frozen_at?{latestDate:'',availableDates:[],diary:null}:buildDiaryPayload(p,c);
         const meetings=(db.meetings||[]).filter(x=>x.profile_id===p.id&&x.character_id===c.id);
         const ts=getTaskState(p.id,c.id,r.mode||'chat')||getTaskState(p.id,c.id,'chat');
         const threadMsgs=messagesOf(p.id,c.id);
@@ -253,7 +328,7 @@
           queue:queueInfo(p.id,c.id),
           taskState:ts,
           bgErrors:db.bgErrors?.[pairKey(p.id,c.id)]||null,
-          surveillance:buildSurveillancePayload(p,c),
+          surveillance:r.frozen_at?null:buildSurveillancePayload(p,c),
           diarySummary:{latestDate:diaryPayload.latestDate,availableDates:diaryPayload.availableDates,latestTitle:diaryPayload.diary?.title||''}
         };
       }

@@ -633,6 +633,7 @@ async function loadThread(cid,render=true){
   const tItem=state.threads.find(x=>x.character.id===cid);
   if(tItem){
     if(r.character)tItem.character=r.character;
+    if(r.relation)tItem.relation=r.relation;
     tItem.last_incoming=state.messages.filter(isIncoming).at(-1)||null;
     tItem.queue=r.queue||tItem.queue;
     tItem.taskState=r.taskState||null;
@@ -646,14 +647,14 @@ async function loadThread(cid,render=true){
   state.queue=r.queue||{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paused:false,paceMode:state.hotChat?'hot':'daily',hotChat:state.hotChat};
   state.taskState=r.taskState||r.queue?.taskState||null;
   state.bgErrors=r.bgErrors||null;
-  if(state.settings?.mode==='live'&&r.surveillance?.engine!=='live'){
+  if(!r.character?.frozen&&state.settings?.mode==='live'&&r.surveillance?.engine!=='live'){
     const pid=state.activeId;
     api('/surveillance',{profileId:pid,characterId:cid}).then(surv=>{
       if(surv&&state.activeId===pid)state.surveillanceMap[typingPair(pid,cid)]=surv;
     }).catch(()=>{});
   }
   if(render)renderMessages();else renderMessages();
-  if(state.chatMode==='chat'&&state.settings?.auto_translate!==false){
+  if(!r.character?.frozen&&state.chatMode==='chat'&&state.settings?.auto_translate!==false){
     void scheduleAutoTranslation(pid,cid);
   }
 }
@@ -664,6 +665,7 @@ async function scheduleAutoTranslation(profileId,characterId,specificIds=null,fo
   if(state.activeId!==profileId||state.threadId!==characterId)return;
   const thread=state.threads.find(x=>x.character.id===characterId);
   const c=thread?.character;
+  if(c?.frozen)return;
   const p=activeProfile();
   const ignoreNames=[c?.name||'',p?.name||'',...(c?.aliases||[])];
   const reqSet=Array.isArray(specificIds)&&specificIds.length?new Set(specificIds):null;
@@ -746,7 +748,7 @@ function renderMessagesListItems(){
   const retry=count>1?`<div style="padding:8px"><button class="btn soft" data-action="retry-backlog">重试 ${count} 个积压回复</button></div>`:'';
   return retry+`<div class="threads-header">CONNECTIONS · ${state.threads.length}</div>${state.threads.map(x=>{
     const rawLast=(x.last?.engine==='recalled'||x.last?.recalled)?'撤回了一条消息':(x.last?.text||'刚刚匹配');
-    const lastTxt=cleanBodyText(rawLast,x.last?.sender||'ai');
+    const lastTxt=x.character.frozen?'❄ 休眠中':x.character.freeze_schedule?'❄ 预约冻结 · '+new Date(x.character.freeze_schedule.at).toLocaleString():cleanBodyText(rawLast,x.last?.sender||'ai');
     const dName=displayName(x.character);
     const hasNick=Boolean(x.character.nickname&&x.character.nickname!==x.character.name);
     const isPaused=Boolean(x.queue?.paused||x.queue?.status==='paused'||x.taskState?.status==='paused');
@@ -1194,7 +1196,7 @@ function renderMessages(){
   // Surgical update when staying on the same thread so typing in #chat-input is never interrupted
   const layoutEl=document.querySelector('#view .messages-layout');
   const chatBodyEl=$('chat-body');
-  if(selected&&layoutEl&&chatBodyEl&&existingInput&&state.renderedThreadId===typingPair(state.activeId,state.threadId)){
+  if(selected&&!selected.character.frozen&&layoutEl&&chatBodyEl&&existingInput&&state.renderedThreadId===typingPair(state.activeId,state.threadId)){
     const threadsEl=layoutEl.querySelector('.threads');
     if(threadsEl)threadsEl.innerHTML=renderMessagesListItems();
     const meeting=state.chatMode==='meeting';
@@ -1255,6 +1257,7 @@ function renderMessages(){
 }
 function renderChat(thread){
   const c=thread.character;
+  if(c.frozen)return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表">${I('back')}</button><button class="chat-avatar-trigger" data-action="open-char-hub">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b>${esc(displayName(c))}</b><small>❄ 角色休眠中</small></div></button></div></div><div id="chat-body" class="chat-body">${renderChatMessagesHtml(c)}</div><div class="glass-info" style="margin:12px"><b>❄ 角色已冻结</b><p>历史和记忆已保留。休眠期间不会生成新消息或安排见面。</p><button class="btn primary" data-action="toggle-character-freeze">解除冻结</button></div>`;
   const dName=displayName(c);
   const subText=c.nickname?`原名：${c.name} · ${c.version}`:c.version;
   const meeting=state.chatMode==='meeting';
@@ -1267,6 +1270,34 @@ function renderChat(thread){
   </button>`).join('');
   return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表" title="返回列表">${I('back')}</button><button type="button" class="chat-avatar-trigger" data-action="open-char-hub" aria-label="打开角色专属空间" title="点击打开角色专属空间（监控、日记、记忆档案与备注）">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b title="${esc(dName)}">${esc(dName)}</b><small class="${charTyping?'typing-header-hint':''}" title="${esc(subText)}">${charTyping?'对方正在输入中…':esc(subText)}</small></div></button></div><div class="chat-header-actions"><span id="chat-mode-btn-slot">${renderHeaderModeButton(meeting)}</span><button type="button" class="icon-btn danger-icon" data-action="unmatch" aria-label="解除匹配" title="解除匹配">${I('unmatch')}</button></div></div><div id="chat-body" class="chat-body ${meeting?'meeting-novel-body':''}">${renderChatMessagesHtml(c)}</div><div id="chat-paused-banner-slot">${renderPausedTaskBanner()}</div><div id="chat-quote-slot">${chatQuoteBar()}</div><form id="chat-form" class="chat-compose"><textarea id="chat-input" rows="1" placeholder="${meeting?'写下你在见面时的动作、神态或台词……':'输入消息……'}" maxlength="4000" required></textarea><button class="send" type="submit" title="发送消息" ${isBusy?'disabled':''}>${I('send')}</button><button class="chat-plus-btn ${plusOpen?'active':''}" type="button" data-action="toggle-chat-plus" aria-label="更多功能" aria-expanded="${plusOpen?'true':'false'}" title="更多功能（照片、语音、表情包、电话、视频电话）">${I('plus')}</button></form><div id="chat-plus-panel" class="chat-plus-panel ${plusOpen?'open':''}" role="region" aria-label="聊天扩展功能面板"><div class="chat-plus-grid">${plusItemsHtml}</div></div><div class="chat-queue-status" id="chat-queue-status" aria-live="polite"></div>`;
 }
+async function changeCharacterFreeze(data){
+  const pid=state.activeId,cid=state.threadId,thread=state.threads.find(t=>t.character.id===cid);
+  if(!thread)return;
+  if(data.frozen===true&&thread.relation?.mode==='meeting'&&!confirm('冻结会结束当前见面并保留已有记录。继续吗？'))return;
+  try{
+    await api('/character-freeze',{profileId:pid,characterId:cid,...data});
+    if(!isCurrentPair(pid,cid))return;
+    closeModal();await loadThreads(cid);
+    toast(data.startAt?'预约冻结已保存':data.cancelSchedule?'已取消预约':data.frozen?'角色已冻结，记录已保留':'角色已解除冻结');
+  }catch(e){toast(e.message);}
+}
+let freezeTickBusy=false;
+async function tickCharacterFreezes(){
+  if(freezeTickBusy||!bootReady||!globalThis.ParallelOffline||!state.activeId||document.hidden)return;
+  freezeTickBusy=true;const pid=state.activeId;
+  try{
+    const result=await api('/character-freeze-tick',{profileId:pid,allowFarewell:!state.chatBusy&&!state.flushBusy&&!state.proactiveBusy&&!state.revealingBubbles&&!recoveryBusy&&state.settings.proactive_mode!=='off'});
+    if(state.activeId!==pid)return;
+    const changes=(result.transitioned||[]).some(x=>x.profileId===pid);
+    const stale=state.threads.some(x=>!x.character.frozen&&x.character.freeze_schedule&&Date.parse(x.character.freeze_schedule.at)<=Date.now());
+    if(changes||stale||result.sent?.length){
+      if(state.tab==='messages')await loadThreads(state.threadId);
+      else await refreshInboxSnapshot(pid);
+    }
+    for(const item of result.sent||[])toast('收到来自 '+item.characterName+' 的消息');
+  }catch{}finally{freezeTickBusy=false;}
+}
+setInterval(()=>{void tickCharacterFreezes();},5000);
 function openCharacterHubModal(editingNick=false){
   const thread=state.threads.find(x=>x.character.id===state.threadId);
   if(!thread)return;
@@ -1318,11 +1349,11 @@ function openCharacterHubModal(editingNick=false){
         <b>记忆档案</b>
         <small>查看见面回忆与按日归档</small>
       </button>
-      <button type="button" class="char-hub-item is-placeholder" disabled title="即将推出">
-        <span class="char-hub-ic">${I('compass')}</span>
-        <b>待定功能</b>
-        <small>预留专属空间槽位</small>
-      </button>
+      ${globalThis.ParallelOffline?`<button type="button" class="char-hub-item" data-action="toggle-character-freeze" aria-pressed="${c.frozen?'true':'false'}">
+        <span class="char-hub-ic">❄</span>
+        <b>${c.frozen?'解除角色冻结':c.freeze_schedule?'管理预约冻结':'角色冻结'}</b>
+        <small>${c.frozen?'休眠中 · 点击恢复':c.freeze_schedule?'已预约 '+esc(new Date(c.freeze_schedule.at).toLocaleString()):'立即冻结或预约开始时间'}</small>
+      </button>`:`<button type="button" class="char-hub-item is-placeholder" disabled title="当前仅浏览器版支持角色冻结"><span class="char-hub-ic">❄</span><b>角色冻结</b><small>当前仅网页版 / 单 HTML 版支持</small></button>`}
     </div>`;
   modal(html,`<button class="btn soft" data-action="close-modal">关闭</button>`);
   if(editingNick){
@@ -3054,6 +3085,24 @@ if(a==='back-threads'){++threadRequestSeq;++modalRequestSeq;state.threadId='';st
 if(a==='change-mode')return changeMode();
 if(a==='surv-close-meeting')return modal('<h2>结束这次见面？</h2><p>会把这一场存为回忆卡片并切回手机聊天。若是不小心点到，请选「继续见面」；即使误结束，也能从旧卡片接着这一场继续。</p>','<button class="btn primary" data-action="close-modal">继续见面</button><button class="btn soft" data-action="confirm-surv-close-meeting">确认结束并归档</button>');
 if(a==='confirm-surv-close-meeting'){closeModal();return changeMode();}
+if(a==='toggle-character-freeze'){
+  if(!globalThis.ParallelOffline)return toast('当前仅网页版 / 单 HTML 版支持角色冻结');
+  const thread=state.threads.find(t=>t.character.id===state.threadId);if(!thread)return;
+  if(thread.character.frozen)return changeCharacterFreeze({frozen:false});
+  const plan=thread.character.freeze_schedule;
+  const localValue=iso=>{const d=new Date(iso);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16)};
+  const min=localValue(Math.ceil((Date.now()+1000)/60000)*60000);
+  const value=plan?localValue(plan.at):localValue(Math.ceil((Date.now()+30*60000)/60000)*60000);
+  modal(`<div class="kicker">CHARACTER FREEZE</div><h2>角色冻结 · ${esc(displayName(thread.character))}</h2><p>冻结前可以继续正常聊天和见面；到点自动休眠，记录与记忆保留。</p><label for="freeze-start-at">预约开始时间（本地时间）</label><input type="datetime-local" id="freeze-start-at" min="${min}" value="${value}" step="60"><label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="freeze-farewell" ${plan?.farewell!==false?'checked':''}>允许角色在离开前自然道别</label><p>若页面在线且条件允许，开始前30分钟内最多主动尝试一次道别。离线不会补发。</p>`,`<button class="btn soft" data-action="freeze-now">立即冻结</button>${plan?'<button class="btn soft" data-action="freeze-cancel-schedule">取消预约</button>':''}<button class="btn primary" data-action="freeze-save-schedule">保存预约</button>`);
+  return;
+}
+if(a==='freeze-now')return changeCharacterFreeze({frozen:true});
+if(a==='freeze-cancel-schedule')return changeCharacterFreeze({cancelSchedule:true});
+if(a==='freeze-save-schedule'){
+  const raw=$('freeze-start-at')?.value,ms=raw?new Date(raw).getTime():NaN;
+  if(!Number.isFinite(ms)||ms<=Date.now())return toast('请选择未来的时间');
+  return changeCharacterFreeze({startAt:new Date(ms).toISOString(),farewell:Boolean($('freeze-farewell')?.checked)});
+}
 if(a==='toggle-hot-chat')return toggleHotChat();
 if(a==='open-char-hub')return openCharacterHubModal(false);
 if(a==='toggle-nickname-edit'){
