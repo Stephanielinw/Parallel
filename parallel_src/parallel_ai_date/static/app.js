@@ -1,6 +1,7 @@
 /* Parallel — no framework, no tracking, no external UI dependencies. */
 'use strict';
 const ICONS={
+snowflake:'<path d="M24 7.8c.2 10.6.2 21.5 0 32.4M10 16.1c9.4 5.1 18.8 10.7 28 15.8M10.2 32.1c9.2-5.5 18.5-10.9 27.6-16M18.6 11.5l5.4 5.1 5.4-5.1M18.5 36.3l5.5-5.1 5.5 5.2M9.9 22.4l7.2-2.2-1.5-7.2M38 25.7l-7.2 2.1 1.7 7.2M15.5 35.1l1.6-7.3-7.2-2M32.3 13l-1.5 7.2 7.2 2.1"/>',
 user:'<path d="M24 9.5c3.9-.1 6.4 2.4 6.4 6.2c0 3.7-2.5 6.2-6.3 6.2s-6.3-2.5-6.3-6.2s2.5-6.1 6.2-6.2M11.5 38.8c.2-7.3 5.5-12.4 12.5-12.4s12.3 5.1 12.5 12.4c-8.3.8-16.7.8-25 0"/>',
 heart:'<path d="M24 39c-7-5.5-13.5-10.8-15.5-17.5c-1.5-5 1-9.5 5.5-10.3c4-.7 7.7 1.6 10 5.4c2.3-3.9 6-6.2 10-5.4c4.5.9 7 5.4 5.4 10.4c-2.1 6.7-8.5 12-15.4 17.4"/>',
 sparkleheart:'<path d="M19.4 38.8c-4.8-3.7-9.2-7.3-10.6-11.9c-1-3.4.7-6.5 3.7-7.1c2.8-.4 5.3 1.2 6.9 3.7c1.5-2.6 4.1-4.2 6.8-3.7c3.1.7 4.8 3.7 3.7 7.1c-1.4 4.7-5.8 8.3-10.5 11.9M34.3 9.2c.5 1.4.7 2.8.9 4.3c1.5.1 2.9.5 4.3 1c-1.4.4-2.8.8-4.4.9c-.1 1.5-.3 2.9-.9 4.3q-.6-2.1-.9-4.2c-1.5-.2-3-.6-4.3-1.1q1.95-.75 4.2-.9c.3-1.5.6-2.9 1.1-4.3"/>',
@@ -484,7 +485,7 @@ const beginPairModalRequest=(pid,cid)=>({pid,cid,seq:++modalRequestSeq});
 const ownsPairModalRequest=scope=>Boolean(scope&&scope.seq===modalRequestSeq&&
   state.tab==='messages'&&state.activeId===scope.pid&&state.threadId===scope.cid);
 
-const isIncoming=m=>Boolean(m&&m.id&&m.sender==='ai'&&m.engine!=='error'&&m.engine!=='recalled'&&!m.recalled&&!(m.mode!=='meeting'&&/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(String(m.text||''))));
+const isIncoming=m=>Boolean(m&&m.id&&!['typing','pending'].includes(m.id)&&m.sender==='ai'&&m.engine!=='error'&&m.engine!=='recalled'&&!m.recalled&&!(m.mode!=='meeting'&&/^[\s|｜]*[|｜]{2,}[\s|｜]*$/.test(String(m.text||''))));
 const saveReadCursors=()=>{try{localStorage.setItem(READ_CURSOR_KEY,JSON.stringify(readCursors));}catch{}};
 function applyInboxSnapshot(pid,threads){
   if(pid!==state.activeId)return false;
@@ -512,11 +513,14 @@ function updateNavUnread(){
   }
 }
 function markDisplayedIncomingRead(){
-  if(state.tab!=='messages'||!state.threadId||document.hidden)return;
-  const m=state.messages.filter(x=>isIncoming(x)&&!state.hiddenReplyIds.has(x.id)).at(-1);
+  if(state.tab!=='messages'||!state.threadId||document.hidden||!hasCurrentThreadSnapshot())return;
+  const m=state.messages.filter(x=>isIncoming(x)&&!state.hiddenReplyIds.has(x.id)&&(state.chatMode!=='meeting'||(x.mode==='meeting'&&(!state.activeMeetingId||x.meeting_id===state.activeMeetingId)))).at(-1);
   if(!m)return;
   const pid=state.activeId,cid=state.threadId;
   if((m.profile_id&&m.profile_id!==pid)||(m.character_id&&m.character_id!==cid))return;
+  // Never rewind the cursor when reopening an older meeting; the inbox tracks the latest actual incoming turn.
+  const latest=state.messages.filter(isIncoming).at(-1);
+  if(latest?.id!==m.id)return;
   const map=readCursors[pid]||(readCursors[pid]={});
   if(map[cid]!==m.id){map[cid]=m.id;saveReadCursors();}
   updateNavUnread();
@@ -530,7 +534,12 @@ async function refreshInboxSnapshot(pid=state.activeId){
   applyInboxSnapshot(pid,threads);
   return threads;
 }
-function refreshInboxQuietly(pid=state.activeId){if(pid===state.activeId)void refreshInboxSnapshot(pid).catch(()=>{});}
+function refreshInboxQuietly(pid=state.activeId){if(pid===state.activeId)void refreshInboxSnapshot(pid).then(threads=>{
+  if(!threads||state.activeId!==pid||state.tab!=='messages')return;
+  state.threads=threads;
+  const list=document.querySelector('#view .messages-layout .threads');
+  if(list)list.innerHTML=renderMessagesListItems();
+}).catch(()=>{});}
 
 async function loadThreads(preselect){$('topbar-actions').innerHTML=`<button class="btn soft" data-action="go-discover">${I('sparkleheart')} 继续发现</button>${renderProfileDropdownHtml()}`;if(!activeProfile())return $('view').innerHTML=empty('dog','先创建 Profile','消息会按你当前扮演的身份分别展示。','创建 Profile','profile');const pid=state.activeId;const threads=await refreshInboxSnapshot(pid);if(!threads||state.tab!=='messages'||pid!==state.activeId)return;state.threads=threads;if(preselect)state.threadId=preselect;if(!state.threads.find(x=>x.character.id===state.threadId))state.threadId=window.innerWidth>580?(state.threads[0]?.character.id||''):'';if(state.threadId)await loadThread(state.threadId,false);else renderMessages()}
 // Generation indicators belong to a Profile + Character pair, never the global scheduler.
@@ -748,11 +757,11 @@ function renderMessagesListItems(){
   const retry=count>1?`<div style="padding:8px"><button class="btn soft" data-action="retry-backlog">重试 ${count} 个积压回复</button></div>`:'';
   return retry+`<div class="threads-header">CONNECTIONS · ${state.threads.length}</div>${state.threads.map(x=>{
     const rawLast=(x.last?.engine==='recalled'||x.last?.recalled)?'撤回了一条消息':(x.last?.text||'刚刚匹配');
-    const lastTxt=x.character.frozen?'❄ 休眠中':x.character.freeze_schedule?'❄ 预约冻结 · '+new Date(x.character.freeze_schedule.at).toLocaleString():cleanBodyText(rawLast,x.last?.sender||'ai');
+    const lastTxt=cleanBodyText(rawLast,x.last?.sender||'ai');
     const dName=displayName(x.character);
-    const hasNick=Boolean(x.character.nickname&&x.character.nickname!==x.character.name);
+    const snow=Boolean(x.character.frozen||x.character.freeze_schedule),unread=threadHasUnread(x);
     const isPaused=Boolean(x.queue?.paused||x.queue?.status==='paused'||x.taskState?.status==='paused');
-    return `<button class="thread-card ${x.character.id===state.threadId?'active':''} ${isPaused?'is-paused-thread':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(dName)}${hasNick?`<span class="thread-truename-hint">（${esc(x.character.name)}）</span>`:''}${isPaused?'<span class="thread-paused-pill" title="该对话回复已暂停">已暂停</span>':''}${threadHasUnread(x)?'<span class="thread-unread-badge" title="有新消息" aria-label="有未读消息"></span>':''}</b><p>${esc(lastTxt)}</p></span></button>`;
+    return `<button class="thread-card ${x.character.id===state.threadId?'active':''} ${isPaused?'is-paused-thread':''}" data-action="select-thread" data-id="${esc(x.character.id)}">${avatar({...x.character,avatar:x.character.portrait})}<span class="thread-text"><b>${esc(dName)}${isPaused?'<span class="thread-paused-pill" title="该对话回复已暂停">已暂停</span>':''}</b><p>${esc(lastTxt)}</p></span><span class="thread-status-slot">${snow?`<span class="thread-freeze-icon ${unread?'has-unread':''}" title="${x.character.frozen?'角色已冻结':'已预约冻结'}${unread?' · 有未读消息':''}" aria-label="${x.character.frozen?'角色已冻结':'已预约冻结'}${unread?'，有未读消息':''}">${I('snowflake')}</span>`:unread?'<span class="thread-unread-badge" title="有新消息" aria-label="有未读消息"></span>':''}</span></button>`;
   }).join('')}`;
 }
 function formatNovelParagraphs(text,sender='ai'){
@@ -946,7 +955,7 @@ function renderChatMessagesHtml(c){
       const canEditMeeting=isUser&&m===latestUserTurn&&!charTyping&&!state.chatBusy&&!state.flushBusy&&!state.revealingBubbles;
       return `<article class="novel-turn ${isUser?'novel-user':'novel-ai'}" data-message-id="${esc(m.id||'')}">
         <header class="novel-turn-head">
-          <span class="novel-speaker">${isUser?`${esc(pName)} · 你的行动与台词`:`${esc(c.name)} · 现场描写`}</span>
+          <span class="novel-speaker">${isUser?`${esc(pName)} · 你的行动与台词`:`${esc(displayName(c))} · 现场描写`}</span>
           <span class="novel-turn-meta">#${idx+1} · ${fmtTime(m.created_at)}${m.engine==='demo'?' · 演示':''}</span>
         </header>
         <div class="novel-prose">${formatNovelParagraphs(m.text,m.sender)}</div>
@@ -957,11 +966,11 @@ function renderChatMessagesHtml(c){
     }).join('');
     const emptyNovelHtml=(!turnsHtml&&!charTyping)?`<div class="novel-empty-card">
       <div class="kicker">FACE-TO-FACE NOVEL MODE</div>
-      <h3>与 ${esc(c.name)} 的面对面互动</h3>
-      <p>当前已进入独立文字小说页面（上方气泡聊天已折叠收起）。你可以在下方写下你的动作或台词，或者让 ${esc(c.name)} 先描写见面的第一幕。</p>
-      <button type="button" class="btn soft" data-action="continue-reply">${I('book')} 让 ${esc(c.name)} 描写见面开场</button>
+      <h3>与 ${esc(displayName(c))} 的面对面互动</h3>
+      <p>当前已进入独立文字小说页面（上方气泡聊天已折叠收起）。你可以在下方写下你的动作或台词，或者让 ${esc(displayName(c))} 先描写见面的第一幕。</p>
+      <button type="button" class="btn soft" data-action="continue-reply">${I('book')} 让 ${esc(displayName(c))} 描写见面开场</button>
     </div>`:'';
-    const typingNovelHtml=charTyping?`<div class="typing-inline novel-typing" role="status" aria-live="polite"><span class="typing-label">${esc(c.name)} 正在描写现场反应</span><span class="typing-ellipsis"><i>.</i><i>.</i><i>.</i></span></div>`:'';
+    const typingNovelHtml=charTyping?`<div class="typing-inline novel-typing" role="status" aria-live="polite"><span class="typing-label">${esc(displayName(c))} 正在描写现场反应</span><span class="typing-ellipsis"><i>.</i><i>.</i><i>.</i></span></div>`:'';
     return `<div class="meeting-novel-stage">
       <div class="meeting-stage-bar">
         <div class="meeting-loc-pill">
@@ -1021,7 +1030,7 @@ function renderChatMessagesHtml(c){
     }
     const m=b.msg;
     if(m.engine==='recalled'||m.recalled){
-      return `<div class="recall-notice" data-recalled-id="${esc(m.id)}">${I('refresh','recall-ic')}<span>${m.sender==='user'?'你撤回了一条消息':`${esc(c.name)} 撤回了一条消息`}</span></div>`;
+      return `<div class="recall-notice" data-recalled-id="${esc(m.id)}">${I('refresh','recall-ic')}<span>${m.sender==='user'?'你撤回了一条消息':`${esc(displayName(c))} 撤回了一条消息`}</span></div>`;
     }
     const isRealMsg=Boolean(m.id&&m.id!=='pending'&&m.id!=='typing');
     const origText=cleanBodyText(m.text,m.sender);
@@ -1210,7 +1219,7 @@ function renderMessages(){
     const subEl=layoutEl.querySelector('.chat-heading small');
     if(subEl){
       const c=selected.character;
-      const subText=c.nickname?`原名：${c.name} · ${c.version}`:c.version;
+      const subText='';
       subEl.className=charTyping?'typing-header-hint':'';
       subEl.textContent=charTyping?'对方正在输入中…':subText;
     }
@@ -1257,9 +1266,9 @@ function renderMessages(){
 }
 function renderChat(thread){
   const c=thread.character;
-  if(c.frozen)return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表">${I('back')}</button><button class="chat-avatar-trigger" data-action="open-char-hub">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b>${esc(displayName(c))}</b><small>❄ 角色休眠中</small></div></button></div></div><div id="chat-body" class="chat-body">${renderChatMessagesHtml(c)}</div><div class="glass-info" style="margin:12px"><b>❄ 角色已冻结</b><p>历史和记忆已保留。休眠期间不会生成新消息或安排见面。</p><button class="btn primary" data-action="toggle-character-freeze">解除冻结</button></div>`;
+  if(c.frozen)return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表">${I('back')}</button><button class="chat-avatar-trigger" data-action="open-char-hub">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b>${esc(displayName(c))}</b></div></button></div></div><div id="chat-body" class="chat-body">${renderChatMessagesHtml(c)}</div><div class="glass-info" style="margin:12px"><button class="btn primary" data-action="toggle-character-freeze">${I('snowflake')} 解除冻结</button></div>`;
   const dName=displayName(c);
-  const subText=c.nickname?`原名：${c.name} · ${c.version}`:c.version;
+  const subText='';
   const meeting=state.chatMode==='meeting';
   const isBusy=state.chatBusy||state.flushBusy||state.queue?.status==='inflight';
   const charTyping=isCharacterTyping();
@@ -1350,10 +1359,10 @@ function openCharacterHubModal(editingNick=false){
         <small>查看见面回忆与按日归档</small>
       </button>
       ${globalThis.ParallelOffline?`<button type="button" class="char-hub-item" data-action="toggle-character-freeze" aria-pressed="${c.frozen?'true':'false'}">
-        <span class="char-hub-ic">❄</span>
+        <span class="char-hub-ic">${I('snowflake')}</span>
         <b>${c.frozen?'解除角色冻结':c.freeze_schedule?'管理预约冻结':'角色冻结'}</b>
         <small>${c.frozen?'休眠中 · 点击恢复':c.freeze_schedule?'已预约 '+esc(new Date(c.freeze_schedule.at).toLocaleString()):'立即冻结或预约开始时间'}</small>
-      </button>`:`<button type="button" class="char-hub-item is-placeholder" disabled title="当前仅浏览器版支持角色冻结"><span class="char-hub-ic">❄</span><b>角色冻结</b><small>当前仅网页版 / 单 HTML 版支持</small></button>`}
+      </button>`:`<button type="button" class="char-hub-item is-placeholder" disabled title="当前仅浏览器版支持角色冻结"><span class="char-hub-ic">${I('snowflake')}</span><b>角色冻结</b><small>当前仅网页版 / 单 HTML 版支持</small></button>`}
     </div>`;
   modal(html,`<button class="btn soft" data-action="close-modal">关闭</button>`);
   if(editingNick){
@@ -3093,7 +3102,7 @@ if(a==='toggle-character-freeze'){
   const localValue=iso=>{const d=new Date(iso);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16)};
   const min=localValue(Math.ceil((Date.now()+1000)/60000)*60000);
   const value=plan?localValue(plan.at):localValue(Math.ceil((Date.now()+30*60000)/60000)*60000);
-  modal(`<div class="kicker">CHARACTER FREEZE</div><h2>角色冻结 · ${esc(displayName(thread.character))}</h2><p>冻结前可以继续正常聊天和见面；到点自动休眠，记录与记忆保留。</p><label for="freeze-start-at">预约开始时间（本地时间）</label><input type="datetime-local" id="freeze-start-at" min="${min}" value="${value}" step="60"><label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="freeze-farewell" ${plan?.farewell!==false?'checked':''}>允许角色在离开前自然道别</label><p>若页面在线且条件允许，开始前30分钟内最多主动尝试一次道别。离线不会补发。</p>`,`<button class="btn soft" data-action="freeze-now">立即冻结</button>${plan?'<button class="btn soft" data-action="freeze-cancel-schedule">取消预约</button>':''}<button class="btn primary" data-action="freeze-save-schedule">保存预约</button>`);
+  modal(`<div class="kicker">CHARACTER FREEZE</div><h2>角色冻结 · ${esc(displayName(thread.character))}</h2><p>冻结前可以继续正常聊天和见面；到点自动休眠，记录与记忆保留。</p><label for="freeze-start-at">预约开始时间（本地时间）</label><input type="datetime-local" id="freeze-start-at" min="${min}" value="${value}" step="60"><label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="freeze-farewell" ${plan?.farewell!==false?'checked':''}>若尚未回复，允许角色在离开前主动道别</label><p>预约保存后，角色会在下一次回复中自然交代突然收到的通知及离开的原因。若一直没有回复，可在开始前30分钟内主动尝试一次道别；离线不会补发。</p>`,`<button class="btn soft" data-action="freeze-now">立即冻结</button>${plan?'<button class="btn soft" data-action="freeze-cancel-schedule">取消预约</button>':''}<button class="btn primary" data-action="freeze-save-schedule">保存预约</button>`);
   return;
 }
 if(a==='freeze-now')return changeCharacterFreeze({frozen:true});

@@ -3,11 +3,14 @@
   const relation=(pid,cid)=>db.relations[pairKey(pid,cid)];
   const freezeDue=(rel,now=Date.now())=>Boolean(rel?.freeze_schedule?.at&&Date.parse(rel.freeze_schedule.at)<=now);
   const characterFrozen=(pid,cid)=>{const rel=relation(pid,cid);return Boolean(rel?.frozen_at||freezeDue(rel));};
+  const pendingDeparturePlan=(pid,cid)=>{const r=relation(pid,cid),plan=r?.freeze_schedule;return plan&&!plan.farewell_text&&!freezeDue(r)?plan.id:'';};
+  const recordDepartureNotice=(pid,cid,planId,text)=>{const plan=relation(pid,cid)?.freeze_schedule;if(planId&&plan?.id===planId&&!plan.farewell_text&&String(text||'').trim())plan.farewell_text=String(text).trim().slice(0,1000);};
+  const demoDepartureNotice=(mode)=>mode==='meeting'?'\n他低头看了一眼刚亮起的手机，抬起头解释：“刚收到一条通知，有件事需要我去处理，到时候可能得离开一段时间。”':'|||刚收到一条通知，有件事需要我去处理，到时候可能得离开一段时间。';
   const freezeFarewellDirective=(pid,cid)=>{
     const plan=relation(pid,cid)?.freeze_schedule;
-    if(!plan||!plan.farewell||freezeDue(relation(pid,cid)))return '';
+    if(!plan||freezeDue(relation(pid,cid)))return '';
     if(plan.farewell_text)return '\n【近期个人安排】你已经告诉对方：'+plan.farewell_text+'。计划于 '+chatClockLabel(Date.parse(plan.at))+' 起暂时无法联系。不要反复道别，不要把尚未发生的离开写成已经发生。';
-    return '\n【近期个人安排】你因自己的生活或工作安排，预计从 '+chatClockLabel(Date.parse(plan.at))+' 起暂时无法保持联系。现在仍然正常相处；若自然涉及离别，可以提前交代，不要将其写成分手、索取承诺、强迫见面或要求对方等待；不提系统或冻结。';
+    return '\n【本轮必须发生的角色个人事件】你刚刚突然收到一条符合原作身份的消息、电话或通知，因此预计从 '+chatClockLabel(Date.parse(plan.at))+' 起暂时离开并无法保持联系。本轮必须在正常回应对方的同时，自然明确地告诉对方你刚收到什么通知、为何需要离开一段时间；具体原因由你依照人设和现有剧情决定。面对面时可描写你自己查看通知并开口解释，手机聊天时自然发出消息。现在尚未到离开时间，不提前结束互动或移动，不编造返程时间、共同经历或对方反应；不写成分手，不要求承诺、见面或等待，不提系统、冻结或预约。';
   };
   const freezeEpoch=(pid,cid)=>Number(relation(pid,cid)?.freeze_revision||0);
   const pairModelControllers=new Map();
@@ -488,7 +491,8 @@
     const scheduledDueAt=Number(q.dueAt||q.scheduledDueAt||ts?.scheduled_due_at||0);
     if(retryOpts.recovery&&scheduledDueAt>retryOpts.recovery.openedAt)return {reply:null,replies:[],queued:true,queue:queueInfo(p.id,c.id)};
     const pending=q.pending.slice();
-    const simulatedAt=retryOpts.recovery?recoverReplyTime(p.id,c.id,pending,scheduledDueAt,retryOpts.recovery,ts):0;
+    const departurePlanId=pendingDeparturePlan(p.id,c.id);
+    const simulatedAt=retryOpts.recovery&&!departurePlanId?recoverReplyTime(p.id,c.id,pending,scheduledDueAt,retryOpts.recovery,ts):0;
     q.scheduledDueAt=scheduledDueAt;
     q.paused=false;
     q.userPaused=false;
@@ -550,9 +554,9 @@
         apiError=e.apiError||null;
         engine='error';
       }
-    }else txt=demo(p,c,'chat');
+    }else txt=demo(p,c,'chat')+(departurePlanId?demoDepartureNotice('chat'):'');
     inflightControllers.delete(tKey);
-    if(q.inflight!==token||q.revision!==generation||r?.mode!=='chat'||r?.status!=='matched'){
+    if(characterFrozen(p.id,c.id)||q.inflight!==token||q.revision!==generation||r?.mode!=='chat'||r?.status!=='matched'){
       if(r?.mode==='chat'&&r?.status==='matched'&&q.status==='paused'){
         const newer=q.pending.slice();
         q.pending=[...pending.filter(m=>!newer.includes(m)),...newer];
@@ -611,7 +615,7 @@
       replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine,simulatedAt));
       reply=replies[replies.length-1]||null;
       const combinedTxt=replies.map(m=>m.text).join(' / ');
-      if(reply)recordReconnect(p.id,c.id,combinedTxt);
+      if(reply){recordDepartureNotice(p.id,c.id,departurePlanId,combinedTxt);recordReconnect(p.id,c.id,combinedTxt);}
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180),simulatedAt);
       const userRows=pending.map(mid=>db.messages.find(m=>m.id===mid)).filter(Boolean);
       if(reply){

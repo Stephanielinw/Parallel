@@ -455,7 +455,7 @@ html,body,#root{width:100%;height:100%;min-height:0;margin:0;overflow:hidden;ove
 #app .chat-body{overflow-y:auto;overflow-x:hidden}
 #app .chat-compose textarea{min-width:0}
 .thread-unread-badge,.nav-unread-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#D96B78;flex-shrink:0}
-.thread-unread-badge{margin-left:7px;vertical-align:middle}
+.thread-status-slot{flex:0 0 18px;width:18px;height:22px;display:flex;align-items:center;justify-content:center;margin-left:auto}.thread-unread-badge{margin:0;vertical-align:middle}.thread-freeze-icon{display:inline-flex;align-items:center;justify-content:center;color:#7899B5;width:18px;height:18px}.thread-freeze-icon .ic{width:18px;height:18px}.thread-freeze-icon.has-unread{color:#D96B78}.thread-text b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-heading-text small:empty{display:none}
 #app [data-tab="messages"]{position:relative}
 .nav-unread-dot{position:absolute;right:8px;top:8px;box-shadow:0 0 0 2px #FFFDF9;pointer-events:none}
 @media(max-width:870px){
