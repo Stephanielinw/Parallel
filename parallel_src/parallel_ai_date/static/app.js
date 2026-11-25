@@ -633,6 +633,7 @@ async function loadThread(cid,render=true){
   const tItem=state.threads.find(x=>x.character.id===cid);
   if(tItem){
     if(r.character)tItem.character=r.character;
+    if(r.relation)tItem.relation=r.relation;
     tItem.last_incoming=state.messages.filter(isIncoming).at(-1)||null;
     tItem.queue=r.queue||tItem.queue;
     tItem.taskState=r.taskState||null;
@@ -646,14 +647,14 @@ async function loadThread(cid,render=true){
   state.queue=r.queue||{count:0,pendingIds:[],dueAt:0,status:'idle',blocked:false,paused:false,paceMode:state.hotChat?'hot':'daily',hotChat:state.hotChat};
   state.taskState=r.taskState||r.queue?.taskState||null;
   state.bgErrors=r.bgErrors||null;
-  if(state.settings?.mode==='live'&&r.surveillance?.engine!=='live'){
+  if(!r.character?.frozen&&state.settings?.mode==='live'&&r.surveillance?.engine!=='live'){
     const pid=state.activeId;
     api('/surveillance',{profileId:pid,characterId:cid}).then(surv=>{
       if(surv&&state.activeId===pid)state.surveillanceMap[typingPair(pid,cid)]=surv;
     }).catch(()=>{});
   }
   if(render)renderMessages();else renderMessages();
-  if(state.chatMode==='chat'&&state.settings?.auto_translate!==false){
+  if(!r.character?.frozen&&state.chatMode==='chat'&&state.settings?.auto_translate!==false){
     void scheduleAutoTranslation(pid,cid);
   }
 }
@@ -664,6 +665,7 @@ async function scheduleAutoTranslation(profileId,characterId,specificIds=null,fo
   if(state.activeId!==profileId||state.threadId!==characterId)return;
   const thread=state.threads.find(x=>x.character.id===characterId);
   const c=thread?.character;
+  if(c?.frozen)return;
   const p=activeProfile();
   const ignoreNames=[c?.name||'',p?.name||'',...(c?.aliases||[])];
   const reqSet=Array.isArray(specificIds)&&specificIds.length?new Set(specificIds):null;
@@ -1194,7 +1196,7 @@ function renderMessages(){
   // Surgical update when staying on the same thread so typing in #chat-input is never interrupted
   const layoutEl=document.querySelector('#view .messages-layout');
   const chatBodyEl=$('chat-body');
-  if(selected&&layoutEl&&chatBodyEl&&existingInput&&state.renderedThreadId===typingPair(state.activeId,state.threadId)){
+  if(selected&&!selected.character.frozen&&layoutEl&&chatBodyEl&&existingInput&&state.renderedThreadId===typingPair(state.activeId,state.threadId)){
     const threadsEl=layoutEl.querySelector('.threads');
     if(threadsEl)threadsEl.innerHTML=renderMessagesListItems();
     const meeting=state.chatMode==='meeting';
@@ -1255,6 +1257,7 @@ function renderMessages(){
 }
 function renderChat(thread){
   const c=thread.character;
+  if(c.frozen)return `<div class="chat-header"><div class="chat-heading"><button class="icon-btn mobile-back" data-action="back-threads" aria-label="返回列表">${I('back')}</button><button class="chat-avatar-trigger" data-action="open-char-hub">${avatar({...c,avatar:c.portrait})}<div class="chat-heading-text"><b>${esc(displayName(c))}</b><small>❄ 角色休眠中</small></div></button></div></div><div id="chat-body" class="chat-body">${renderChatMessagesHtml(c)}</div><div class="glass-info" style="margin:12px"><b>❄ 角色已冻结</b><p>历史和记忆已保留。休眠期间不会生成新消息或安排见面。</p><button class="btn primary" data-action="toggle-character-freeze">解除冻结</button></div>`;
   const dName=displayName(c);
   const subText=c.nickname?`原名：${c.name} · ${c.version}`:c.version;
   const meeting=state.chatMode==='meeting';
@@ -1318,10 +1321,10 @@ function openCharacterHubModal(editingNick=false){
         <b>记忆档案</b>
         <small>查看见面回忆与按日归档</small>
       </button>
-      <button type="button" class="char-hub-item is-placeholder" disabled title="即将推出">
-        <span class="char-hub-ic">${I('compass')}</span>
-        <b>待定功能</b>
-        <small>预留专属空间槽位</small>
+      <button type="button" class="char-hub-item" data-action="toggle-character-freeze" aria-pressed="${c.frozen?'true':'false'}">
+        <span class="char-hub-ic">❄</span>
+        <b>${c.frozen?'解除角色冻结':'角色冻结'}</b>
+        <small>${c.frozen?'休眠中 · 点击恢复':'暂停消息及后台任务，保留记忆'}</small>
       </button>
     </div>`;
   modal(html,`<button class="btn soft" data-action="close-modal">关闭</button>`);
@@ -3054,6 +3057,19 @@ if(a==='back-threads'){++threadRequestSeq;++modalRequestSeq;state.threadId='';st
 if(a==='change-mode')return changeMode();
 if(a==='surv-close-meeting')return modal('<h2>结束这次见面？</h2><p>会把这一场存为回忆卡片并切回手机聊天。若是不小心点到，请选「继续见面」；即使误结束，也能从旧卡片接着这一场继续。</p>','<button class="btn primary" data-action="close-modal">继续见面</button><button class="btn soft" data-action="confirm-surv-close-meeting">确认结束并归档</button>');
 if(a==='confirm-surv-close-meeting'){closeModal();return changeMode();}
+if(a==='toggle-character-freeze'){
+  const pid=state.activeId,cid=state.threadId,thread=state.threads.find(t=>t.character.id===cid);
+  if(!thread)return;
+  const frozen=!thread.character.frozen;
+  if(frozen&&thread.relation?.mode==='meeting'&&!confirm('冻结会结束当前见面并保留已有记录。继续吗？'))return;
+  try{
+    await api('/character-freeze',{profileId:pid,characterId:cid,frozen});
+    if(!isCurrentPair(pid,cid))return;
+    closeModal();await loadThreads(cid);
+    toast(frozen?'角色已冻结，记录已保留':'角色已解除冻结');
+  }catch(e){toast(e.message);}
+  return;
+}
 if(a==='toggle-hot-chat')return toggleHotChat();
 if(a==='open-char-hub')return openCharacterHubModal(false);
 if(a==='toggle-nickname-edit'){

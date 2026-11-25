@@ -1,6 +1,26 @@
   const getP=id=>db.profiles.find(p=>p.id===id)||bodyErr('请先选择有效的 Profile');
   const getC=id=>byId.get(id)||bodyErr('原作人物目录中不存在此角色');
   const relation=(pid,cid)=>db.relations[pairKey(pid,cid)];
+  const characterFrozen=(pid,cid)=>Boolean(relation(pid,cid)?.frozen_at);
+  const freezeEpoch=(pid,cid)=>Number(relation(pid,cid)?.freeze_revision||0);
+  const pairModelControllers=new Map();
+  const cancelPairModelCalls=(pid,cid)=>{
+    const key=pairKey(pid,cid);
+    for(const controller of pairModelControllers.get(key)||[])controller.abort();
+    pairModelControllers.delete(key);
+  };
+  const freezeReconnect=(pid,cid)=>relation(pid,cid)?.freeze_reconnect||null;
+  const reconnectDirective=(pid,cid)=>{
+    const gap=freezeReconnect(pid,cid);
+    if(!gap)return '';
+    const from=chatClockLabel(Date.parse(gap.from)),to=chatClockLabel(Date.parse(gap.to));
+    if(gap.explanation)return '\n【角色个人生活间隔】你曾在 '+from+' 至 '+to+' 之间没有联系对方。你后来亲口说过：'+gap.explanation+'。以已发送内容为连续性依据，不要反复解释，不要编造共同经历。';
+    return '\n【角色个人生活间隔 · 重要】从 '+from+' 到 '+to+'，是你因自身事务暂时没能联系对方，不是对方疏远你。根据原作身份、时长及已有事实选择自然原因，首次重新联系时用符合人设的简短口吻交代，随后正常交流。不要责怪、索取补偿、连环邀约或杜撰共同经历；不得提及系统、冻结、休眠。';
+  };
+  const recordReconnect=(pid,cid,text)=>{
+    const gap=freezeReconnect(pid,cid);
+    if(gap&&!gap.explanation&&String(text||'').trim())gap.explanation=String(text).trim().slice(0,500);
+  };
   const pub=()=>{const {api_key,image_api_key,archive_api_key,...s}=db.connection;const hasApi=!!(s.base_url&&s.model&&api_key);const hasImg=!!(s.image_base_url&&s.image_model&&image_api_key);const demoEnabled=s.demo_enabled!==false;return {...s,proactive_mode:s.proactive_mode||'daily',auto_translate:s.auto_translate!==false,character_language_pref:['natural','zh','en','custom'].includes(s.character_language_pref)?s.character_language_pref:'natural',character_language_custom:String(s.character_language_custom||''),has_key:!!api_key,has_archive_key:!!archive_api_key,archive_enabled:s.archive_enabled!==false,archive_mode:s.archive_mode||'inherit',has_api_config:hasApi,demo_enabled:demoEnabled,has_image_key:!!image_api_key,mode:hasApi?'live':(demoEnabled?'demo':'normal'),image_mode:hasImg?'live':'text',portable:true,storageAvailable}};
   // The provider may put analysis in content instead of reasoning_content.
   // Strip only complete leading tagged blocks; never guess from candidate bubbles.
@@ -434,6 +454,7 @@
     }
   }
   async function flushQueue(p,c,force,retryOpts={}){
+    if(characterFrozen(p.id,c.id))return {reply:null,replies:[],skipped:'character-frozen',queue:queueInfo(p.id,c.id)};
     const key=pairKey(p.id,c.id),q=db.queue[key];
     const tKey=taskKeyOf(p.id,c.id,'chat');
     const ts=getTaskState(p.id,c.id,'chat');
@@ -582,6 +603,7 @@
       replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine,simulatedAt));
       reply=replies[replies.length-1]||null;
       const combinedTxt=replies.map(m=>m.text).join(' / ');
+      if(reply)recordReconnect(p.id,c.id,combinedTxt);
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180),simulatedAt);
       const userRows=pending.map(mid=>db.messages.find(m=>m.id===mid)).filter(Boolean);
       if(reply){
@@ -636,7 +658,7 @@
       for(const [k,q] of Object.entries(db.queue)){
         if(!k.startsWith(p.id+'|'))continue;
         const cid=k.slice(p.id.length+1),c=byId.get(cid),r=relation(p.id,cid),ts=getTaskState(p.id,cid,'chat');
-        if(!c||r?.status!=='matched'||r.mode!=='chat'||!q?.pending?.length||q.status==='inflight'||ts?.status==='inflight'||q.userPaused||ts?.userPaused)continue;
+        if(!c||r?.frozen_at||r?.status!=='matched'||r.mode!=='chat'||!q?.pending?.length||q.status==='inflight'||ts?.status==='inflight'||q.userPaused||ts?.userPaused)continue;
         const failed=Boolean(q.paused||q.blocked||ts?.status==='paused');
         const recoverable=Boolean(ts?.interrupted||ts?.last_error);
         const due=Number(q.dueAt||q.scheduledDueAt||ts?.scheduled_due_at||0);
@@ -658,7 +680,7 @@
       const cid=k.slice(p.id.length+1),ts=getTaskState(p.id,cid,'chat');
       if(!q||!q.pending?.length||q.status==='inflight'||q.paused||ts?.status==='paused'||q.blocked||!q.dueAt||q.dueAt>now)continue;
       const c=byId.get(cid),r=relation(p.id,cid);
-      if(!c||!r||r.status!=='matched'||r.mode!=='chat')continue;
+      if(!c||!r||r.frozen_at||r.status!=='matched'||r.mode!=='chat')continue;
       jobs.push({p,c,force:false});
     }
     return runQueueBatch(jobs,p.id,activeCid,null,1);
@@ -666,5 +688,5 @@
   const char=(c,pid='')=>{
     const rel=pid?relation(pid,c.id):null;
     const nick=String(rel?.nickname||'').trim();
-    return {...c,nickname:nick,display_name:nick||c.name,portrait:db.portraits[c.id]||null,bio:db.bios[c.id]||c.bio,tags:(Array.isArray(db.bioTags?.[c.id])&&db.bioTags[c.id].length)?db.bioTags[c.id]:c.tags};
+    return {...c,frozen:Boolean(rel?.frozen_at),frozen_at:rel?.frozen_at||'',nickname:nick,display_name:nick||c.name,portrait:db.portraits[c.id]||null,bio:db.bios[c.id]||c.bio,tags:(Array.isArray(db.bioTags?.[c.id])&&db.bioTags[c.id].length)?db.bioTags[c.id]:c.tags};
   };

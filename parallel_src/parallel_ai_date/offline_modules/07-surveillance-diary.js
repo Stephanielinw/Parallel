@@ -273,6 +273,7 @@
   // At most one model call per character while resuming an unfinished replan.
   const pendingPostMeetingPlans=new Map();
   async function replanRemainingDayAfterMeeting(p,c,meetingRecord,fromMs=Date.parse(meetingRecord?.ended_at||'')){
+    if(characterFrozen(p.id,c.id))return null;
     if(pub().mode!=='live'||!Number.isFinite(fromMs)||!meetingRecord?.id||!meetingRecord.entries?.some(m=>m.sender==='user'))return null;
     const originalFinish=Date.parse(meetingRecord.ended_at||'');
     if(!Number.isFinite(originalFinish))return null;
@@ -524,6 +525,7 @@
     }).join('\n').slice(-3500);
   };
   async function ensureLiveSurveillance(p,c,forceRefresh=false,targetDate=''){
+    if(characterFrozen(p.id,c.id))return null;
     const today=localDateStr();
     const dStr=(targetDate&&/^\d{4}-\d{2}-\d{2}$/.test(targetDate))?targetDate:today;
     const rec=getOrInitSurveillance(p,c,dStr);
@@ -746,6 +748,7 @@
     return {diaryStore,newlyGenerated};
   };
   async function ensureLiveDiary(p,c,targetDate='',forceRefresh=false){
+    if(characterFrozen(p.id,c.id))return null;
     const {diaryStore}=ensureDiariesUpToDate(p,c);
     const today=localDateStr();
     const yesterday=offsetDateStr(today,-1);

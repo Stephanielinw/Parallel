@@ -629,6 +629,26 @@
   const getP=id=>db.profiles.find(p=>p.id===id)||bodyErr('请先选择有效的 Profile');
   const getC=id=>byId.get(id)||bodyErr('原作人物目录中不存在此角色');
   const relation=(pid,cid)=>db.relations[pairKey(pid,cid)];
+  const characterFrozen=(pid,cid)=>Boolean(relation(pid,cid)?.frozen_at);
+  const freezeEpoch=(pid,cid)=>Number(relation(pid,cid)?.freeze_revision||0);
+  const pairModelControllers=new Map();
+  const cancelPairModelCalls=(pid,cid)=>{
+    const key=pairKey(pid,cid);
+    for(const controller of pairModelControllers.get(key)||[])controller.abort();
+    pairModelControllers.delete(key);
+  };
+  const freezeReconnect=(pid,cid)=>relation(pid,cid)?.freeze_reconnect||null;
+  const reconnectDirective=(pid,cid)=>{
+    const gap=freezeReconnect(pid,cid);
+    if(!gap)return '';
+    const from=chatClockLabel(Date.parse(gap.from)),to=chatClockLabel(Date.parse(gap.to));
+    if(gap.explanation)return '\n【角色个人生活间隔】你曾在 '+from+' 至 '+to+' 之间没有联系对方。你后来亲口说过：'+gap.explanation+'。以已发送内容为连续性依据，不要反复解释，不要编造共同经历。';
+    return '\n【角色个人生活间隔 · 重要】从 '+from+' 到 '+to+'，是你因自身事务暂时没能联系对方，不是对方疏远你。根据原作身份、时长及已有事实选择自然原因，首次重新联系时用符合人设的简短口吻交代，随后正常交流。不要责怪、索取补偿、连环邀约或杜撰共同经历；不得提及系统、冻结、休眠。';
+  };
+  const recordReconnect=(pid,cid,text)=>{
+    const gap=freezeReconnect(pid,cid);
+    if(gap&&!gap.explanation&&String(text||'').trim())gap.explanation=String(text).trim().slice(0,500);
+  };
   const pub=()=>{const {api_key,image_api_key,archive_api_key,...s}=db.connection;const hasApi=!!(s.base_url&&s.model&&api_key);const hasImg=!!(s.image_base_url&&s.image_model&&image_api_key);const demoEnabled=s.demo_enabled!==false;return {...s,proactive_mode:s.proactive_mode||'daily',auto_translate:s.auto_translate!==false,character_language_pref:['natural','zh','en','custom'].includes(s.character_language_pref)?s.character_language_pref:'natural',character_language_custom:String(s.character_language_custom||''),has_key:!!api_key,has_archive_key:!!archive_api_key,archive_enabled:s.archive_enabled!==false,archive_mode:s.archive_mode||'inherit',has_api_config:hasApi,demo_enabled:demoEnabled,has_image_key:!!image_api_key,mode:hasApi?'live':(demoEnabled?'demo':'normal'),image_mode:hasImg?'live':'text',portable:true,storageAvailable}};
   // The provider may put analysis in content instead of reasoning_content.
   // Strip only complete leading tagged blocks; never guess from candidate bubbles.
@@ -1062,6 +1082,7 @@
     }
   }
   async function flushQueue(p,c,force,retryOpts={}){
+    if(characterFrozen(p.id,c.id))return {reply:null,replies:[],skipped:'character-frozen',queue:queueInfo(p.id,c.id)};
     const key=pairKey(p.id,c.id),q=db.queue[key];
     const tKey=taskKeyOf(p.id,c.id,'chat');
     const ts=getTaskState(p.id,c.id,'chat');
@@ -1210,6 +1231,7 @@
       replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine,simulatedAt));
       reply=replies[replies.length-1]||null;
       const combinedTxt=replies.map(m=>m.text).join(' / ');
+      if(reply)recordReconnect(p.id,c.id,combinedTxt);
       event(p.id,c.id,'ai_message',c.name+' 回应 '+p.name+'：'+combinedTxt.slice(0,180),simulatedAt);
       const userRows=pending.map(mid=>db.messages.find(m=>m.id===mid)).filter(Boolean);
       if(reply){
@@ -1264,7 +1286,7 @@
       for(const [k,q] of Object.entries(db.queue)){
         if(!k.startsWith(p.id+'|'))continue;
         const cid=k.slice(p.id.length+1),c=byId.get(cid),r=relation(p.id,cid),ts=getTaskState(p.id,cid,'chat');
-        if(!c||r?.status!=='matched'||r.mode!=='chat'||!q?.pending?.length||q.status==='inflight'||ts?.status==='inflight'||q.userPaused||ts?.userPaused)continue;
+        if(!c||r?.frozen_at||r?.status!=='matched'||r.mode!=='chat'||!q?.pending?.length||q.status==='inflight'||ts?.status==='inflight'||q.userPaused||ts?.userPaused)continue;
         const failed=Boolean(q.paused||q.blocked||ts?.status==='paused');
         const recoverable=Boolean(ts?.interrupted||ts?.last_error);
         const due=Number(q.dueAt||q.scheduledDueAt||ts?.scheduled_due_at||0);
@@ -1286,7 +1308,7 @@
       const cid=k.slice(p.id.length+1),ts=getTaskState(p.id,cid,'chat');
       if(!q||!q.pending?.length||q.status==='inflight'||q.paused||ts?.status==='paused'||q.blocked||!q.dueAt||q.dueAt>now)continue;
       const c=byId.get(cid),r=relation(p.id,cid);
-      if(!c||!r||r.status!=='matched'||r.mode!=='chat')continue;
+      if(!c||!r||r.frozen_at||r.status!=='matched'||r.mode!=='chat')continue;
       jobs.push({p,c,force:false});
     }
     return runQueueBatch(jobs,p.id,activeCid,null,1);
@@ -1294,7 +1316,7 @@
   const char=(c,pid='')=>{
     const rel=pid?relation(pid,c.id):null;
     const nick=String(rel?.nickname||'').trim();
-    return {...c,nickname:nick,display_name:nick||c.name,portrait:db.portraits[c.id]||null,bio:db.bios[c.id]||c.bio,tags:(Array.isArray(db.bioTags?.[c.id])&&db.bioTags[c.id].length)?db.bioTags[c.id]:c.tags};
+    return {...c,frozen:Boolean(rel?.frozen_at),frozen_at:rel?.frozen_at||'',nickname:nick,display_name:nick||c.name,portrait:db.portraits[c.id]||null,bio:db.bios[c.id]||c.bio,tags:(Array.isArray(db.bioTags?.[c.id])&&db.bioTags[c.id].length)?db.bioTags[c.id]:c.tags};
   };
   const STOPWORDS=new Set(['今天','昨天','明天','我们','你们','他们','什么','怎么','可以','觉得','知道','没有','就是','一个','还是','因为','所以','如果','已经','现在','这样','那样','哈哈','呵呵','嗯嗯','好的','好吧','不是','不要','不会','不能','自己','这里','那里','时候','地方','东西','事情','问题','真的','其实','或者','而且','然后','不过','但是','只是','虽然','一下','一点','一些','一直','一起','起来','出来','过来','进去','回去','看着','听着','说着','想着','请问','谢谢','你好','再见','晚安','早安','手机','消息','短信','见面','回应','陈述','对话','文字','对方','角色']);
   const extractQueryTerms=text=>{
@@ -1679,6 +1701,7 @@
   // At most one model call per character while resuming an unfinished replan.
   const pendingPostMeetingPlans=new Map();
   async function replanRemainingDayAfterMeeting(p,c,meetingRecord,fromMs=Date.parse(meetingRecord?.ended_at||'')){
+    if(characterFrozen(p.id,c.id))return null;
     if(pub().mode!=='live'||!Number.isFinite(fromMs)||!meetingRecord?.id||!meetingRecord.entries?.some(m=>m.sender==='user'))return null;
     const originalFinish=Date.parse(meetingRecord.ended_at||'');
     if(!Number.isFinite(originalFinish))return null;
@@ -1930,6 +1953,7 @@
     }).join('\n').slice(-3500);
   };
   async function ensureLiveSurveillance(p,c,forceRefresh=false,targetDate=''){
+    if(characterFrozen(p.id,c.id))return null;
     const today=localDateStr();
     const dStr=(targetDate&&/^\d{4}-\d{2}-\d{2}$/.test(targetDate))?targetDate:today;
     const rec=getOrInitSurveillance(p,c,dStr);
@@ -2152,6 +2176,7 @@
     return {diaryStore,newlyGenerated};
   };
   async function ensureLiveDiary(p,c,targetDate='',forceRefresh=false){
+    if(characterFrozen(p.id,c.id))return null;
     const {diaryStore}=ensureDiariesUpToDate(p,c);
     const today=localDateStr();
     const yesterday=offsetDateStr(today,-1);
@@ -2941,6 +2966,7 @@
     finally{try{if(JSON.parse(localStorage.getItem(ARCHIVE_LEASE_KEY)||'null')?.token===token)localStorage.setItem(ARCHIVE_LEASE_KEY,'');}catch{}}
   }
   async function archiveOne(p,c,candidate,manual=false){
+    if(characterFrozen(p.id,c.id))return archiveOutcome('idle','角色休眠中');
     if(archiveBusy)return archiveOutcome('busy','另一个情节正在归档');
     if(!manual&&db.connection.archive_enabled===false)return archiveOutcome('disabled','自动归档已关闭');
     if(archiveChatBusy())return archiveOutcome('busy','正在生成聊天回复，空闲后自动整理');
@@ -3019,7 +3045,7 @@
     lastArchiveTick=now;
     const candidates=[];
     for(const rel of Object.values(db.relations||{})){
-      if(rel.status!=='matched')continue;
+      if(rel.status!=='matched'||rel.frozen_at)continue;
       const p=db.profiles.find(x=>x.id===rel.profile_id),c=byId.get(rel.character_id);
       if(!p||!c)continue;
       for(const candidate of episodeList(p,c))if(archiveJobReady(candidate.job,now))candidates.push({p,c,candidate});
@@ -3473,6 +3499,7 @@
   };
   const write=(pid,cid,sender,mode,text,engine='human',at=0,quoteId='')=>{
     const r=relation(pid,cid);
+    if(characterFrozen(pid,cid))bodyErr('角色休眠中，请先解除冻结');
     const photoDescription=sender==='ai'&&mode==='chat'&&engine==='live'?parseChatPhoto(text):'';
     const cleanTxt=photoDescription?photoDescriptionText(sender,photoDescription):(sender==='ai'&&engine!=='error'&&engine!=='recalled')
       ?(mode==='meeting'?cleanMeetingNovelText(text):(cleanChatBubbleText(text)||'…'))
@@ -3776,6 +3803,7 @@
     if(mode==='meeting'){
       sys+=`\n当前见面地点（来自实际互动，不参考监控预排）：「${meetingLoc}」。进入见面模式不代表对方已到、双方已见面或共同活动。`;
     }
+    sys+=reconnectDirective(p.id,c.id);
     if(mode==='chat')sys+=recentActualMeetingContext(p,c,querySeed,options.simulatedAt||Date.now());
     sys+='\n【共同经历事实优先级】当前真实互动/实际现场原文 > 带时间戳的角色位置陈述 > 已确认但未发生的约定 > 监控/日程推演。任何预定见面、吃饭、回家、接送，未经现场原文证实均不得用过去时说成双方曾一起做过；不得为对方杜撰对白或自称记得没有证据的共同经历。模型摘要是线索而非证言。';
     if(recalled.length){
@@ -4043,6 +4071,25 @@
     return {rawText,data,parseErr};
   };
   async function llm(messages,options={}){
+    const pid=options.profile?.id,cid=options.character?.id;
+    if(!pid||!cid)return llmUnfrozen(messages,options);
+    if(characterFrozen(pid,cid))bodyErr('角色休眠中，请先解除冻结');
+    const epoch=freezeEpoch(pid,cid),key=pairKey(pid,cid);
+    const ctrl=typeof AbortController==='function'?new AbortController():null;
+    const group=pairModelControllers.get(key)||new Set(),external=options.signal;
+    const forward=()=>ctrl?.abort();
+    if(ctrl){group.add(ctrl);pairModelControllers.set(key,group);if(external?.aborted)forward();else external?.addEventListener('abort',forward,{once:true});}
+    try{
+      const out=await llmUnfrozen(messages,{...options,signal:ctrl?.signal||external});
+      if(characterFrozen(pid,cid)||epoch!==freezeEpoch(pid,cid))bodyErr('角色状态已变化，忽略旧请求');
+      return out;
+    }finally{
+      external?.removeEventListener('abort',forward);
+      if(ctrl)group.delete(ctrl);
+      if(!group.size&&pairModelControllers.get(key)===group)pairModelControllers.delete(key);
+    }
+  }
+  async function llmUnfrozen(messages,options={}){
     const s=options.connection||db.connection;
     const mode=options.mode||(options.json_mode?'json':'chat');
     const pObj=options.profile||null;
@@ -4605,6 +4652,7 @@
     return past<3?'嗯，我在。|||你想先从什么聊起？':['这点倒是挺有意思。|||不过……你为什么会突然这么想？','等一下。|||我刚忙完手头的事，现在空下来了。|||你刚刚说的那个，我其实一直记得。','我可能需要想一想再回答你。','真的？|||你有时候真的会让我意外。|||那下次见面的时候，当面跟我细说吧。'][past%4];
   };
   async function produceReply(p,c,mode,userMsg=null,entryPoint='',retryOpts={}){
+    if(characterFrozen(p.id,c.id))return {reply:null,replies:[],skipped:'character-frozen'};
     if(mode==='meeting'&&meetingRerolls.has(pairKey(p.id,c.id)))return {reply:null,replies:[],warning:'正在重 Roll 当前一幕，请等待本次结果。'};
     const curMode=pub().mode;
     if(curMode==='normal'){
@@ -4841,6 +4889,8 @@
     return {bubbles:splitChatBubbles(demoTxt),engine:'demo'};
   }
   async function produceProactiveMessage(p,c,reason='idle',unresolvedMem=null,isBackground=true){
+    if(characterFrozen(p.id,c.id))return {replies:[],skipped:'character-frozen'};
+    const epoch=freezeEpoch(p.id,c.id),reconnecting=Boolean(freezeReconnect(p.id,c.id)&&!freezeReconnect(p.id,c.id).explanation);
     const curMode=pub().mode;
     if(curMode==='normal')return {replies:[],skipped:'no-api'};
     const previousLast=messagesOf(p.id,c.id).at(-1)?.id||'';
@@ -4848,12 +4898,13 @@
     if(curMode==='live'){
       try{
         const ms=prompt(p,c,'chat',[],{entry_point:'chat_proactive'});
-        const memHint=unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
+        const memHint=reconnecting?'你最近有自己的事务，未能联系对方。先自然交代自身原因，再简单问候。':unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
         ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】当前手机本地时刻是 ${chatClockLabel(Date.now())}。距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}必须遵守当前钟点：凌晨绝不是上午或中午；不要推断对方已经醒来、已起床或睡到了中午。不要把旧约定当成已经发生的共同经历。请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
         txt=await llm(ms,{profile:p,character:c,mode:'chat',entry_point:'chat_proactive',background:isBackground});
         engine='live';
         clearBgError(p.id,c.id,'chat_proactive');
       }catch(e){
+        if(characterFrozen(p.id,c.id)||epoch!==freezeEpoch(p.id,c.id))return {replies:[],skipped:'character-frozen'};
         if(isBackground)recordBgError(p.id,c.id,'chat_proactive',e.apiError||{message:String(e.message||e)});
         return {replies:[],warning:String(e.message||e),apiError:e.apiError||null,background:isBackground};
       }
@@ -4877,7 +4928,7 @@
     if((latestRows.at(-1)?.id||'')!==previousLast)
       return {replies:[],skipped:'conversation-changed'};
     const currentRel=relation(p.id,c.id);
-    if(!currentRel||currentRel.status!=='matched'||currentRel.mode!=='chat')
+    if(!currentRel||currentRel.frozen_at||epoch!==freezeEpoch(p.id,c.id)||currentRel.status!=='matched'||currentRel.mode!=='chat')
       return {replies:[],skipped:'relation-changed'};
     if(isBackground&&proactiveQuietReason(latestRows,Date.now()))
       return {replies:[],skipped:'quiet-hours'};
@@ -4888,6 +4939,7 @@
       save();
       return {replies:[],skipped:'temporal-contradiction'};
     }
+    if(reconnecting&&engine==='demo')txt='这段时间有些自己的事情要处理，一直没顾上联系你。|||最近怎么样？';
     const bubbleTexts=splitChatBubbles(txt).slice(0,3);
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine));
     const lastReply=replies[replies.length-1]||null;
@@ -4895,7 +4947,8 @@
       const combinedTxt=replies.map(m=>m.text).join(' / ');
       event(p.id,c.id,'ai_proactive',c.name+' 主动联系 '+p.name+'：'+combinedTxt.slice(0,180));
       recordDialogueEpisode(p,c,[],{...lastReply,text:combinedTxt},'chat');
-      if(unresolvedMem&& unresolvedMem.unresolved){
+      recordReconnect(p.id,c.id,combinedTxt);
+      if(!reconnecting&&unresolvedMem&& unresolvedMem.unresolved){
         const found=(db.episodicMemories||[]).find(m=>m.id===unresolvedMem.id);
         if(found)found.unresolved=0;
       }
@@ -4982,7 +5035,35 @@
   }
   async function request(path,data){
     const [route,qs='']=path.split('?'), params=new URLSearchParams(qs);data=data||{};
+    const scopedPid=String(data.profileId||params.get('profileId')||''),scopedCid=String(data.characterId||params.get('characterId')||'');
+    const frozenAllowed=new Set(['/thread','/task-state','/memories','/memory-action','/nickname','/unmatch','/character-freeze','/proactive-check','/chat-flush','/chat-photo-read']);
+    if(scopedPid&&scopedCid&&characterFrozen(scopedPid,scopedCid)&&!frozenAllowed.has(route))bodyErr('角色休眠中，请先解除冻结');
     switch(route){
+      case '/character-freeze':{
+        const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id);
+        if(typeof data.frozen!=='boolean')bodyErr('冻结状态无效');
+        if(Boolean(r.frozen_at)===data.frozen)return {ok:true,relation:r,character:char(c,p.id)};
+        const at=stamp(),key=pairKey(p.id,c.id);
+        if(data.frozen){
+          if(r.mode==='meeting'){
+            const mid=r.active_meeting_id||'';
+            const rows=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===mid);
+            if(mid&&rows.length)upsertMeetingRecord(p,c,mid,rows,r.meeting_location||'','',at);
+            r.mode='chat';r.active_meeting_id='';r.meeting_started_at='';
+          }
+          r.frozen_at=at;
+          clearQueue(p.id,c.id);clearTaskStatesForPair(p.id,c.id);cancelPairModelCalls(p.id,c.id);
+          clearBgError(p.id,c.id);
+        }else{
+          const from=r.freeze_reconnect&&!r.freeze_reconnect.explanation?r.freeze_reconnect.from:r.frozen_at;
+          r.freeze_reconnect={from,to:at,explanation:''};
+          r.frozen_at='';
+          db.proactiveLog[key]=Date.now();
+          clearQueue(p.id,c.id);clearTaskStatesForPair(p.id,c.id);
+        }
+        r.freeze_revision=Number(r.freeze_revision||0)+1;
+        r.updated_at=at;save();return {ok:true,relation:r,character:char(c,p.id)};
+      }
       case '/bootstrap':episodeStore();try{save();}catch{}return {profiles:db.profiles.slice(),sources:[...new Set([...SOURCES,...Array.from(byId.values(),c=>c.source)])].sort(),settings:pub(),catalog_size:byId.size};
       case '/health':return {ok:true,name:'Parallel Portable',version:'0.5.1'};
       case '/identify':return {matches:idMatches(params.get('name')||'',params.get('source')||''),verified:'mixed-catalog'};
@@ -5156,7 +5237,7 @@
             return {delivered:[],sent:[],skipped:'global-stagger-cooldown'};
           }
         }
-        const matchedRels=Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&r.mode==='chat'&&byId.has(r.character_id)&&(!targetCid||r.character_id===targetCid));
+        const matchedRels=Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&!r.frozen_at&&r.mode==='chat'&&byId.has(r.character_id)&&(!targetCid||r.character_id===targetCid));
         const candidatesList=[];
         for(const r of matchedRels){
           const cid=r.character_id;
@@ -5168,7 +5249,7 @@
           const lastTs=lastMsg?Date.parse(lastMsg.created_at)||0:Date.parse(r.updated_at)||0;
           const lastProactive=db.proactiveLog[pairKey(p.id,cid)]||0;
           const elapsedMs=now-Math.max(lastTs,lastProactive);
-          const unresolvedMem=(db.episodicMemories||[]).filter(m=>m.owner_id===cid&&m.profile_id===p.id&&m.unresolved&&!m.disputed&&!m.isolated_error).sort((a,b)=>b.event_at.localeCompare(a.event_at))[0]||null;
+          const unresolvedMem=(r.freeze_reconnect&&!r.freeze_reconnect.explanation)?null:(db.episodicMemories||[]).filter(m=>m.owner_id===cid&&m.profile_id===p.id&&m.unresolved&&!m.disputed&&!m.isolated_error).sort((a,b)=>b.event_at.localeCompare(a.event_at))[0]||null;
           let eligible=false,reason='idle',priority=0;
           if(trigger==='manual'){
             eligible=true;
@@ -5215,9 +5296,8 @@
       }
       case '/thread':{
         const p=getP(params.get('profileId')),c=getC(params.get('characterId')),r=requireMatch(p.id,c.id);
-        ensureMeetingRecords(p,c);
-        getOrInitSurveillance(p,c);
-        const diaryPayload=buildDiaryPayload(p,c);
+        if(!r.frozen_at){ensureMeetingRecords(p,c);getOrInitSurveillance(p,c);}
+        const diaryPayload=r.frozen_at?{latestDate:'',availableDates:[],diary:null}:buildDiaryPayload(p,c);
         const meetings=(db.meetings||[]).filter(x=>x.profile_id===p.id&&x.character_id===c.id);
         const ts=getTaskState(p.id,c.id,r.mode||'chat')||getTaskState(p.id,c.id,'chat');
         const threadMsgs=messagesOf(p.id,c.id);
@@ -5235,7 +5315,7 @@
           queue:queueInfo(p.id,c.id),
           taskState:ts,
           bgErrors:db.bgErrors?.[pairKey(p.id,c.id)]||null,
-          surveillance:buildSurveillancePayload(p,c),
+          surveillance:r.frozen_at?null:buildSurveillancePayload(p,c),
           diarySummary:{latestDate:diaryPayload.latestDate,availableDates:diaryPayload.availableDates,latestTitle:diaryPayload.diary?.title||''}
         };
       }

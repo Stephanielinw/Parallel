@@ -1,6 +1,34 @@
   async function request(path,data){
     const [route,qs='']=path.split('?'), params=new URLSearchParams(qs);data=data||{};
+    const scopedPid=String(data.profileId||params.get('profileId')||''),scopedCid=String(data.characterId||params.get('characterId')||'');
+    const frozenAllowed=new Set(['/thread','/task-state','/memories','/memory-action','/nickname','/unmatch','/character-freeze','/proactive-check','/chat-flush','/chat-photo-read']);
+    if(scopedPid&&scopedCid&&characterFrozen(scopedPid,scopedCid)&&!frozenAllowed.has(route))bodyErr('角色休眠中，请先解除冻结');
     switch(route){
+      case '/character-freeze':{
+        const p=getP(data.profileId),c=getC(data.characterId),r=requireMatch(p.id,c.id);
+        if(typeof data.frozen!=='boolean')bodyErr('冻结状态无效');
+        if(Boolean(r.frozen_at)===data.frozen)return {ok:true,relation:r,character:char(c,p.id)};
+        const at=stamp(),key=pairKey(p.id,c.id);
+        if(data.frozen){
+          if(r.mode==='meeting'){
+            const mid=r.active_meeting_id||'';
+            const rows=messagesOf(p.id,c.id).filter(x=>x.mode==='meeting'&&x.meeting_id===mid);
+            if(mid&&rows.length)upsertMeetingRecord(p,c,mid,rows,r.meeting_location||'','',at);
+            r.mode='chat';r.active_meeting_id='';r.meeting_started_at='';
+          }
+          r.frozen_at=at;
+          clearQueue(p.id,c.id);clearTaskStatesForPair(p.id,c.id);cancelPairModelCalls(p.id,c.id);
+          clearBgError(p.id,c.id);
+        }else{
+          const from=r.freeze_reconnect&&!r.freeze_reconnect.explanation?r.freeze_reconnect.from:r.frozen_at;
+          r.freeze_reconnect={from,to:at,explanation:''};
+          r.frozen_at='';
+          db.proactiveLog[key]=Date.now();
+          clearQueue(p.id,c.id);clearTaskStatesForPair(p.id,c.id);
+        }
+        r.freeze_revision=Number(r.freeze_revision||0)+1;
+        r.updated_at=at;save();return {ok:true,relation:r,character:char(c,p.id)};
+      }
       case '/bootstrap':episodeStore();try{save();}catch{}return {profiles:db.profiles.slice(),sources:[...new Set([...SOURCES,...Array.from(byId.values(),c=>c.source)])].sort(),settings:pub(),catalog_size:byId.size};
       case '/health':return {ok:true,name:'Parallel Portable',version:'0.5.1'};
       case '/identify':return {matches:idMatches(params.get('name')||'',params.get('source')||''),verified:'mixed-catalog'};
@@ -174,7 +202,7 @@
             return {delivered:[],sent:[],skipped:'global-stagger-cooldown'};
           }
         }
-        const matchedRels=Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&r.mode==='chat'&&byId.has(r.character_id)&&(!targetCid||r.character_id===targetCid));
+        const matchedRels=Object.values(db.relations).filter(r=>r.profile_id===p.id&&r.status==='matched'&&!r.frozen_at&&r.mode==='chat'&&byId.has(r.character_id)&&(!targetCid||r.character_id===targetCid));
         const candidatesList=[];
         for(const r of matchedRels){
           const cid=r.character_id;
@@ -186,7 +214,7 @@
           const lastTs=lastMsg?Date.parse(lastMsg.created_at)||0:Date.parse(r.updated_at)||0;
           const lastProactive=db.proactiveLog[pairKey(p.id,cid)]||0;
           const elapsedMs=now-Math.max(lastTs,lastProactive);
-          const unresolvedMem=(db.episodicMemories||[]).filter(m=>m.owner_id===cid&&m.profile_id===p.id&&m.unresolved&&!m.disputed&&!m.isolated_error).sort((a,b)=>b.event_at.localeCompare(a.event_at))[0]||null;
+          const unresolvedMem=(r.freeze_reconnect&&!r.freeze_reconnect.explanation)?null:(db.episodicMemories||[]).filter(m=>m.owner_id===cid&&m.profile_id===p.id&&m.unresolved&&!m.disputed&&!m.isolated_error).sort((a,b)=>b.event_at.localeCompare(a.event_at))[0]||null;
           let eligible=false,reason='idle',priority=0;
           if(trigger==='manual'){
             eligible=true;
@@ -233,9 +261,8 @@
       }
       case '/thread':{
         const p=getP(params.get('profileId')),c=getC(params.get('characterId')),r=requireMatch(p.id,c.id);
-        ensureMeetingRecords(p,c);
-        getOrInitSurveillance(p,c);
-        const diaryPayload=buildDiaryPayload(p,c);
+        if(!r.frozen_at){ensureMeetingRecords(p,c);getOrInitSurveillance(p,c);}
+        const diaryPayload=r.frozen_at?{latestDate:'',availableDates:[],diary:null}:buildDiaryPayload(p,c);
         const meetings=(db.meetings||[]).filter(x=>x.profile_id===p.id&&x.character_id===c.id);
         const ts=getTaskState(p.id,c.id,r.mode||'chat')||getTaskState(p.id,c.id,'chat');
         const threadMsgs=messagesOf(p.id,c.id);
@@ -253,7 +280,7 @@
           queue:queueInfo(p.id,c.id),
           taskState:ts,
           bgErrors:db.bgErrors?.[pairKey(p.id,c.id)]||null,
-          surveillance:buildSurveillancePayload(p,c),
+          surveillance:r.frozen_at?null:buildSurveillancePayload(p,c),
           diarySummary:{latestDate:diaryPayload.latestDate,availableDates:diaryPayload.availableDates,latestTitle:diaryPayload.diary?.title||''}
         };
       }

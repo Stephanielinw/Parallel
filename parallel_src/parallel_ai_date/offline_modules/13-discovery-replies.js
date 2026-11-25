@@ -174,6 +174,7 @@
     return past<3?'嗯，我在。|||你想先从什么聊起？':['这点倒是挺有意思。|||不过……你为什么会突然这么想？','等一下。|||我刚忙完手头的事，现在空下来了。|||你刚刚说的那个，我其实一直记得。','我可能需要想一想再回答你。','真的？|||你有时候真的会让我意外。|||那下次见面的时候，当面跟我细说吧。'][past%4];
   };
   async function produceReply(p,c,mode,userMsg=null,entryPoint='',retryOpts={}){
+    if(characterFrozen(p.id,c.id))return {reply:null,replies:[],skipped:'character-frozen'};
     if(mode==='meeting'&&meetingRerolls.has(pairKey(p.id,c.id)))return {reply:null,replies:[],warning:'正在重 Roll 当前一幕，请等待本次结果。'};
     const curMode=pub().mode;
     if(curMode==='normal'){
@@ -410,6 +411,8 @@
     return {bubbles:splitChatBubbles(demoTxt),engine:'demo'};
   }
   async function produceProactiveMessage(p,c,reason='idle',unresolvedMem=null,isBackground=true){
+    if(characterFrozen(p.id,c.id))return {replies:[],skipped:'character-frozen'};
+    const epoch=freezeEpoch(p.id,c.id),reconnecting=Boolean(freezeReconnect(p.id,c.id)&&!freezeReconnect(p.id,c.id).explanation);
     const curMode=pub().mode;
     if(curMode==='normal')return {replies:[],skipped:'no-api'};
     const previousLast=messagesOf(p.id,c.id).at(-1)?.id||'';
@@ -417,12 +420,13 @@
     if(curMode==='live'){
       try{
         const ms=prompt(p,c,'chat',[],{entry_point:'chat_proactive'});
-        const memHint=unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
+        const memHint=reconnecting?'你最近有自己的事务，未能联系对方。先自然交代自身原因，再简单问候。':unresolvedMem?`你翻看手机时，想起你们之前未聊完的话题或约定：「${unresolvedMem.summary}」。`:'你在自己的世界里刚忙完手头的事，或者偶然看到某样东西，突然想起了对方。';
         ms.push({role:'user',content:`【系统事件：角色主动发消息（${reason==='promise'?'记得约定与未完话题':'日常主动破冰'}）】当前手机本地时刻是 ${chatClockLabel(Date.now())}。距离你们上次联系已经过了一段时间，${p.name} 还没有发来新消息。${memHint}必须遵守当前钟点：凌晨绝不是上午或中午；不要推断对方已经醒来、已起床或睡到了中午。不要把旧约定当成已经发生的共同经历。请以完全符合 ${c.name} 原作性格与当前关系状态的方式，主动给 ${p.name} 发 1～2 条自然的手机消息（多条气泡用 ||| 分隔，不要写旁白，不要像客服问候）。`});
         txt=await llm(ms,{profile:p,character:c,mode:'chat',entry_point:'chat_proactive',background:isBackground});
         engine='live';
         clearBgError(p.id,c.id,'chat_proactive');
       }catch(e){
+        if(characterFrozen(p.id,c.id)||epoch!==freezeEpoch(p.id,c.id))return {replies:[],skipped:'character-frozen'};
         if(isBackground)recordBgError(p.id,c.id,'chat_proactive',e.apiError||{message:String(e.message||e)});
         return {replies:[],warning:String(e.message||e),apiError:e.apiError||null,background:isBackground};
       }
@@ -446,7 +450,7 @@
     if((latestRows.at(-1)?.id||'')!==previousLast)
       return {replies:[],skipped:'conversation-changed'};
     const currentRel=relation(p.id,c.id);
-    if(!currentRel||currentRel.status!=='matched'||currentRel.mode!=='chat')
+    if(!currentRel||currentRel.frozen_at||epoch!==freezeEpoch(p.id,c.id)||currentRel.status!=='matched'||currentRel.mode!=='chat')
       return {replies:[],skipped:'relation-changed'};
     if(isBackground&&proactiveQuietReason(latestRows,Date.now()))
       return {replies:[],skipped:'quiet-hours'};
@@ -457,6 +461,7 @@
       save();
       return {replies:[],skipped:'temporal-contradiction'};
     }
+    if(reconnecting&&engine==='demo')txt='这段时间有些自己的事情要处理，一直没顾上联系你。|||最近怎么样？';
     const bubbleTexts=splitChatBubbles(txt).slice(0,3);
     const replies=bubbleTexts.map(bTxt=>write(p.id,c.id,'ai','chat',bTxt,engine));
     const lastReply=replies[replies.length-1]||null;
@@ -464,7 +469,8 @@
       const combinedTxt=replies.map(m=>m.text).join(' / ');
       event(p.id,c.id,'ai_proactive',c.name+' 主动联系 '+p.name+'：'+combinedTxt.slice(0,180));
       recordDialogueEpisode(p,c,[],{...lastReply,text:combinedTxt},'chat');
-      if(unresolvedMem&& unresolvedMem.unresolved){
+      recordReconnect(p.id,c.id,combinedTxt);
+      if(!reconnecting&&unresolvedMem&& unresolvedMem.unresolved){
         const found=(db.episodicMemories||[]).find(m=>m.id===unresolvedMem.id);
         if(found)found.unresolved=0;
       }
