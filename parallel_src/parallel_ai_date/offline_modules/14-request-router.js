@@ -42,7 +42,7 @@
         const eligible=Object.values(db.relations).filter(rel=>{
           const plan=rel.freeze_schedule,due=Date.parse(plan?.at||'');
           const q=queueInfo(p.id,rel.character_id);
-          return rel.profile_id===p.id&&rel.status==='matched'&&rel.mode==='chat'&&!rel.frozen_at&&plan?.farewell&&!plan.farewell_text&&!plan.attempted_at&&due>now&&due-now<=30*60000&&q.status!=='inflight'&&!q.count&&!q.paused;
+          return rel.profile_id===p.id&&rel.status==='matched'&&rel.mode==='chat'&&!rel.frozen_at&&plan?.farewell&&!plan.farewell_text&&!plan.attempted_at&&due>now&&due-now<=30*60000&&q.status!=='inflight'&&!q.count&&!q.paused&&!proactiveQuietReason(messagesOf(p.id,rel.character_id),now);
         }).sort((a,b)=>Date.parse(a.freeze_schedule.at)-Date.parse(b.freeze_schedule.at));
         const rel=eligible[0];if(!rel)return {transitioned,sent:[]};
         const c=getC(rel.character_id);rel.freeze_schedule.attempted_at=stamp();save();

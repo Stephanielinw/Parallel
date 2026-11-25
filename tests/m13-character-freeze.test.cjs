@@ -1,0 +1,40 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const vm=require('node:vm');
+const {webcrypto}=require('node:crypto');
+const src=fs.readFileSync(path.join(__dirname,'../public/parallel/offline.js'),'utf8');
+let now=new Date(2026,10,24,12).getTime(),calls=0;
+class Clock extends Date{constructor(...a){super(...(a.length?a:[now]))}static now(){return now}}
+const storage=new Map(),localStorage={getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,String(v)),removeItem:k=>storage.delete(k)};
+function start(){const window={};vm.runInNewContext(src,{window,localStorage,Date:Clock,JSON,Math,crypto:webcrypto,TextEncoder,TextDecoder,URLSearchParams,AbortController,setTimeout,clearTimeout,console,fetch:async()=>{calls++;throw Error('Unexpected network request')}});return window.ParallelOffline;}
+(async()=>{
+ let e=start();const pack=JSON.parse(e.exportData()),pid='m13-test',p2='m13-second',cid='re-game:leon:re2',other='re-game:leon:re4';
+ const profile=id=>({id,name:id,age:25,gender:'female',interested_in:['all'],sources:[],interests:[],bio:'',intent:'',min_age:18,max_age:99});
+ pack.data.profiles=[profile(pid),profile(p2)];
+ for(const [p,c] of [[pid,cid],[pid,other],[p2,cid]])pack.data.relations[p+'|'+c]={profile_id:p,character_id:c,status:'matched',mode:'chat',updated_at:new Date(now-3600000).toISOString()};
+ const key=pid+'|'+cid;
+ pack.data.messages=[{id:'m13-msg',profile_id:pid,character_id:cid,sender:'user',mode:'chat',text:'hello',engine:'human',created_at:new Date(now-3600000).toISOString()}];
+ pack.data.queue[key]={pending:['m13-msg'],dueAt:1,status:'idle',revision:1};
+ e.importData(JSON.stringify(pack));const read=()=>JSON.parse(e.exportData()).data,pair=()=>read().relations[key],req=(route,data={})=>e.request(route,{profileId:pid,...data});
+ await req('/character-freeze',{characterId:cid,frozen:true});
+ assert(pair().frozen_at);assert.equal(read().queue[key].pending.length,0);assert.equal(read().messages.length,1);
+ assert(!read().relations[pid+'|'+other].frozen_at&&!read().relations[p2+'|'+cid].frozen_at);
+ await assert.rejects(req('/message',{characterId:cid,text:'blocked'}),/休眠/);
+ e=start();assert(pair().frozen_at);
+ await req('/character-freeze',{characterId:cid,frozen:false});assert(pair().freeze_reconnect);
+ assert(JSON.stringify(e.buildPromptPreview(pid,cid,'chat')).includes('不是对方疏远你'));
+ let at=new Date(now+60*60000).toISOString();
+ await req('/character-freeze',{characterId:cid,startAt:at,farewell:true});assert.equal(pair().freeze_schedule.at,at);
+ assert.equal((await req('/character-freeze-tick',{allowFarewell:true})).sent.length,0);
+ now+=35*60000;assert.equal((await req('/character-freeze-tick',{allowFarewell:true})).sent.length,1);
+ assert(pair().freeze_schedule.farewell_text);assert.equal((await req('/character-freeze-tick',{allowFarewell:true})).sent.length,0);
+ now=Date.parse(at)-1;await req('/character-freeze-tick');assert(!pair().frozen_at);
+ now++;await req('/character-freeze-tick');assert.equal(pair().frozen_at,at);
+ await req('/character-freeze',{characterId:cid,frozen:false});assert(pair().freeze_reconnect.farewell_text);
+ at=new Date(now+60*60000).toISOString();await req('/character-freeze',{characterId:cid,startAt:at,farewell:true});
+ await req('/character-freeze',{characterId:cid,cancelSchedule:true});now+=61*60000;await req('/character-freeze-tick');assert(!pair().frozen_at);
+ at=new Date(now+10*60000).toISOString();await req('/character-freeze',{characterId:cid,startAt:at,farewell:true});
+ now+=30*60000;e=start();assert.equal((await req('/character-freeze-tick',{allowFarewell:true})).sent.length,0);assert.equal(pair().frozen_at,at);
+ assert.equal(calls,0);console.log('M13: isolated freeze, persisted schedule, single farewell, exact cutoff, offline restoration and reconnect passed.');
+})().catch(e=>{console.error(e);process.exitCode=1});

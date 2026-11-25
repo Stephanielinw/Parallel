@@ -1349,11 +1349,11 @@ function openCharacterHubModal(editingNick=false){
         <b>记忆档案</b>
         <small>查看见面回忆与按日归档</small>
       </button>
-      <button type="button" class="char-hub-item" data-action="toggle-character-freeze" aria-pressed="${c.frozen?'true':'false'}">
+      ${globalThis.ParallelOffline?`<button type="button" class="char-hub-item" data-action="toggle-character-freeze" aria-pressed="${c.frozen?'true':'false'}">
         <span class="char-hub-ic">❄</span>
         <b>${c.frozen?'解除角色冻结':c.freeze_schedule?'管理预约冻结':'角色冻结'}</b>
         <small>${c.frozen?'休眠中 · 点击恢复':c.freeze_schedule?'已预约 '+esc(new Date(c.freeze_schedule.at).toLocaleString()):'立即冻结或预约开始时间'}</small>
-      </button>
+      </button>`:`<button type="button" class="char-hub-item is-placeholder" disabled title="当前仅浏览器版支持角色冻结"><span class="char-hub-ic">❄</span><b>角色冻结</b><small>当前仅网页版 / 单 HTML 版支持</small></button>`}
     </div>`;
   modal(html,`<button class="btn soft" data-action="close-modal">关闭</button>`);
   if(editingNick){
@@ -3086,6 +3086,7 @@ if(a==='change-mode')return changeMode();
 if(a==='surv-close-meeting')return modal('<h2>结束这次见面？</h2><p>会把这一场存为回忆卡片并切回手机聊天。若是不小心点到，请选「继续见面」；即使误结束，也能从旧卡片接着这一场继续。</p>','<button class="btn primary" data-action="close-modal">继续见面</button><button class="btn soft" data-action="confirm-surv-close-meeting">确认结束并归档</button>');
 if(a==='confirm-surv-close-meeting'){closeModal();return changeMode();}
 if(a==='toggle-character-freeze'){
+  if(!globalThis.ParallelOffline)return toast('当前仅网页版 / 单 HTML 版支持角色冻结');
   const thread=state.threads.find(t=>t.character.id===state.threadId);if(!thread)return;
   if(thread.character.frozen)return changeCharacterFreeze({frozen:false});
   const plan=thread.character.freeze_schedule;

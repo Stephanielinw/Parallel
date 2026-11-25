@@ -40,7 +40,9 @@ const routeRegexJS=/case '[/]([^']+)':/g;
 const routeRegexPY=/if route=='[/]api[/]([^']+)'/g;
 const browserRoutes=new Set([...read('parallel_src/parallel_ai_date/offline_modules/14-request-router.js').matchAll(routeRegexJS)].map(x=>x[1]));
 const pythonRoutes=new Set([...read('parallel_src/parallel_ai_date/server.py').matchAll(routeRegexPY)].map(x=>x[1]));
-const browserOnly=['chat-photo-read','chat-photos','discover-progress','discover-session','episode-archive-tick'];
+// M13: intentional browser/portable-only capability, like photo storage and episode archive.
+// The shared UI must explicitly gate the legacy Python shell; this is not a parity bypass.
+const browserOnly=['character-freeze','character-freeze-tick','chat-photo-read','chat-photos','discover-progress','discover-session','episode-archive-tick'];
 assert.deepEqual([...browserRoutes].filter(x=>!pythonRoutes.has(x)).sort(),browserOnly,'unexpected browser-only route: investigate feature drift');
 assert.deepEqual([...pythonRoutes].filter(x=>!browserRoutes.has(x)).sort(),[],'unexpected Python-only route: investigate fork');
 for(const route of ['meeting-summary-save','meeting-summary-refresh','message-forget','meeting-forget','mode','thread','memories'])
@@ -54,4 +56,7 @@ assert(workflow.includes('node tests/m08-version-parity.test.cjs'),'M08 parity t
 const pkg=JSON.parse(read('package.json'));
 assert(pkg.scripts['build:downloads'].includes('assemble-frontend.cjs --check'),
   'Build must refuse stale frontend mirrors (all three assets)');
+assert(staticApp.includes("if(!globalThis.ParallelOffline)return toast('当前仅网页版 / 单 HTML 版支持角色冻结')"),'Python shell must not call browser-only freeze routes');
+assert(staticApp.includes('当前仅网页版 / 单 HTML 版支持'),'Python must expose clear capability boundary');
+require('./m13-character-freeze.test.cjs');
 console.log('M08: canonical UI JS/CSS/index, source/mirror drift rejection, Pages/portable/Python shell contract, explicit runtime-route exceptions passed.');
