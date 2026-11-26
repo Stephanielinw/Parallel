@@ -39,6 +39,6 @@ const noSleep=f.chatClockContext([{sender:'user',text:'今天天气很好',creat
 assert(!noSleep.includes('白天讨论夜晚·情境校准'),'ordinary chat does not get the topic-specific guard');
 assert(!o.includes("role:'system',content:chatClockContext(workingHistory"),'do not add mid-history system messages incompatible with proxies');
 assert(!a.includes("\${esc(s.start)} – \${esc(s.end)}"));assert(!a.includes("\${esc(cur.start||'00:00')} – \${esc(cur.end||'23:59')}"));
-assert(o.includes("sys+='\\n'+chatClockContext(workingHistory,options.simulatedAt||Date.now())"),'clock context must come LAST in chat system instructions');
+assert(o.includes("+chatClockContext(workingHistory,replyClock);\n    const chat="),'clock context must come LAST in chat system instructions, using the same captured reply clock');
 assert(o.includes("['live','demo'].includes(engine)&&!isChatArtifact(m))reconcilePhoneActivity"));
 console.log('Sleep wake reconciliation, cross-midnight current time and start-only monitoring passed');
