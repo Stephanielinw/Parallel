@@ -56,7 +56,7 @@ assert(system.includes('今天先这样，我们晚点手机上聊'),'the actual
 assert(system.includes('小结尚未生成成功'),'incomplete summary must stay honest');
 assert(!turns.some(m=>m.content.includes(oldText)||m.content.includes('门禁快关了')),
   'pre-meeting SMS must never appear in new live assistant/user turns');
-assert(turns.some(m=>m.content==='今天小狗好安静啊～'),'new user message must remain');
+assert(turns.some(m=>m.content.endsWith('\n今天小狗好安静啊～')),'new user message must remain');
 assert(!turns.some(m=>m.content.includes('Carl说露台')),'meeting paragraphs must not be treated as SMS turns');
 const snapshot=JSON.parse(engine.exportData()).data;
 assert.equal(snapshot.messages.length,7,'all archived messages must survive the prompt fix');

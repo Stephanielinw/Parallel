@@ -3777,11 +3777,35 @@
       scene:c.name+'的个人安排可能改变；预约与推演不代表两人已实际见面。',
       is_planned:true,is_unconfirmed:true};
   };
+  // Phone timestamps are request-only metadata bound to the actual message,
+  // not an independent index the model must align by counting turns.
+  function phoneTurnClockMetadata(history,index,now){
+    const row=history[index],at=Date.parse(row?.created_at||'');
+    const valid=Number.isFinite(at);
+    const prior=history.slice(0,index).reverse().find(x=>!x.recalled&&x.engine!=='recalled'&&Number.isFinite(Date.parse(x.created_at||'')));
+    const previous=prior?Date.parse(prior.created_at):NaN;
+    const gap=valid&&Number.isFinite(previous)?Math.floor((at-previous)/60000):null;
+    let meta='【应用消息时间：'+(valid?chatClockLabel(at):'未知')+'；'+(row.mode==='meeting'?'线下历史':'手机短信');
+    if(gap!==null&&gap>=0&&(gap>=60||chatClockLabel(at).slice(0,10)!==chatClockLabel(previous).slice(0,10)))meta+='；距上一条消息 '+gap+' 分钟，旧情境不可视为仍在进行';
+    meta+='】';
+    if(index===history.length-1){
+      const lastUser=[...history].reverse().find(x=>x.sender==='user'&&!x.recalled&&x.engine!=='recalled'&&Number.isFinite(Date.parse(x.created_at||'')));
+      const lastAi=[...history].reverse().find(x=>x.sender==='ai'&&!x.recalled&&x.engine!=='recalled'&&Number.isFinite(Date.parse(x.created_at||'')));
+      const since=x=>Math.max(0,Math.floor((now-Date.parse(x.created_at))/60000));
+      const hour=new Date(now).getHours(),period=hour<5?'凌晨':hour<12?'上午':hour<18?'下午':'晚上';
+      meta+='\n【本轮回复时钟：'+chatClockLabel(now)+'（'+period+'）';
+      if(lastUser)meta+='；最后用户消息 '+chatClockLabel(lastUser.created_at)+'（'+since(lastUser)+' 分钟前）';
+      if(lastAi)meta+='；上次角色发言 '+chatClockLabel(lastAi.created_at)+'（'+since(lastAi)+' 分钟前）';
+      meta+='。旧消息中的今天、明天、今晚、刚才以各自发送时间解释；新消息可以延续旧话题，但不能把旧活动、睡眠或告别当作此刻状态。只输出角色短信正文，不复述这些元数据。】';
+    }
+    return meta+'\n';
+  }
   const prompt=(p,c,mode,pendingIds=[],options={})=>{
+    const replyClock=options.simulatedAt||options.clockNow||Date.now();
     const macros=t=>expandPresetMacros(t,p,c);
     const excludeSet=options.excludeMessageIds?new Set(options.excludeMessageIds):null;
     const protectedIds=mode==='chat'?(pendingIds.length?pendingIds:(queueInfo(p.id,c.id).pendingIds||[])):(getTaskState(p.id,c.id,'meeting')?.pending_ids||[]);
-    const workingHistory=selectWorkingHistory(p.id,c.id,mode,excludeSet,protectedIds,options.simulatedAt||Date.now());
+    const workingHistory=selectWorkingHistory(p.id,c.id,mode,excludeSet,protectedIds,mode==='chat'?replyClock:(options.simulatedAt||Date.now()));
     const isMeetingOpening=mode==='meeting'&&workingHistory.length===0;
     const workingIds=new Set(workingHistory.map(m=>m.id));
     ensureMeetingRecords(p,c);
@@ -3839,8 +3863,9 @@
     const historyTurns=[];
     workingHistory.forEach((m,idx)=>{
       const role=m.sender==='ai'?'assistant':'user';
+      const clockMeta=mode==='chat'?phoneTurnClockMetadata(workingHistory,idx,replyClock):'';
       if(m.engine==='recalled'||m.recalled){
-        historyTurns.push({role,content:'[系统提示：对方刚刚撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'});
+        historyTurns.push({role,content:clockMeta+'[系统提示：对方撤回了一条消息（你看见对方撤回了消息，但不知道具体撤回了什么内容）]'});
         return;
       }
       const tTag=chatClockLabel(m.created_at);
@@ -3854,9 +3879,9 @@
       const sceneMark=mode==='meeting'&&m.sender==='ai'&&m.scene_location&&
         m.scene_location_signature===meetingSceneSignature(m.text)
         ?'\n【此条角色正文结束时的现场地点】'+m.scene_location:'';
-      historyTurns.push({role,content:cleanBody+sceneMark,...(useVision?{photo_ref:m.photo_ref}:{})});
+      historyTurns.push({role,content:clockMeta+cleanBody+sceneMark,...(useVision?{photo_ref:m.photo_ref}:{})});
     });
-    if(timelineLines.length){
+    if(mode==='meeting'&&timelineLines.length){
       sys+=`\n\n【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】\n`+timelineLines.join(' ｜ ');
     }
     const presets=db.presets.filter(x=>x.mode===mode&&x.enabled).sort((a,b)=>a.sort_order-b.sort_order);
@@ -3915,7 +3940,7 @@
     sys+='\n\n【第四层 · 当前状态 (Current State)】当前必须以真实约会 App 手机聊天气泡发出回复，不写旁白，不要在正文开头添加任何时间或模式标签。紧扣对方刚刚发来的话自然接招（对方用英文则用英文回复，对方开玩笑、吐槽或换话题则以符合角色性格的方式自然互动，不必每轮结尾都强行提问）。像真人聊天一样时长时短：有时只发 1 条简短气泡，有时可分 2–4 条长短交替的气泡连续发出（多条气泡之间用换行符或 ||| 分隔）。'+survHint+batchHint+langHint;
     sys+='\n【照片消息】可以在自然合适的时候自主发送虚拟照片，也可以回应对方索要照片。每张照片必须单独占一个气泡，格式严格为 [[PHOTO: 一段镜头内可见的照片描写]]，其中不能包含换行或 |||；普通短信仍按原有格式回复，最多四个气泡。不要把文字说明或分析当成照片，不需要每轮发图。对方照片描写或视觉输入仅作为对方实际发送的照片内容。';
     // Keep the real time anchor at the very end of the system message, nearest to the conversation.
-    sys+='\n'+chatClockContext(workingHistory,options.simulatedAt||Date.now());
+    sys+='\n【手机消息时间协议】每条历史消息开头的【应用消息时间】及末条的【本轮回复时钟】由应用生成，属于可信时间元数据，不属于任何人的短信正文。只输出自然短信，不模仿或复述这些标签。\n'+chatClockContext(workingHistory,replyClock);
     const chat=[{role:'system',content:sys},...presets.filter(x=>x.role!=='system').map(x=>({role:x.role,content:macros(x.content)})),...historyTurns];
     return chat;
   };

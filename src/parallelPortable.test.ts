@@ -608,7 +608,7 @@ test('Parallel v0.5 Daily Mode message bundling (preserving scheduled dueAt & ti
   assert.equal(msg2.queue.count, 2);
   assert.equal(msg2.queue.dueAt, firstDueAt, 'Subsequent messages in Daily Mode bundle without resetting dueAt');
 
-  // 3. Prompt preview puts real time & mode into independent system metadata, does NOT prefix user/assistant turns with protocol headers, and preserves legitimate user-quoted protocol-style text
+  // 3. Bind app clock metadata to each real message without altering the original body.
   const msgQuoted = await engine.request('/message', {
     profileId: p.id,
     characterId: cid,
@@ -620,32 +620,13 @@ test('Parallel v0.5 Daily Mode message bundling (preserving scheduled dueAt & ti
     content: string;
   }>;
   const sysPrompt = promptMessages[0]?.content || '';
-  assert.match(
-    sysPrompt,
-    /【近期活跃对话时间与模式索引（系统元数据，仅供把握时间跨度与场景，严禁在回复正文中输出时间或模式前缀）】/,
-    'System metadata section carries per-message time and mode index'
-  );
-  assert.match(
-    sysPrompt,
-    /#1 \d{4}-\d{2}-\d{2} \d{2}:\d{2}（线上短信·Leon S\. Kennedy）/,
-    'Each message in working history has its real timestamp and mode recorded in system metadata'
-  );
-  const nonSystemTurns = promptMessages.filter(
-    (m) => m.role === 'user' || m.role === 'assistant'
-  );
-  assert.ok(nonSystemTurns.length >= 3);
-  for (const turn of nonSystemTurns) {
-    assert.ok(
-      !/^\s*(?:\[|【)\s*(?:短信|见面)/.test(turn.content),
-      `Normal user/assistant turn must not be prefixed with protocol header: ${turn.content}`
-    );
-  }
-  assert.ok(
-    nonSystemTurns.some(
-      (t) => t.role === 'user' && t.content === '他说：“请打开[短信 18:37]那条记录。”'
-    ),
-    'Legitimate user-quoted protocol-style text must not be deleted during prompt serialization'
-  );
+  assert.match(sysPrompt,/【手机消息时间协议】/);
+  assert.ok(!sysPrompt.includes('【近期活跃对话时间与模式索引'));
+  const nonSystemTurns = promptMessages.filter(m=>m.role==='user'||m.role==='assistant');
+  assert.ok(nonSystemTurns.length>=3);
+  for(const turn of nonSystemTurns) assert.match(turn.content,/^【应用消息时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}；手机短信/);
+  assert.match(nonSystemTurns.at(-1)!.content,/【本轮回复时钟：/);
+  assert.ok(nonSystemTurns.some(t=>t.role==='user'&&t.content.endsWith('他说：“请打开[短信 18:37]那条记录。”')));
 
   // 4. Toggle Hot Chat Mode on -> updates queue to paceMode: 'hot' with 60s dueAt
   const hotOn = await engine.request('/hot-chat', {
@@ -1668,10 +1649,10 @@ test('13. ROUND-03A: Mobile chat quality optimization — Leon RE6 baseline vs o
   assert.equal(afterMessages.length, 6, '1 system + 1 initial AI greeting + 4 consecutive user turns (no trailing system message)');
   assert.equal(afterMessages[0].role, 'system');
   assert.equal(afterMessages[1].role, 'assistant');
-  assert.equal(afterMessages[1].content, 'Just wrapped up a long shift. Finally off duty.');
+  assert.ok(afterMessages[1].content.endsWith('\nJust wrapped up a long shift. Finally off duty.'));
   for (let i = 0; i < leonInputs.length; i++) {
     assert.equal(afterMessages[2 + i].role, 'user');
-    assert.equal(afterMessages[2 + i].content, leonInputs[i], `User message #${i + 1} preserved verbatim in order`);
+    assert.ok(afterMessages[2 + i].content.endsWith('\n'+leonInputs[i]), `User message #${i + 1} preserved verbatim in order`);
   }
   assert.equal(
     afterMessages[afterMessages.length - 1].role,
