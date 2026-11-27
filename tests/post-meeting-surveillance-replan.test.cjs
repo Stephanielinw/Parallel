@@ -113,6 +113,7 @@ function makeEngine(failOnce=false){
   assert.equal(recovered.current.is_planned,true);
   assert.equal(recovered.current.location,'U.B.C.S.训练区');
   assert(!recovered.bgError,'successful replan clears its background error');
-  assert(ui.includes('日程推演')&&ui.includes('去向待核实'),'surveillance UI distinguishes projections from proof');
-  console.log('Post-meeting surveillance: old stuck save recovers, scene+SMS grounding, cooldown/retry, independent schedule, safe archive and projection badges passed.');
+  assert(ui.includes('当前动态')&&ui.includes('今日足迹')&&!ui.includes('尚未现场确认')&&!ui.includes('当前地点未确认 · 请先在聊天中约定'),'daily surveillance uses clean presentation');
+  assert(ui.includes('!cur.is_planned&&!cur.is_unconfirmed'),'unconfirmed location still cannot offer a direct meeting action');
+  console.log('Post-meeting surveillance: old stuck save recovers, scene+SMS grounding, cooldown/retry, independent schedule, safe archive and simplified daily display passed.');
 })().catch(e=>{console.error(e);process.exitCode=1});

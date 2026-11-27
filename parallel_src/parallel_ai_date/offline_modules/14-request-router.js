@@ -79,7 +79,7 @@
       }
       case '/bootstrap':episodeStore();try{save();}catch{}return {profiles:db.profiles.slice(),sources:[...new Set([...SOURCES,...Array.from(byId.values(),c=>c.source)])].sort(),settings:pub(),catalog_size:byId.size};
       case '/health':return {ok:true,name:'Parallel Portable',version:'0.5.1'};
-      case '/identify':return {matches:idMatches(params.get('name')||'',params.get('source')||''),verified:'mixed-catalog'};
+      case '/identify':return await identifyProfileCanon(data.name||params.get('name')||'',data.source||params.get('source')||'',data.hint||'',data.profileId||'');
       case '/settings':{
         if(!arguments[1])return pub();
         const s=db.connection;
@@ -124,8 +124,15 @@
       case '/profile':{
         const name=String(data.name||'').trim().slice(0,80);const age=Number(data.age);if(!name||!Number.isInteger(age)||age<18||age>120)bodyErr('请填写姓名和有效年龄（18+）');
         const existing=db.profiles.find(x=>x.id===data.id);if(data.id&&!existing)bodyErr('Profile 不存在');
-        const role=String(data.role_character_id||'');if(role&&!byId.has(role))bodyErr('该同人身份尚未被收录；请选择已识别的人物');
-        const profile={id:existing?.id||uid(),name,age,gender:['male','female','nonbinary','other'].includes(data.gender)?data.gender:'other',interested_in:(data.interested_in||['all']).filter(x=>['all','male','female','nonbinary','other'].includes(x)),min_age:Math.max(18,Number(data.min_age)||18),max_age:Math.min(120,Number(data.max_age)||60),intent:String(data.intent||''),bio:String(data.bio||'').slice(0,500),interests:(data.interests||[]).slice(0,12),sources:[...new Map((data.sources||[]).filter(x=>typeof x==='string').map(x=>x.trim().replace(/\s+/g,' ').slice(0,80)).filter(Boolean).map(x=>[x.toLocaleLowerCase(),x])).values()].slice(0,20),avatar:String(data.avatar||''),role_character_id:role,role_hint:String(data.role_hint||'').slice(0,300),created_at:existing?.created_at||stamp()};
+        const role=String(data.role_character_id||'');
+        let canonIdentity=null;
+        if(role){
+          const submitted=normalizeProfileCanon(data.canon_identity);
+          const retained=existing?.role_character_id===role?profileCanon(existing):null;
+          canonIdentity=(submitted?.id===role?submitted:null)||(retained?.id===role?retained:null)||catalogProfileCanon(byId.get(role));
+          if(!canonIdentity)bodyErr('原作档案无效，请重新搜索并选择角色');
+        }
+        const profile={id:existing?.id||uid(),name,age,gender:['male','female','nonbinary','other'].includes(data.gender)?data.gender:'other',interested_in:(data.interested_in||['all']).filter(x=>['all','male','female','nonbinary','other'].includes(x)),min_age:Math.max(18,Number(data.min_age)||18),max_age:Math.min(120,Number(data.max_age)||60),intent:String(data.intent||''),bio:String(data.bio||'').slice(0,500),interests:(data.interests||[]).slice(0,12),sources:[...new Map((data.sources||[]).filter(x=>typeof x==='string').map(x=>x.trim().replace(/\s+/g,' ').slice(0,80)).filter(Boolean).map(x=>[x.toLocaleLowerCase(),x])).values()].slice(0,20),avatar:String(data.avatar||''),role_character_id:role,canon_identity:canonIdentity,role_source:canonText(data.role_source,160),role_hint:String(data.role_hint||'').slice(0,300),created_at:existing?.created_at||stamp()};
         if(profile.max_age<profile.min_age)profile.max_age=profile.min_age;
         if(profile.avatar&&(!profile.avatar.startsWith('data:image/')||profile.avatar.length>2000000))bodyErr('头像需是小于约 1.5MB 的图片');
         if(existing)Object.assign(existing,profile);else db.profiles.push(profile);save();return {profile};
@@ -180,7 +187,7 @@
           warning:bioRes.warning||'',demo:pub().mode==='demo'};
       }
       case '/swipe':{
-        const p=getP(data.profileId),c=getC(data.characterId),d=data.direction;if(p.role_character_id===c.id)bodyErr('当前扮演身份不能匹配同一原作角色版本的自己');if(!['left','right'].includes(d))bodyErr('滑卡方向无效');
+        const p=getP(data.profileId),c=getC(data.characterId),d=data.direction;if(sameProfileCharacter(p,c))bodyErr('当前扮演身份不能匹配同一原作角色版本的自己');if(!['left','right'].includes(d))bodyErr('滑卡方向无效');
         db.swipes[pairKey(p.id,c.id)]={direction:d,updated_at:stamp()};const prior=relation(p.id,c.id);const again=!!prior;
         if(d==='left'){save();return {direction:d,matched:false,previously_matched:prior?.status==='matched'}}
         if(prior?.status==='matched'){save();return {direction:'right',matched:true,already_matched:true,character:char(c)}}
