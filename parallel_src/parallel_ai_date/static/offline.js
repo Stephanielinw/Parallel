@@ -1661,8 +1661,8 @@
       (active?.is_unconfirmed||String(active?.id||'').startsWith('slot_meeting_shift_'))&&!active?.is_planned);
     const display=legacyPending?{
       ...active,is_unconfirmed:true,status:'见面后去向待核实',
-      activity:'最近一次确认在见面地点；之后没有位置证据',
-      scene:c.name+'的上次确认地点为「'+String(rec.post_meeting_location||active.location||'未知地点')+'」，当前去向尚未核实；不能把推测当成真实足迹。'
+      activity:'见面结束，等待后续日程更新',
+      scene:''
     }:active;
     return {...witnessedSurveillanceSlot(p,c,display),isCurrent:true,isMeetingLive:false};
   };
@@ -2074,7 +2074,7 @@
       if(!isToday||hhmmToMin(s.start)<=nowMin){
         unlocked.push({
           ...s,
-          isCurrent:Boolean(isToday&&current&&(current.isMeetingLive?s.source==='meeting'&&s.start===actualMeetingSlots.at(-1)?.start&&s.location===current.location:(s.id===current.id||(s.start===current.start&&s.location===current.location))))
+          isCurrent:Boolean(isToday&&current&&(current.isMeetingLive?s.source==='meeting'&&s.id===current.id:(s.id===current.id||(s.start===current.start&&s.location===current.location))))
         });
       }else{
         lockedCount++;
@@ -2519,15 +2519,17 @@
       (!isPendingMeetingPlace(r.meeting_location)?String(r.meeting_location).trim():
         (recoverPreMeetingPlace(p,c,began)||'见面地点待确认')));
     const events=[{at:new Date(began).toISOString(),location:startingLoc,source:'start'}];
-    const manual=prior.filter(x=>['manual','resume'].includes(x.source)&&Number.isFinite(Date.parse(x.at))&&Date.parse(x.at)>=began&&!isNonPlaceText(x.location));
+    const manual=prior.filter(x=>['manual','resume'].includes(x.source)&&Number.isFinite(Date.parse(x.at))&&Date.parse(x.at)>=began&&!isPendingMeetingPlace(x.location));
     const activeTurns=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&
       (!r.active_meeting_id||!m.meeting_id||m.meeting_id===r.active_meeting_id)&&m.engine!=='recalled'&&!m.recalled&&
       Number.isFinite(Date.parse(m.created_at))&&Date.parse(m.created_at)>=began);
     const allEvents=events.concat(manual);
     const candidate=activeTurns.slice().sort((a,b)=>Date.parse(a.created_at)-Date.parse(b.created_at));
+    const hasStructured=candidate.some(m=>m.sender==='ai'&&m.scene_location_structured&&m.scene_location_signature===meetingSceneSignature(m.text)&&!isPendingMeetingPlace(m.scene_location));
     for(const m of candidate){
       let loc='';
-      if(m.sender==='ai'){
+      if(m.sender==='user'&&!hasStructured)loc=meetingPlaceInPlayerTurn(m.text,p.name);
+      else if(m.sender==='ai'){
         const current=allEvents.filter(e=>Date.parse(e.at)<=Date.parse(m.created_at)).sort((a,b)=>Date.parse(a.at)-Date.parse(b.at)).at(-1)?.location||startingLoc;
         const evidence=(m.scene_location&&m.scene_location_signature===meetingSceneSignature(m.text))
           ?{location:m.scene_location}:sceneLocationFromCharacter(m.text,current,p.name,c.name);
@@ -2593,13 +2595,13 @@
       const sceneTurns=messagesOf(p.id,c.id).filter(m=>m.mode==='meeting'&&m.sender==='ai'&&
         m.meeting_id===r.active_meeting_id&&!m.recalled&&m.engine!=='recalled'&&
         Date.parse(m.created_at)>=Date.parse(e.at)&&Date.parse(m.created_at)<=finish&&
-        (!next||Date.parse(m.created_at)<Date.parse(next.at)||(m.id!==next.message_id&&m.scene_location===e.location))&&
+        (!next||Date.parse(m.created_at)<Date.parse(next.at)||(Date.parse(m.created_at)===Date.parse(next.at)&&m.id!==next.message_id&&m.scene_location===e.location))&&
         m.scene_location===e.location&&m.scene_location_signature===meetingSceneSignature(m.text));
       const latest=sceneTurns.at(-1);
       const activity=latest?.scene_monitor_activity||'现场互动';
       const scene=latest?.scene_monitor_scene||sceneRecap||(latest?cleanMeetingNovelText(latest.text).slice(0,350):'');
       parts.push({
-        id:'slot_meeting_'+i+'_'+date,
+        id:'slot_meeting_'+r.active_meeting_id+'_'+i+'_'+date,
         start:startLabel,end:endLabel,
         location:e.location,status:'线下见面足迹',
         activity,

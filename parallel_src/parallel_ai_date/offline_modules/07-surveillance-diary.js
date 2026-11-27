@@ -199,8 +199,8 @@
       (active?.is_unconfirmed||String(active?.id||'').startsWith('slot_meeting_shift_'))&&!active?.is_planned);
     const display=legacyPending?{
       ...active,is_unconfirmed:true,status:'见面后去向待核实',
-      activity:'最近一次确认在见面地点；之后没有位置证据',
-      scene:c.name+'的上次确认地点为「'+String(rec.post_meeting_location||active.location||'未知地点')+'」，当前去向尚未核实；不能把推测当成真实足迹。'
+      activity:'见面结束，等待后续日程更新',
+      scene:''
     }:active;
     return {...witnessedSurveillanceSlot(p,c,display),isCurrent:true,isMeetingLive:false};
   };
@@ -612,7 +612,7 @@
       if(!isToday||hhmmToMin(s.start)<=nowMin){
         unlocked.push({
           ...s,
-          isCurrent:Boolean(isToday&&current&&(current.isMeetingLive?s.source==='meeting'&&s.start===actualMeetingSlots.at(-1)?.start&&s.location===current.location:(s.id===current.id||(s.start===current.start&&s.location===current.location))))
+          isCurrent:Boolean(isToday&&current&&(current.isMeetingLive?s.source==='meeting'&&s.id===current.id:(s.id===current.id||(s.start===current.start&&s.location===current.location))))
         });
       }else{
         lockedCount++;
