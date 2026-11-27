@@ -318,6 +318,8 @@
       reply.scene_location_kind=sceneLocation?.kind||'stable';
       reply.scene_location_signature=meetingSceneSignature(reply.text);
       reply.scene_location_structured=Boolean(sceneTurn?.structured);
+      reply.scene_monitor_activity=sceneTurn?.activity||'';
+      reply.scene_monitor_scene=sceneTurn?.scene||'';
       // Keep the time described by prose separate from network completion time.
       reply.scene_clock_at=new Date(clockNow).toISOString();
       const history=activeMeetingLocationHistory(p,c);
@@ -532,7 +534,8 @@
         const replacement={...old,id,text:body,engine,created_at:old.created_at,rerolled_at:stamp(),reroll_count:(Number(old.reroll_count)||0)+1,
           scene_location:sceneLoc?.location||prev,scene_location_evidence:sceneLoc?.evidence||'',
           scene_location_kind:sceneLoc?.kind||'stable',scene_location_signature:meetingSceneSignature(body),
-          scene_location_structured:Boolean(turn.structured)};
+          scene_location_structured:Boolean(turn.structured),
+          scene_monitor_activity:turn.activity||'',scene_monitor_scene:turn.scene||''};
         const index=db.messages.findIndex(m=>m.id===old.id&&m.profile_id===p.id&&m.character_id===c.id);
         if(index<0)throw Error('原文不存在');
         db.messages[index]=replacement;invalidateTranslation(old.id);

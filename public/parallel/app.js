@@ -780,6 +780,14 @@ function meetingTimeDetails(rec,active=false){
   const duration=minutes===null?'':(Math.floor(minutes/1440)?Math.floor(minutes/1440)+'天 ':'')+(Math.floor(minutes%1440/60)?Math.floor(minutes%1440/60)+'小时 ':'')+(minutes%60)+'分钟';
   return {start:format(start)||rec.time||'未记录',finish:active?'进行中':format(finish)||'未记录',last:!active&&!finish?format(last):'',duration};
 }
+function meetingLocationTrail(rec){
+  const rows=(Array.isArray(rec?.location_history)?rec.location_history:[])
+    .filter(e=>e?.location&&!/^(?:约定的见面地点|见面地点待确认|地点待确认|未知地点|不确定地点|当前地点未确认|待确认|未知|不确定|unknown|tbd)$/i.test(String(e.location).trim()))
+    .slice().sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
+  const stops=[];
+  for(const row of rows)if(stops.at(-1)?.location!==row.location)stops.push(row);
+  return stops.length?stops.map(e=>(e.at?fmtTime(e.at)+' · ':'')+e.location).join(' → '):(rec?.location||'见面地点待确认');
+}
 function findOrBuildMeetingRecord(block,c){
   const pName=activeProfile()?.name||'你';
   const blockIds=new Set(block.map(m=>m.id));
@@ -801,6 +809,7 @@ function findOrBuildMeetingRecord(block,c){
   return {
     id:explicitMid,
     location:loc,
+    location_history:block.filter(m=>m.sender==='ai'&&m.scene_location&&!m.recalled&&m.engine!=='recalled').map(m=>({at:m.created_at,location:m.scene_location})),
     time:timeStr,
     started_at:startedAt,
     finished_at:'',
@@ -959,7 +968,7 @@ function renderChatMessagesHtml(c){
     const sessionMsgs=state.activeMeetingId
       ?visibleMsgs.filter(m=>m.mode==='meeting'&&(m.meeting_id===state.activeMeetingId||['pending','typing'].includes(m.id)))
       :visibleMsgs.filter(m=>m.mode==='meeting');
-    const locVal=state.meetingLocation||(sessionMsgs.length?findOrBuildMeetingRecord(sessionMsgs,c).location:'约定的街角咖啡馆');
+    const locVal=state.meetingLocation||'见面地点待确认';
     const finalTurn=sessionMsgs.filter(m=>m.id!=='typing').at(-1);
     const latestUserTurn=sessionMsgs.filter(m=>m.sender==='user'&&m.id&&m.id!=='pending'&&m.id!=='typing'&&!m.recalled&&m.engine!=='recalled').at(-1);
     const turnsHtml=sessionMsgs.filter(m=>m.id!=='typing').map((m,idx)=>{
@@ -989,7 +998,7 @@ function renderChatMessagesHtml(c){
         <div class="meeting-loc-pill">
           ${I('map')}
           <span>见面地点</span>
-          <input id="meeting-location-input" class="meeting-loc-input" type="text" maxlength="36" value="${esc(locVal)}" placeholder="如：Lin 的卧室" title="请输入实际地点，修改后会同步给监控，并用于下一次角色回复" aria-label="当前见面地点（修改并失焦后自动保存）">
+          <input id="meeting-location-input" class="meeting-loc-input" type="text" maxlength="40" value="${esc(locVal)}" placeholder="如：Lin 的卧室" title="请输入实际地点，修改后会同步给监控，并用于下一次角色回复" aria-label="当前见面地点（修改并失焦后自动保存）">
         </div>
         <span class="meeting-stage-hint" id="meeting-real-clock">${esc(meetingClockText())}</span>
       </div>
@@ -1031,7 +1040,7 @@ function renderChatMessagesHtml(c){
           <span class="meeting-card-count">共 ${b.msgs.length} 段记录</span>
         </div>
         <div class="meeting-card-rows">
-          <div class="meeting-card-row"><b>见面地点</b><span class="inline-ic-text">${I('map','inline-doodle-ic')}<span>${esc(rec.location||'约定的街角咖啡馆')}</span></span></div>
+          <div class="meeting-card-row"><b>见面地点</b><span class="inline-ic-text">${I('map','inline-doodle-ic')}<span>${esc(meetingLocationTrail(rec))}</span></span></div>
           <div class="meeting-card-row"><b>开始时间</b><span class="inline-ic-text">${I('clock','inline-doodle-ic')}<span>${esc(times.start)}</span></span></div>
           <div class="meeting-card-row"><b>结束时间</b><span class="inline-ic-text">${I('clock','inline-doodle-ic')}<span>${esc(times.finish)}${times.duration?' · '+esc(times.duration):''}${times.last?'（末次互动 '+esc(times.last)+'）':''}</span></span></div>
           <div class="meeting-card-row is-summary"><b>见面梗概</b><span class="inline-ic-text">${I('book','inline-doodle-ic')}<span>${esc(rec.summary)}</span></span></div>
@@ -1209,10 +1218,6 @@ function renderMessages(){
   const selEnd=existingInput?existingInput.selectionEnd:null;
   if(existingInput&&state.renderedThreadId){
     state.draftInputs[state.renderedThreadId]=existingInput.value;
-  }
-  const existingLoc=$('meeting-location-input');
-  if(existingLoc&&state.chatMode==='meeting'){
-    state.meetingLocation=existingLoc.value.trim()||state.meetingLocation;
   }
   const isBusy=state.chatBusy||state.flushBusy||state.queue?.status==='inflight';
   const charTyping=isCharacterTyping();
@@ -1414,20 +1419,10 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
     }
     const isToday=data.isToday!==false;
     const cur=data.current||{};
-    const liveUncertain=Boolean(cur.is_planned||cur.is_unconfirmed);
     const unlocked=data.unlockedSlots||[];
     const lockedCount=Number(data.lockedCount||0);
     const todayStr=data.today||localDateStr();
     const curDateVal=data.date||todayStr;
-    const sourceBadge=s=>{
-      if(s.is_unconfirmed)return '去向待核实';
-      if(s.is_planned)return '日程推演';
-      if(s.isCurrent)return '正在进行';
-      if(s.source==='meeting')return '线下见面足迹';
-      if(s.source==='meeting_shift')return '见面后行程';
-      if(s.source==='chat_update')return '聊天动态同步';
-      return s.status||'已发生';
-    };
     const html=`<div class="kicker">LIVE SURVEILLANCE · 角色行踪监控</div>
       <div class="modal-head-bar">
         <div class="modal-head-titles">
@@ -1446,30 +1441,27 @@ async function openSurveillanceModal(forceRefresh=false,selectedDate=''){
       ${data.bgError?`<div class="preset-diag-warn" style="margin-bottom:10px"><span>上次自动生成监控未成功（${esc(data.bgError.error_code)}：${esc(data.bgError.title)}），当前展示已保留的有效日程。</span></div>`:''}
       ${isToday?`<div class="surv-live-card">
         <div class="surv-live-head">
-          <span class="surv-live-badge"><i class="surv-live-dot"></i> ${cur.is_unconfirmed?'最后确认状态 · 当前去向待核实':(cur.is_planned?'此刻日程推演 · 尚未现场确认':'此刻实时画面')} · ${esc(cur.status||'日常活动')}</span>
+          <span class="surv-live-badge"><i class="surv-live-dot"></i> 当前动态</span>
           <span class="surv-live-time">${esc(cur.start||'00:00')}</span>
         </div>
         <div class="surv-live-loc">${I('map')}<span>${esc(cur.location||`${c.name}的常去地点`)}</span></div>
         <div class="surv-live-act">${esc(cur.activity||'正在处理日常事务')}</div>
         <div class="surv-live-scene">${esc(cur.scene||`${c.name}正在当下所在的位置处理日常事务。`)}</div>
-        <div class="surv-live-actions">
-          <span class="caption">${liveUncertain?'此处仅是推演地点或最后确认位置，并非已证实的当前地点；请先通过聊天确认见面地点。':(state.chatMode==='meeting'?'地点变化后，请在面对面小说页面顶部的「见面地点」栏修改，监控会同步。':'如果在聊天中直接点「进入见面」，将默认前往该实时地点')}</span>
-          ${state.chatMode==='chat'?(liveUncertain?'<span class="pill">当前地点未确认 · 请先在聊天中约定</span>':`<button type="button" class="btn primary tiny-btn" data-action="surv-enter-meeting" data-loc="${esc(cur.location||'')}">${I('map')} 前往此处与 TA 见面</button>`):`<span class="pill">当前正在线下见面中</span><button type="button" class="btn soft tiny-btn" data-action="surv-close-meeting">结束本次见面</button>`}
-        </div>
+        ${state.chatMode==='meeting'?`<div class="surv-live-actions"><button type="button" class="btn soft tiny-btn" data-action="surv-close-meeting">结束本次见面</button></div>`:(!cur.is_planned&&!cur.is_unconfirmed&&cur.location?`<div class="surv-live-actions"><button type="button" class="btn primary tiny-btn" data-action="surv-enter-meeting" data-loc="${esc(cur.location)}">${I('map')} 前往此处与 TA 见面</button></div>`:'')}
       </div>`:''}
       <div class="surv-section-head">
-        <h3>${isToday?'今日足迹与日程推演（随时间自然解锁）':`${esc(curDateVal)} 行踪记录回溯`}</h3>
-        <span class="caption">${unlocked.length} 条足迹或推演</span>
+        <h3>${isToday?'今日足迹':`${esc(curDateVal)} 行踪记录回溯`}</h3>
+        <span class="caption">${unlocked.length} 条足迹</span>
       </div>
       <div class="surv-timeline">
         ${unlocked.map(s=>`<div class="surv-slot ${s.isCurrent?'is-current':''} ${s.source==='meeting'?'is-meeting':''}">
           <div class="surv-slot-top">
             <span class="surv-slot-time">${esc(s.start)}</span>
             <span class="surv-slot-loc">${I('map')}<span>${esc(s.location)}</span></span>
-            <span class="surv-slot-tag">${esc(sourceBadge(s))}</span>
+            ${s.source==='meeting'?'<span class="surv-slot-tag">见面</span>':''}
           </div>
           <div class="surv-slot-act">${esc(s.activity)}</div>
-          ${(!isToday&&s.scene)?`<div class="surv-slot-scene">${esc(s.scene)}</div>`:''}
+          ${((!isToday||s.source==='meeting')&&s.scene)?`<div class="surv-slot-scene">${esc(s.scene)}</div>`:''}
         </div>`).join('')}
       </div>
       `;
@@ -1572,7 +1564,7 @@ function openMeetingRecordModal(meetingId){
   const html=`<div class="kicker">MEETING RECORD · 线下见面完整记录</div>
     <h2>与 ${esc(c.name)} 的见面记录</h2>
     <div class="meeting-modal-meta">
-      <div class="inline-ic-text">${I('map','inline-doodle-ic')}<b>见面地点：</b><span>${esc(rec.location||'约定的街角咖啡馆')}</span></div>
+      <div class="inline-ic-text">${I('map','inline-doodle-ic')}<b>见面地点：</b><span>${esc(meetingLocationTrail(rec))}</span></div>
       <div class="inline-ic-text">${I('clock','inline-doodle-ic')}<b>开始时间：</b><span>${esc(times.start)}</span></div>
       <div class="inline-ic-text">${I('clock','inline-doodle-ic')}<b>结束时间：</b><span>${esc(times.finish)}</span></div>
       ${times.duration?`<div class="inline-ic-text">${I('clock','inline-doodle-ic')}<b>见面时长：</b><span>${esc(times.duration)}</span></div>`:''}

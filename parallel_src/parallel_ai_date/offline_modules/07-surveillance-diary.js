@@ -183,21 +183,13 @@
     const nowHHMM=fmtHHMM(at)||'12:00';
     const nowMin=hhmmToMin(nowHHMM);
     if(r?.mode==='meeting'){
-      const history=activeMeetingLocationHistory(p,c);
-      const loc=history.at(-1)?.location||'约定的见面地点';
+      const segments=meetingSurveillanceSegments(p,c,localDateStr(at),at);
+      const current=segments.at(-1);
       return {
-        id:'live_meeting',
-        start:r.meeting_started_at&&localDateStr(r.meeting_started_at)!==localDateStr(at)?'00:00':fmtHHMM(r.meeting_started_at||at)||nowHHMM,
-        end:nowHHMM,
-        location:loc,
-        status:`与 ${p.name} 见面中（接触待确认）`,
-        activity:`在「${loc}」参与本次见面；是否已经接触由现场实际行为决定`,
-        scene:`${c.name}在「${loc}」进行本次见面，不能预先替 ${p.name} 决定出现、接近或搭话。`,
-        source:'meeting',
-        meeting_id:r.active_meeting_id||'',
-        actual_started_at:r.meeting_started_at||new Date(at).toISOString(),
-        isCurrent:true,
-        isMeetingLive:true
+        ...(current||{id:'live_meeting',start:fmtHHMM(r.meeting_started_at||at)||nowHHMM,end:nowHHMM,
+          location:r.meeting_location||'见面地点待确认',status:'见面中',activity:'等待现场描写',scene:'',
+          source:'meeting',meeting_id:r.active_meeting_id||'',actual_started_at:r.meeting_started_at||new Date(at).toISOString()}),
+        isCurrent:true,isMeetingLive:true
       };
     }
     const active=rec.slots[activeSlotIndex(rec.slots,nowMin)]||rec.slots.filter(s=>hhmmToMin(s.start)<=nowMin).at(-1)||rec.slots[0];
