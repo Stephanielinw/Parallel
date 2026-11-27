@@ -452,7 +452,7 @@
       // Structured scene metadata travels out-of-band: only text becomes
       // visible prose. Each response must explicitly state where the character
       // really is, using actions in this scene rather than surveillance plans.
-      postSystemParts.push('【每轮见面回复的结构化契约 · 必须遵守】只返回一个 JSON 对象，字段恰好是 {"text":"完整的第三人称小说正文","location":"角色在本条正文结束时真实所在的具体地点","location_evidence":"如果地点变化，请从本条正文或玩家最新一条原文逐字复制证明确实已经到达的连续短句；没换地点则填空字符串"}。text 必须是完整自然的小说叙事，不要把地点标签写进 text。location 每轮必填，即使没有移动也必须重复上一轮已确认的地点。单纯讨论、邀约、计划、将来时、想象、监控推演或 NPC 在别处不构成移动；未实际到达则沿用上一轮地点。若真实走出或进入新地点，在正文里交代完成移动的动作，再填新的 location。不得替玩家行动或发言。JSON 外不要有解释、代码围栏或其他内容。');
+      postSystemParts.push('【每轮见面回复的结构化契约 · 必须遵守】只返回一个 JSON 对象，字段恰好是 {"text":"完整的第三人称小说正文","location":"角色在本条正文结束时真实所在的具体地点","location_evidence":"如果地点变化，请从本条正文或玩家最新一条原文逐字复制证明确实已经到达的连续短句；没换地点则填空字符串","monitor_activity":"当前角色正在进行的具体活动，简短标题","monitor_scene":"第三人称观察者视角的简洁现场描述，只依据本轮已经发生的实际动作，不复制小说原文，不编造新剧情"}。text 必须是完整自然的小说叙事，不要把地点标签写进 text。location 每轮必填，即使没有移动也必须重复上一轮已确认的地点。单纯讨论、邀约、计划、将来时、想象、监控推演或 NPC 在别处不构成移动；未实际到达则沿用上一轮地点。若真实走出或进入新地点，在正文里交代完成移动的动作，再填新的 location。不得替玩家行动或发言。JSON 外不要有解释、代码围栏或其他内容。');
       chat.push({role:'system',content:postSystemParts.join('\n\n')});
       for(const x of postPresets){
         if(x.role!=='system')chat.push({role:x.role,content:macros(x.content)});
