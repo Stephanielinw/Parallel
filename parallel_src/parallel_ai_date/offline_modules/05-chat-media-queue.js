@@ -384,9 +384,9 @@
     const hotChat=Boolean(r?.hot_chat);
     const q=db.queue[pairKey(pid,cid)];
     const ts=getTaskState(pid,cid,'chat');
-    if(!q)return {count:0,pendingIds:[],dueAt:0,remainingMs:0,status:ts?.status==='paused'?'paused':'idle',blocked:Boolean(ts?.status==='paused'),paused:Boolean(ts?.status==='paused'),taskState:ts,paceMode:hotChat?'hot':'daily',hotChat,delayMinutes:hotChat?1:0,targetTimeLabel:'',scheduleReason:''};
+    if(!q)return {count:0,pendingIds:[],dueAt:0,remainingMs:0,status:ts?.status==='paused'||ts?.userPaused?'paused':'idle',blocked:Boolean(ts?.status==='paused'||ts?.userPaused),paused:Boolean(ts?.status==='paused'||ts?.userPaused),taskState:ts,paceMode:hotChat?'hot':'daily',hotChat,delayMinutes:hotChat?1:0,targetTimeLabel:'',scheduleReason:''};
     const dueAt=Number(q.dueAt||0);
-    const isPaused=Boolean(q.paused||(ts&&ts.status==='paused'));
+    const isPaused=Boolean(q.paused||q.userPaused||ts?.userPaused||ts?.status==='paused');
     return {
       count:q.pending.length,
       pendingIds:q.pending.slice(),
@@ -406,7 +406,7 @@
   };
   const clearQueue=(pid,cid)=>{
     const k=pairKey(pid,cid),q=db.queue[k];
-    if(q){q.pending=[];q.dueAt=0;q.scheduledDueAt=0;q.status='idle';q.blocked=false;q.paused=false;q.revision=(q.revision||0)+1;q.inflight='';q.targetTimeLabel='';q.scheduleReason='';}
+    if(q){q.pending=[];q.dueAt=0;q.scheduledDueAt=0;q.status='idle';q.blocked=false;q.paused=false;q.userPaused=false;q.revision=(q.revision||0)+1;q.inflight='';q.targetTimeLabel='';q.scheduleReason='';}
     clearTaskState(pid,cid,'chat');
   };
   const enqueue=(pid,cid,id,msgText='')=>{
@@ -416,7 +416,7 @@
     const c=byId.get(cid);
     const q=db.queue[k]||(db.queue[k]={pending:[],dueAt:0,status:'idle',blocked:false,paused:false,revision:0,inflight:'',paceMode:hotChat?'hot':'daily',delayMinutes:1,targetTimeLabel:'',scheduleReason:''});
     const ts=getTaskState(pid,cid,'chat');
-    const isPaused=Boolean(q.paused||(ts&&ts.status==='paused'));
+    const isPaused=Boolean(q.paused||q.userPaused||ts?.userPaused||ts?.status==='paused');
     const wasEmpty=q.pending.length===0;
     if(!q.pending.includes(id))q.pending.push(id);
     if(isPaused){
@@ -526,11 +526,14 @@
       last_error:null,
       updated_at:stamp()
     };
-    save();
     const r=relation(p.id,c.id);let txt,engine='demo',warning='',apiError=null;
-    const msgs=prompt(p,c,'chat',pending,{entry_point:'chat_flush',simulatedAt});
-    if(curMode==='live'){
-      try{
+    let stage='save';
+    try{
+      save();
+      stage='prompt';
+      const msgs=prompt(p,c,'chat',pending,{entry_point:'chat_flush',simulatedAt});
+      if(curMode==='live'){
+        stage='model';
         txt=await llm(msgs,{
           profile:p,
           character:c,
@@ -549,12 +552,22 @@
           background:Boolean(retryOpts.background),signal:abortCtrl?.signal
         });
         engine='live';
-      }catch(e){
-        warning=String(e.message||e);
-        apiError=e.apiError||null;
-        engine='error';
+      }else{
+        stage='demo';
+        txt=demo(p,c,'chat')+(departurePlanId?demoDepartureNotice('chat'):'');
       }
-    }else txt=demo(p,c,'chat')+(departurePlanId?demoDepartureNotice('chat'):'');
+    }catch(e){
+      warning=String(e?.message||e);
+      apiError=e?.apiError||null;
+      if(!apiError){
+        const errorCode=stage==='prompt'?'CHAT_PREPARE_ERROR':stage==='save'?'CHAT_STORAGE_ERROR':'CHAT_LOCAL_ERROR';
+        const title=stage==='prompt'?'聊天上下文组装失败':stage==='save'?'待回复任务保存失败':'聊天任务内部异常';
+        const logId='log_'+uid();
+        apiError=createApiError({error_code:errorCode,title,message:'聊天任务未完成，可重试。',profile_id:p.id,character_id:c.id,character_name:c.name,task_type:'chat_flush',task_id:taskId,retry_of_task_id:retryOfTaskId,attempt,log_id:logId,background:Boolean(retryOpts.background)});
+        recordSystemLog({id:logId,created_at:stamp(),profile_id:p.id,profile_name:p.name,character_id:c.id,character_name:c.name,mode:'chat',entry_point:'chat_flush',task_id:taskId,retry_of_task_id:retryOfTaskId,attempt,background:Boolean(retryOpts.background),status:'error',http_status:0,error_code:errorCode,error_type:errorCode,error:title,finish_reason:'local_'+stage,request_payload:null,raw_response:null,raw_content:'',parsed_content:''});
+      }
+      engine='error';
+    }
     inflightControllers.delete(tKey);
     if(characterFrozen(p.id,c.id)||q.inflight!==token||q.revision!==generation||r?.mode!=='chat'||r?.status!=='matched'){
       if(r?.mode==='chat'&&r?.status==='matched'&&q.status==='paused'){
@@ -690,7 +703,7 @@
     for(const [k,q] of Object.entries(db.queue)){
       if(!k.startsWith(p.id+'|'))continue;
       const cid=k.slice(p.id.length+1),ts=getTaskState(p.id,cid,'chat');
-      if(!q||!q.pending?.length||q.status==='inflight'||q.paused||ts?.status==='paused'||q.blocked||!q.dueAt||q.dueAt>now)continue;
+      if(!q||!q.pending?.length||q.status==='inflight'||q.paused||q.userPaused||ts?.userPaused||ts?.status==='paused'||ts?.status==='inflight'||q.blocked||!q.dueAt||q.dueAt>now)continue;
       const c=byId.get(cid),r=relation(p.id,cid);
       if(!c||!r||r.frozen_at||r.status!=='matched'||r.mode!=='chat')continue;
       jobs.push({p,c,force:false});
