@@ -75,3 +75,6 @@ function start(){
   assert(app.includes("await recoverOnOpen(offlineSince)"));assert(app.includes('retry-backlog'));
   console.log('Backlog recovery: scheduled time, two workers, interrupted tasks, errors, pauses, dedupe, and profile isolation passed');
 })().catch(e=>{console.error(e);process.exitCode=1});
+
+// Also exercise the orphaned-pause and preflight regression in the existing CI job.
+require('./chat-queue-recovery.test.cjs');
