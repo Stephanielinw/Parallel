@@ -2465,8 +2465,13 @@
     const base=cleanScenePlace(current)||'见面地点待确认';
     const claimed=cleanScenePlace(turn?.location);
     // The structured location is the scene contract, not a regex-derived guess.
-    if(turn?.structured&&claimed&&!isPendingMeetingPlace(claimed))
-      return {location:claimed,evidence:String(turn.evidence||''),kind:claimed===base?'stable':'structured'};
+    if(turn?.structured&&claimed&&!isPendingMeetingPlace(claimed)){
+      const evidence=String(turn.evidence||'');
+      if(claimed!==base&&!isPendingMeetingPlace(base)&&
+        /下次|以后|明天|将来|打算|计划|还没|尚未|如果|假如|想象|(?:next time|tomorrow|not yet|would go)/i.test(evidence))
+        return {location:base,evidence:'',kind:'unconfirmed'};
+      return {location:claimed,evidence,kind:claimed===base?'stable':'structured'};
+    }
     if(!claimed||claimed===base)return {location:base,evidence:'',kind:'stable'};
     const deterministic=sceneLocationFromCharacter(turn.text,base,p.name,c.name);
     const evidence=String(turn.evidence||'').trim();
