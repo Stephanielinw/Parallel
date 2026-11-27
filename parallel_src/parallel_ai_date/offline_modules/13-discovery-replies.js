@@ -42,7 +42,7 @@
   const discoverySessionFilter=p=>JSON.stringify([p.id,p.sources||[],p.interested_in||[],p.min_age,p.max_age,p.role_character_id||'']);
   // A swipe can create a match, but matching must not invalidate the saved batch.
   const validSavedCard=(p,c)=>c&&(!p.sources.length||p.sources.some(tag=>sourceMatches(tag,c)))&&
-    p.role_character_id!==c.id&&(!p.interested_in.length||p.interested_in.includes('all')||p.interested_in.includes(c.gender))&&
+    !sameProfileCharacter(p,c)&&(!p.interested_in.length||p.interested_in.includes('all')||p.interested_in.includes(c.gender))&&
     (!c.age||c.age>=p.min_age&&c.age<=p.max_age);
   const readDiscoverySession=p=>{
     const session=db.discoverSessions[p.id];
@@ -350,7 +350,7 @@
       try{
         const interestsStr=(p.interests||[]).join('、')||'未填写',intentStr=p.intent||'未填写';
         const text=await llm([
-          {role:'system',content:`你是 ${c.name}（${c.source} ${c.version}）。原作身份：${c.canon}。对方 ${p.name}，${p.age}岁，交友目的：${intentStr}，兴趣爱好：${interestsStr}，简介 ${p.bio}。你有自己的择偶标准，可自由决定是否右滑同意匹配。只输出 JSON 对象 {"match":true/false}。`},
+          {role:'system',content:`你是 ${c.name}（${c.source} ${c.version}）。原作身份：${c.canon}。对方 ${p.name}，${p.age}岁，交友目的：${intentStr}，兴趣爱好：${interestsStr}，简介 ${p.bio}。${profileCanonContext(p)}\n你有自己的择偶标准，可自由决定是否右滑同意匹配。只输出 JSON 对象 {"match":true/false}。`},
           {role:'user',content:'你是否想匹配？'}
         ],{json_mode:true,skip_json_gateway:true,profile:p,character:c,mode:'match',entry_point:'match_decision'});
         return {matched:!!JSON.parse(text).match,engine:'live'};

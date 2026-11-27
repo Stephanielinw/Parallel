@@ -191,7 +191,9 @@
     const entryPoint=options.entry_point||mode;
     const baselineTokens=resolveTaskMaxTokens(db.connection,mode,entryPoint,options.max_tokens);
     const reqMaxTokens=options.min_output_tokens&&mode==='meeting_summary'?Math.min(4096,Math.max(baselineTokens,options.min_output_tokens)):baselineTokens;
-    const payload={model:s.model,messages:await resolveChatPhotoInput(messages),temperature:options.temperature??s.temperature,top_p:s.top_p,max_tokens:reqMaxTokens};
+    const extraCanon=pObj&&cObj&&['surveillance','diary','meeting_summary','archive'].includes(mode)?profileCanonContext(pObj):'';
+    const modelMessages=extraCanon?[{role:'system',content:extraCanon},...messages]:messages;
+    const payload={model:s.model,messages:await resolveChatPhotoInput(modelMessages),temperature:options.temperature??s.temperature,top_p:s.top_p,max_tokens:reqMaxTokens};
     if(options.json_mode&&options.omit_response_format!==true)payload.response_format={type:'json_object'};
     const presetMode=(mode==='meeting'||mode==='chat')?mode:null;
     const modePresets=presetMode?(db.presets||[]).filter(x=>x.mode===presetMode).sort((a,b)=>a.sort_order-b.sort_order):[];
