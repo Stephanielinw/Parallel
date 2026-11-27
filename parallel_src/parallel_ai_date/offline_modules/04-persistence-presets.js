@@ -63,6 +63,15 @@
         q.dueAt=0;
       }
     }
+    // Repair only orphaned pause flags from older clearQueue() versions.
+    for(const [key,q] of Object.entries(target.queue)){
+      const rel=target.relations?.[key];
+      if(q?.userPaused===true&&q.status==='idle'&&!q.paused&&!q.blocked&&!q.inflight&&
+         !target.taskStates[key+'|chat']&&rel?.status==='matched'&&rel.mode==='chat'&&!rel.frozen_at){
+        q.userPaused=false;
+        if(q.pending.length&&!Number(q.dueAt))q.dueAt=Number(q.scheduledDueAt)||Date.now();
+      }
+    }
     if(target.connection){
       target.connection.image_base_url ||= '';
       target.connection.image_api_key ||= '';
